@@ -35,7 +35,8 @@ describe("desktop release workflow wiring", () => {
       expect(workflow).toContain("--x64");
       expect(workflow).toContain("--arm64");
       expect(workflow).toContain("Fusion-*-linux-arm64.AppImage");
-      expect(workflow).toContain("Fusion-*-linux-x64.AppImage");
+      // release.yml packages electron-builder's x64 AppImage as x86_64; test-release.yml still uses x64.
+      expect(workflow).toMatch(/Fusion-\*-linux-(x64|x86_64)\.AppImage/);
       expect(workflow).toContain("name: fusion-desktop-linux");
       expect(workflow).toContain("packages/desktop/dist-electron/latest-linux.yml");
     }

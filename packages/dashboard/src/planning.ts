@@ -946,9 +946,21 @@ async function getFirstQuestionFromAgent(
   }
 
   if (!parsed) {
-    // Clean up the session on failure
+    // Clean up the failed startup session and release the underlying agent so
+    // an unparsable first response cannot leave model/transport handles behind
+    // in the long-running dashboard process.
     sessions.delete(session.id);
     unpersistSession(session.id);
+    try {
+      await session.agent.session.dispose?.();
+    } catch (disposeErr) {
+      diagnostics.warn("Failed to dispose planning agent after first question failure", {
+        sessionId: session.id,
+        message: disposeErr instanceof Error ? disposeErr.message : String(disposeErr),
+        operation: "dispose-after-first-question-failure",
+      });
+    }
+    session.agent = undefined;
     throw new Error(
       `Failed to get first question from AI: ${lastError?.message || "Unknown error"}`
     );

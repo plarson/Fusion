@@ -422,6 +422,41 @@ describe("Planning Mode Routes", () => {
         expect(res.body.sessionId).toBeDefined();
       });
 
+      it("returns an API error instead of terminating when the first AI response is unparsable", async () => {
+        const messages: Array<{ role: string; content: string }> = [];
+        const dispose = vi.fn();
+        __setCreateFnAgent(async () => ({
+          session: {
+            state: { messages },
+            prompt: vi.fn(async (msg: string) => {
+              messages.push({ role: "user", content: msg });
+              messages.push({ role: "assistant", content: "" });
+            }),
+            dispose,
+          },
+        }));
+        const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+          throw new Error("process.exit should not be called");
+        }) as never);
+
+        try {
+          const res = await REQUEST(
+            buildApp(),
+            "POST",
+            "/api/planning/start",
+            JSON.stringify({ initialPlan: "Investigate dashboard crash" }),
+            { "Content-Type": "application/json" },
+          );
+
+          expect(res.status).toBe(500);
+          expect(res.body.error).toContain("Failed to get first question from AI");
+          expect(exitSpy).not.toHaveBeenCalled();
+          expect(dispose).toHaveBeenCalledTimes(1);
+        } finally {
+          exitSpy.mockRestore();
+        }
+      });
+
       it("enforces rate limiting (1000 sessions per hour per IP)", async () => {
         // Create 1000 sessions (should succeed)
         for (let i = 0; i < 1000; i++) {

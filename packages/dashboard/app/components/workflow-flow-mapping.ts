@@ -136,6 +136,17 @@ function editorKind(node: WorkflowIr["nodes"][number]): WorkflowEditorNodeKind {
   // editor shape so the workflow editor renders them as recognizable nodes.
   // (Dedicated PR-node editor rendering is a follow-up, not part of this work.)
   if (node.kind === "pr-merge") return "merge";
+  if (
+    node.kind === "merge-gate" ||
+    node.kind === "merge-attempt" ||
+    node.kind === "branch-group-member-integration" ||
+    node.kind === "branch-group-promotion" ||
+    node.kind === "recovery-router"
+  ) {
+    return "merge";
+  }
+  if (node.kind === "manual-merge-hold") return "hold";
+  if (node.kind === "retry-backoff") return "loop";
   if (node.kind === "pr-create" || node.kind === "pr-respond") return "prompt";
   return node.kind;
 }

@@ -1282,7 +1282,8 @@ export async function runAiMerge(
     // loudly rather than silently marking the task done.
     const wasExecuted = !!task.baseCommitSha;
     const alreadyMerged = task.mergeDetails?.mergeConfirmed === true || !!task.mergeDetails?.commitSha;
-    if (wasExecuted && !alreadyMerged) {
+    const noCommitsExpected = task.noCommitsExpected === true;
+    if (wasExecuted && !alreadyMerged && !noCommitsExpected) {
       await audit.git({
         type: "merge:ai-no-branch",
         target: branch,
@@ -1294,12 +1295,13 @@ export async function runAiMerge(
         + `Not finalizing; investigate.`,
       );
     }
+    const noBranchKind = alreadyMerged ? "already-merged" : noCommitsExpected ? "no-commits-expected" : "never-executed";
     await audit.git({
       type: "merge:ai-no-branch",
       target: branch,
-      metadata: { taskId, kind: alreadyMerged ? "already-merged" : "never-executed" },
+      metadata: { taskId, kind: noBranchKind },
     });
-    return await finalizeTask(store, taskId, noOpResult(task, branch, alreadyMerged ? "already-merged" : "no-branch"));
+    return await finalizeTask(store, taskId, noOpResult(task, branch, noBranchKind));
   }
 
   // The target branch must exist as a LOCAL ref to merge into it — surface a

@@ -432,6 +432,23 @@ describe("runAiMerge", () => {
     expect(store.moveTask).not.toHaveBeenCalled();
   });
 
+  it("finalizes no-commits-expected tasks even when the execution branch is gone", async () => {
+    const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
+    const { store } = makeStore(dir, {
+      branch: "fusion/ghost",
+      baseCommitSha: "0123456789abcdef",
+      noCommitsExpected: true,
+    });
+
+    const result = await runAiMerge(store, dir, "FN-1", { manual: true }, {
+      mergeAgent: vi.fn(), reviewAgent: vi.fn(),
+    });
+
+    expect(result.noOp).toBe(true);
+    expect(result.reason).toBe("no-commits-expected");
+    expect(store.moveTask).toHaveBeenCalledWith("FN-1", "done");
+  });
+
   it("finalizes as a no-op when an already-merged task's branch is gone (re-process)", async () => {
     const { dir } = initRepoWithBranch({ branch: "fusion/fn-1" });
     const { store } = makeStore(dir, { branch: "fusion/ghost", baseCommitSha: "0123456789abcdef", mergeDetails: { mergeConfirmed: true } });

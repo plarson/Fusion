@@ -22,6 +22,16 @@ export const droidPluginMcpServerPath = join(
   "fusion-plugin-droid-runtime",
   "mcp-schema-server.cjs",
 );
+export const compoundEngineeringStrategySkillPath = join(
+  cliRoot,
+  "dist",
+  "plugins",
+  "fusion-plugin-compound-engineering",
+  "src",
+  "skills",
+  "ce-strategy",
+  "SKILL.md",
+);
 
 export const dashboardClientStubMarker = "Dashboard assets not built";
 
@@ -50,7 +60,8 @@ export function hasBuiltDashboardAssets(): boolean {
     !existsSync(cursorPluginManifestPath) ||
     !existsSync(roadmapPluginBundledPath) ||
     !existsSync(openclawMcpSchemaServerPath) ||
-    !existsSync(droidPluginMcpServerPath)
+    !existsSync(droidPluginMcpServerPath) ||
+    !existsSync(compoundEngineeringStrategySkillPath)
   ) {
     return false;
   }

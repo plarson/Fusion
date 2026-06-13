@@ -54,9 +54,10 @@ type BundlePluginEntryOptions = {
   srcDir: string;
   destDir: string;
   withMcpAsset?: boolean;
+  copyAssetDirs?: string[];
 };
 
-async function bundlePluginEntry({ pluginId, srcDir, destDir, withMcpAsset = false }: BundlePluginEntryOptions) {
+async function bundlePluginEntry({ pluginId, srcDir, destDir, withMcpAsset = false, copyAssetDirs = [] }: BundlePluginEntryOptions) {
   if (existsSync(destDir)) {
     rmSync(destDir, { recursive: true, force: true });
   }
@@ -109,6 +110,14 @@ async function bundlePluginEntry({ pluginId, srcDir, destDir, withMcpAsset = fal
       );
     }
     cpSync(mcpServerAsset, join(destDir, "mcp-schema-server.cjs"));
+  }
+
+  for (const assetDir of copyAssetDirs) {
+    const sourceAssetDir = join(srcDir, assetDir);
+    if (!existsSync(sourceAssetDir)) {
+      throw new Error(`[tsup] Missing required asset directory for ${pluginId}: ${sourceAssetDir}`);
+    }
+    cpSync(sourceAssetDir, join(destDir, assetDir), { recursive: true });
   }
 
   const bundledOutput = join(destDir, "bundled.js");
@@ -259,6 +268,7 @@ const cliBuildConfig = {
       pluginId: "fusion-plugin-compound-engineering",
       srcDir: compoundEngineeringPluginSrc,
       destDir: compoundEngineeringPluginDest,
+      copyAssetDirs: ["src/skills"],
     });
 
     if (existsSync(reportsPluginDest)) {

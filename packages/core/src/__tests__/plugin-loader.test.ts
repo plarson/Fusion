@@ -1135,6 +1135,37 @@ export default plugin;
       expect(hookB).toHaveBeenCalledTimes(1);
     });
 
+    it("passes plugin context to task lifecycle hooks", async () => {
+      await pluginStore.init();
+
+      const hook = vi.fn();
+      const loader = new PluginLoader({
+        pluginStore,
+        taskStore: mockTaskStore,
+      });
+
+      (loader as any).plugins.set("ctx-hook", {
+        manifest: makeManifest({ id: "ctx-hook" }),
+        state: "started",
+        hooks: { onTaskMoved: hook },
+        tools: [],
+        routes: [],
+      } as FusionPlugin);
+
+      await loader.invokeHook("onTaskMoved", { id: "FN-001" } as any, "todo", "in-review");
+
+      expect(hook).toHaveBeenCalledTimes(1);
+      expect(hook).toHaveBeenCalledWith(
+        { id: "FN-001" },
+        "todo",
+        "in-review",
+        expect.objectContaining({
+          pluginId: "ctx-hook",
+          taskStore: mockTaskStore,
+        }),
+      );
+    });
+
     it("continues when one plugin's hook fails", async () => {
       await pluginStore.init();
 

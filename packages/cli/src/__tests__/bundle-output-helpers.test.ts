@@ -15,6 +15,7 @@ vi.mock("node:fs", () => ({
 import {
   bundlePath,
   clientIndexPath,
+  compoundEngineeringStrategySkillPath,
   dashboardClientStubMarker,
   droidPluginMcpServerPath,
   hasBuiltDashboardAssets,
@@ -62,6 +63,29 @@ describe("hasBuiltDashboardAssets", () => {
     state.existingPaths.add(roadmapPluginBundledPath);
     state.existingPaths.add(openclawMcpSchemaServerPath);
     state.existingPaths.add(droidPluginMcpServerPath);
+
+    expect(hasBuiltDashboardAssets()).toBe(false);
+  });
+
+  it("returns false when Compound Engineering bundled skills are missing", () => {
+    state.existingPaths.add(bundlePath);
+    state.existingPaths.add(clientIndexPath);
+    state.existingPaths.add(cursorPluginManifestPath);
+    state.existingPaths.add(roadmapPluginBundledPath);
+    state.existingPaths.add(openclawMcpSchemaServerPath);
+    state.existingPaths.add(droidPluginMcpServerPath);
+
+    expect(hasBuiltDashboardAssets()).toBe(false);
+  });
+
+  it("returns true when all required assets exist and dashboard stub marker is absent", () => {
+    state.existingPaths.add(bundlePath);
+    state.existingPaths.add(clientIndexPath);
+    state.existingPaths.add(cursorPluginManifestPath);
+    state.existingPaths.add(roadmapPluginBundledPath);
+    state.existingPaths.add(openclawMcpSchemaServerPath);
+    state.existingPaths.add(droidPluginMcpServerPath);
+    state.existingPaths.add(compoundEngineeringStrategySkillPath);
 
     expect(hasBuiltDashboardAssets()).toBe(true);
   });

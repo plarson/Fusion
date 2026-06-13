@@ -856,7 +856,8 @@ export class PluginLoader extends EventEmitter<{
       if (!hook) continue;
 
       try {
-        await this.safeCallHook(plugin, hookName, args);
+        const hookArgs = await this.argsWithContextForHook(plugin, hookName, args);
+        await this.safeCallHook(plugin, hookName, hookArgs);
       } catch (err) {
         this.log.error(
           `Error in ${hookName} hook for ${pluginId}:`,
@@ -888,6 +889,23 @@ export class PluginLoader extends EventEmitter<{
           }
         }
       }
+    }
+  }
+
+  private async argsWithContextForHook(
+    plugin: FusionPlugin,
+    hookName: keyof FusionPlugin["hooks"],
+    args: unknown[],
+  ): Promise<unknown[]> {
+    switch (hookName) {
+      case "onTaskCreated":
+      case "onTaskMoved":
+      case "onTaskCompleted":
+      case "onAgentRunStart":
+      case "onAgentRunEnd":
+        return [...args, await this.createContext(plugin)];
+      default:
+        return args;
     }
   }
 

@@ -51,6 +51,8 @@ export function resolveBundledSkillsRoot(): string {
   const dir = dirname(here);
   const local = resolve(dir, "skills");
   if (existsSync(local)) return local;
+  const bundledLocal = resolve(dir, "src", "skills");
+  if (existsSync(bundledLocal)) return bundledLocal;
   return resolve(dir, "..", "src", "skills");
 }
 

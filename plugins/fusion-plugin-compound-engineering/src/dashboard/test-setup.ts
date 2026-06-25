@@ -1,6 +1,9 @@
-import "@testing-library/jest-dom/vitest";
+import * as matchers from "@testing-library/jest-dom/matchers";
 import { cleanup } from "@testing-library/react";
-import { afterEach, vi } from "vitest";
+import { afterEach, expect, vi } from "vitest";
+
+const jestDomMatchers = ("default" in matchers ? matchers.default : matchers) as unknown as Parameters<typeof expect.extend>[0];
+expect.extend(jestDomMatchers);
 
 // @testing-library/react only auto-registers cleanup when vitest globals are
 // enabled. We don't enable globals here, so we wire it manually — otherwise

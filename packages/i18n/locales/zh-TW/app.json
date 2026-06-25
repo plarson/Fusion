@@ -1933,7 +1933,7 @@
     "loadingProgress": "儀表板加載進度",
     "updatingMessage": "更新 Fusion 儀表板",
     "updatingVersion": "更新到新的前端版本...",
-    "title": ""
+    "title": "專案儀表板"
   },
   "dbBanner": {
     "body": "Fusion 的背景 SQLite 完整性檢查報告有損毀。繼續重要操作之前，請查看下面的失敗物件。",
@@ -8538,16 +8538,16 @@
     "widgetDefault": ""
   },
   "workflowSwitcher": {
-    "countsAria": "{{todoLabel}}: {{todo}}, {{inProgressLabel}}: {{inProgress}}, {{doneLabel}}: {{done}}",
+    "countsAria": "{{todoLabel}}: {{todo}}, {{inProgressLabel}}: {{inProgress}}, {{doneLabel}}: {{done}}{{mergingSuffix}}",
     "done": "Done",
     "inProgress": "In Progress",
     "label": "Workflow",
+    "merging": "合併中",
+    "mergingTitle": "{{count}} 個合併中任務{{plural}}",
     "todo": "Todo",
     "triggerAria": "Select workflow. Current workflow: {{name}}",
     "editWorkflow": "Edit workflow",
-    "newWorkflow": "New workflow",
-    "merging": "",
-    "mergingTitle": ""
+    "newWorkflow": "New workflow"
   },
   "workspace": {
     "projectRoot": "項目根目錄",

@@ -1933,7 +1933,7 @@
     "loadingProgress": "Progression du chargement du tableau de bord",
     "updatingMessage": "Mise à jour du tableau de bord Fusion",
     "updatingVersion": "Mise à jour vers une nouvelle version de l'interface...",
-    "title": ""
+    "title": "Tableau de bord du projet"
   },
   "dbBanner": {
     "body": "La vérification d'intégrité SQLite en arrière-plan de Fusion a signalé une corruption. Veuillez examiner les objets défaillants ci-dessous avant de continuer les opérations critiques.",
@@ -8538,16 +8538,16 @@
     "widgetDefault": ""
   },
   "workflowSwitcher": {
-    "countsAria": "{{todoLabel}}: {{todo}}, {{inProgressLabel}}: {{inProgress}}, {{doneLabel}}: {{done}}",
+    "countsAria": "{{todoLabel}}: {{todo}}, {{inProgressLabel}}: {{inProgress}}, {{doneLabel}}: {{done}}{{mergingSuffix}}",
     "done": "Done",
     "inProgress": "In Progress",
     "label": "Workflow",
+    "merging": "Fusion",
+    "mergingTitle": "{{count}} tâche{{plural}} en fusion",
     "todo": "Todo",
     "triggerAria": "Select workflow. Current workflow: {{name}}",
     "editWorkflow": "Edit workflow",
-    "newWorkflow": "New workflow",
-    "merging": "",
-    "mergingTitle": ""
+    "newWorkflow": "New workflow"
   },
   "workspace": {
     "projectRoot": "Racine du projet",

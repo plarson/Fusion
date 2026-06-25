@@ -1933,7 +1933,7 @@
     "loadingProgress": "Progreso de carga del panel",
     "updatingMessage": "Actualizando panel de Fusion",
     "updatingVersion": "Actualizando a una nueva versión de frontend...",
-    "title": ""
+    "title": "Panel del proyecto"
   },
   "dbBanner": {
     "body": "La verificación de integridad de SQLite de Fusion en segundo plano informó de corrupción. Revise los objetos con error a continuación antes de continuar con operaciones críticas.",
@@ -8538,16 +8538,16 @@
     "widgetDefault": ""
   },
   "workflowSwitcher": {
-    "countsAria": "{{todoLabel}}: {{todo}}, {{inProgressLabel}}: {{inProgress}}, {{doneLabel}}: {{done}}",
+    "countsAria": "{{todoLabel}}: {{todo}}, {{inProgressLabel}}: {{inProgress}}, {{doneLabel}}: {{done}}{{mergingSuffix}}",
     "done": "Done",
     "inProgress": "In Progress",
     "label": "Workflow",
+    "merging": "Fusionando",
+    "mergingTitle": "{{count}} tarea{{plural}} fusionándose",
     "todo": "Todo",
     "triggerAria": "Select workflow. Current workflow: {{name}}",
     "editWorkflow": "Edit workflow",
-    "newWorkflow": "New workflow",
-    "merging": "",
-    "mergingTitle": ""
+    "newWorkflow": "New workflow"
   },
   "workspace": {
     "projectRoot": "Raíz del proyecto",

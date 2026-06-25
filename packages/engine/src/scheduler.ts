@@ -86,6 +86,7 @@ function normalizeOverlapPath(path: string): string {
 function hasHiddenOverlapPathSegment(path: string): boolean {
   const normalizedPath = normalizeOverlapPath(path);
   if (!normalizedPath) return false;
+  if (normalizedPath === ".github/workflows" || normalizedPath.startsWith(".github/workflows/")) return false;
   return normalizedPath.split("/").some((segment) => segment.startsWith("."));
 }
 
@@ -128,7 +129,7 @@ export interface FilterOverlapPathsOptions {
  * Remove scope entries that should not participate in file-overlap serialization.
  *
  * FNXC:OverlapScheduling 2026-06-23-13:09:
- * Hidden dot paths are ignored by default for overlap blockers because task artifacts and hidden/generated metadata such as `.fusion/`, `.changeset/`, `.github/`, `.env`, and nested `.cache/` directories caused false serialization. Operators can set `ignoreHiddenOverlapPaths=false` to restore legacy counting, while explicit `overlapIgnorePaths` keep their exact/directory/glob-prefix semantics in either mode.
+ * Hidden dot paths are ignored by default for overlap blockers because task artifacts and hidden/generated metadata such as `.fusion/`, `.changeset/`, `.env`, and nested `.cache/` directories caused false serialization. `.github/workflows/**` remains lease-significant because CI workflow tasks truly conflict on those files. Operators can set `ignoreHiddenOverlapPaths=false` to restore legacy counting, while explicit `overlapIgnorePaths` keep their exact/directory/glob-prefix semantics in either mode.
  */
 export function filterPathsByIgnoreList(
   paths: string[],

@@ -481,6 +481,91 @@ Forbidden paths / non-goals:
       ]);
     });
 
+    it("excludes FN-756 forbidden CI paths from effective write scope while keeping mobile writes", async () => {
+      const task = await store.createTask({ description: "FN-756 mobile prompt" });
+      const dir = join(rootDir, ".fusion", "tasks", task.id);
+      await writeFile(
+        join(dir, "PROMPT.md"),
+        `# ${task.id}: FN-756 mobile prompt
+
+## File Scope
+
+Expected/allowed paths:
+
+- \`project.yml\`
+- \`AtlasNotes.xcodeproj/**\` (regenerated from \`project.yml\` using xcodegen; do not hand-edit)
+- \`Tests/AtlasNotesMobileUITests/AtlasNotesMobileUITestFixtures.swift\`
+- \`Tests/AtlasNotesMobileUITests/AtlasNotesMobileKeyboardJourneyUITests.swift\`
+- \`Packages/MobileApp/Sources/AtlasNotesMobileApp/*\` (optional only for minimal stable identifier/focus additions)
+- \`.changeset/*.md\` (required if shipped/published behavior changes; otherwise document no-changeset rationale)
+
+Forbidden paths / non-goals unless needed to fix a direct compile/test failure caused by this task:
+
+- \`Packages/Storage/**\`, \`Packages/Search/**\`, \`Packages/Indexing/**\`, \`Packages/Editor/**\`, \`Packages/Sync/**\` implementation internals.
+- \`Packages/MobileApp/Sources/AtlasNotesMobileApp/MobileSelectedLibraryEnvironment.swift\` UI logic changes; keep it the composition seam only.
+- \`Docs/CI.md\`, \`.github/workflows/**\`, and CI scheduling. The new iOS UI-test suite must remain a local/manual validation posture in this task; do not wire CI.
+- Generated \`Packages/*/Package.resolved\`, DerivedData, xcresult bundles, simulator caches, screenshots, or logs.
+`,
+      );
+
+      const paths = await store.parseFileScopeFromPrompt(task.id);
+      expect(paths).toEqual([
+        "project.yml",
+        "AtlasNotes.xcodeproj/**",
+        "Tests/AtlasNotesMobileUITests/AtlasNotesMobileUITestFixtures.swift",
+        "Tests/AtlasNotesMobileUITests/AtlasNotesMobileKeyboardJourneyUITests.swift",
+        "Packages/MobileApp/Sources/AtlasNotesMobileApp/*",
+      ]);
+      expect(paths).not.toContain("Docs/CI.md");
+      expect(paths).not.toContain(".github/workflows/**");
+      expect(paths).not.toContain("Packages/Storage/**");
+      expect(paths).not.toContain(".changeset/*.md");
+    });
+
+    it("keeps FN-784 CI workflow documentation and executable-test writes only", async () => {
+      const task = await store.createTask({ description: "FN-784 CI prompt" });
+      const dir = join(rootDir, ".fusion", "tasks", task.id);
+      await writeFile(
+        join(dir, "PROMPT.md"),
+        `# ${task.id}: FN-784 CI prompt
+
+## File Scope
+
+Expected touched paths:
+
+- \`.github/workflows/ci.yml\`
+- \`.github/workflows/release-hardening.yml\`
+- \`Docs/CI.md\`
+- \`Tests/AtlasNotesExecutableTests/CIWorkflowTests.swift\`
+- \`Tests/AtlasNotesExecutableTests/ReleaseHardeningWorkflowTests.swift\`
+- \`.changeset/*.md\` (only if published-package behavior changes)
+
+Allowed supporting paths if tests need a small shared helper:
+
+- \`Tests/AtlasNotesExecutableTests/*Workflow*Tests.swift\`
+
+Forbidden paths / non-goals:
+
+- Do not edit Swift product source under \`Sources/**\` or \`Packages/**\`.
+- Do not commit generated \`Packages/*/Package.resolved\`, \`.build\`, DerivedData, artifacts, logs, or local evidence directories.
+`,
+      );
+
+      const paths = await store.parseFileScopeFromPrompt(task.id);
+      expect(paths).toEqual([
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-hardening.yml",
+        "Docs/CI.md",
+        "Tests/AtlasNotesExecutableTests/CIWorkflowTests.swift",
+        "Tests/AtlasNotesExecutableTests/ReleaseHardeningWorkflowTests.swift",
+        "Tests/AtlasNotesExecutableTests/*Workflow*Tests.swift",
+      ]);
+      expect(paths).not.toContain("Sources/**");
+      expect(paths).not.toContain("Packages/**");
+      expect(paths).not.toContain("Packages/*/Package.resolved");
+      expect(paths).not.toContain(".changeset/*.md");
+    });
+
     it("keeps true Atlas mobile hot-file family writes when declared as implementation scope", async () => {
       const task = await store.createTask({ description: "Atlas mobile scope" });
       const dir = join(rootDir, ".fusion", "tasks", task.id);

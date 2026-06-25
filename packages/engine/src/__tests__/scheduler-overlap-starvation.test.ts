@@ -71,7 +71,7 @@ describe("filterPathsByIgnoreList", () => {
       ".changeset/fn-6962.md",
       ".github/workflows/ci.yml",
       "src/foo.ts",
-    ])).toEqual(["src/foo.ts"]);
+    ])).toEqual([".github/workflows/ci.yml", "src/foo.ts"]);
   });
 
   it("ignores nested hidden directories and Windows separators by default", () => {
@@ -452,6 +452,63 @@ describe("scheduler overlap starvation regression (FN-057)", () => {
       "FN-100",
       "queued — deferred for higher-priority runnable queued task FN-070 (overlap)",
     );
+  });
+
+  it("does not preserve FN-784/FN-756 blocker when FN-756 forbidden CI paths are sanitized", async () => {
+    const tasks = [
+      makeTask({ id: "FN-756", column: "in-progress", priority: "normal", title: "iPad mobile XCUITest work" }),
+      makeTask({
+        id: "FN-784",
+        column: "todo",
+        status: "queued",
+        priority: "high",
+        overlapBlockedBy: "FN-756",
+        title: "Pin GitHub Actions SHAs and document refresh process",
+      }),
+    ];
+    const store = createStore(tasks, {
+      "FN-756": ["project.yml", "AtlasNotes.xcodeproj/**", "Tests/AtlasNotesMobileUITests/**", "Packages/MobileApp/**"],
+      "FN-784": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-hardening.yml",
+        "Docs/CI.md",
+        "Tests/AtlasNotesExecutableTests/CIWorkflowTests.swift",
+        "Tests/AtlasNotesExecutableTests/ReleaseHardeningWorkflowTests.swift",
+      ],
+    });
+
+    const scheduler = new Scheduler(store);
+    (scheduler as any).running = true;
+    await scheduler.schedule();
+
+    expect(store.updateTask).toHaveBeenCalledWith("FN-784", { overlapBlockedBy: null });
+    expect(store.moveTask).toHaveBeenCalledWith("FN-784", "in-progress", expect.anything());
+    expect(store.updateTask).not.toHaveBeenCalledWith(
+      "FN-784",
+      expect.objectContaining({ status: "queued", overlapBlockedBy: "FN-756" }),
+    );
+  });
+
+  it("keeps true CI workflow overlaps blocked for .github workflow leases", async () => {
+    const tasks = [
+      makeTask({ id: "FN-CI-A", column: "in-progress", priority: "normal" }),
+      makeTask({ id: "FN-784", column: "todo", priority: "high" }),
+    ];
+    const store = createStore(tasks, {
+      "FN-CI-A": [".github/workflows/ci.yml"],
+      "FN-784": [".github/workflows/ci.yml"],
+    });
+
+    const scheduler = new Scheduler(store);
+    (scheduler as any).running = true;
+    await scheduler.schedule();
+
+    expect(store.updateTask).toHaveBeenCalledWith("FN-784", {
+      status: "queued",
+      blockedBy: null,
+      overlapBlockedBy: "FN-CI-A",
+    });
+    expect(store.moveTask).not.toHaveBeenCalledWith("FN-784", "in-progress", expect.anything());
   });
 
   it("does not preserve FN-779/FN-756 poisoned cross-repository blocker after write-scope sanitization", async () => {

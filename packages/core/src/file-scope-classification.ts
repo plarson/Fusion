@@ -39,8 +39,8 @@ const KNOWN_FILE_SCOPE_ROOT_FILES = new Set([
   "pnpm-lock.yaml",
 ]);
 
-const INCLUDE_CONTEXT_RE = /\b(expected|touched|touch|modify|modified|write|writes|implementation|must update|artifacts?|files? changed|source paths?)\b/i;
-const EXCLUDE_CONTEXT_RE = /\b(forbidden|non-goals?|out of scope|do not edit|do not modify|must not edit|must not modify|do not hand-edit|hand-edit|read-only|context to read|evidence only|metadata|wrong[- ]worktree|safeguards?)\b/i;
+const INCLUDE_CONTEXT_RE = /\b(expected|allowed|supporting|touched|touch|modify|modified|write|writes|implementation|must update|artifacts?|files? changed|source paths?)\b/i;
+const EXCLUDE_CONTEXT_RE = /\b(forbidden|non-goals?|out of scope|do not edit|do not modify|do not wire|must not edit|must not modify|must not wire|do not hand-edit|hand-edit|read-only|context to read|evidence only|metadata|wrong[- ]worktree|safeguards?)\b/i;
 const GENERATED_CONTEXT_RE = /\b(generated|lockfiles?|locks?)\b/i;
 const CONDITIONAL_CONTEXT_RE = /\b(conditional|only if|if .*changes|if .*changed|expected if|required only if|unless)\b/i;
 const ROUTE_OR_ACTION_RE = /^(?:\/[A-Za-z0-9:_*?./-]+|fn_task_[A-Za-z0-9_]+|review|merge|retry|archive)$/i;
@@ -111,20 +111,29 @@ export function classifyFileScopeFromPrompt(content: string): FileScopeClassific
   for (const rawLine of section.split("\n")) {
     const line = rawLine.trim();
     if (!line) continue;
-    if (INCLUDE_CONTEXT_RE.test(line) && !EXCLUDE_CONTEXT_RE.test(line) && !CONDITIONAL_CONTEXT_RE.test(line)) {
-      context = "include";
-    }
-    if (EXCLUDE_CONTEXT_RE.test(line)) {
-      context = "exclude";
-    }
-    if (CONDITIONAL_CONTEXT_RE.test(line)) {
-      context = "conditional";
+    const isListItem = /^[-*]\s/.test(line);
+    const lineHasExcludeSignal = EXCLUDE_CONTEXT_RE.test(line);
+    const lineHasConditionalSignal = CONDITIONAL_CONTEXT_RE.test(line);
+    const lineHasIncludeSignal = INCLUDE_CONTEXT_RE.test(line);
+
+    if (!isListItem) {
+      if (lineHasExcludeSignal) {
+        context = "exclude";
+      } else if (lineHasConditionalSignal) {
+        context = "conditional";
+      } else if (lineHasIncludeSignal) {
+        context = "include";
+      }
     }
 
     const tokens = extractBacktickedTokens(line);
+    const lineContext = context === "include"
+      && /^[-*]\s*(?:do not|must not|forbidden|read-only|context|evidence)/i.test(line)
+      ? "exclude"
+      : context;
     for (const rawToken of tokens) {
       const token = rawToken.trim();
-      const reason = classifyToken(token, line, context);
+      const reason = classifyToken(token, line, lineContext);
       if (reason !== "included-write-scope") {
         entries.push({ token, included: false, reason, line });
         continue;

@@ -19,7 +19,11 @@ export default defineConfig({
       resolve(__dirname, "../core/src/__test-utils__/vitest-setup.ts"),
     ],
     globalSetup: [resolve(__dirname, "../core/src/__test-utils__/vitest-teardown.ts")],
-    pool: "threads",
+    // Node 24.15.0 on macOS aborts in libuv kqueue when Vitest's
+    // worker-thread pool closes unmanaged file descriptors during this gate.
+    // Fork workers preserve real failure semantics while avoiding the raw
+    // SIGABRT/warning flood; keep worker counts bounded below.
+    pool: "forks",
     maxWorkers,
     minWorkers: 1,
     fileParallelism: true,

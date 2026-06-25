@@ -380,6 +380,58 @@ describe("FN-803 — validated external Fusion checkout review routing", () => {
     }
   });
 
+
+  it("fails closed for explicit invalid external checkout metadata without spawning a reviewer", async () => {
+    const task = externalCheckoutTask({
+      sourceMetadata: { externalReviewCheckout: { kind: "canonical-fusion-runtime", path: "/definitely/missing/Fusion-local-runtime" } },
+    });
+    const store = makeStore(task);
+    const executor = new TaskExecutor(store, "/Users/plarson/Source/phillarson-xyz/atlas-notes");
+    const tool = (executor as any).createReviewStepTool(
+      task.id,
+      ATLAS_TASK_WORKTREE,
+      "# Task: FN-779\n\nExpected implementation checkout: /Users/plarson/src/Fusion-local-runtime",
+      new Map(),
+      { current: null },
+      new Map(),
+      task,
+      undefined,
+    );
+
+    const res = await tool.execute("call-invalid", { step: 1, type: "code", step_name: "Implementation", baseline: "base" });
+
+    expect(mockedReviewStep).not.toHaveBeenCalled();
+    expect(res.content[0].text).toContain("UNAVAILABLE");
+    expect(store.logEntry).toHaveBeenCalledWith(
+      task.id,
+      "code review Step 1: UNAVAILABLE",
+      expect.stringContaining("Review checkout unavailable"),
+    );
+  });
+
+  it("workflow step-review fails closed for invalid external checkout metadata without spawning a reviewer", async () => {
+    const task = externalCheckoutTask({
+      sourceMetadata: { externalReviewCheckout: { kind: "canonical-fusion-runtime", path: "/definitely/missing/Fusion-local-runtime" } },
+    });
+    const store = makeStore(task);
+    const executor = new TaskExecutor(store, "/Users/plarson/Source/phillarson-xyz/atlas-notes");
+    const seams = executor.createAuthoritativeWorkflowSeams({ autoMerge: false } as any);
+    const context = {
+      [FOREACH_ACTIVE_CONTEXT_KEY]: { stepIndex: 1, worktreePath: ATLAS_TASK_WORKTREE, baselineSha: "base" },
+    } as any;
+
+    const result = await seams.stepReview!(task as any, context, { type: "code", advisory: true } as any);
+
+    expect(mockedReviewStep).not.toHaveBeenCalled();
+    expect(result.verdict).toBe("UNAVAILABLE");
+    expect(result.review).toContain("Review checkout routing failed");
+    expect(store.logEntry).toHaveBeenCalledWith(
+      task.id,
+      "code step-review Step 1: UNAVAILABLE (advisory)",
+      expect.stringContaining("Review checkout unavailable"),
+    );
+  });
+
   it("accepts duplicate/symlink metadata only after all entries collapse to the canonical realpath", async () => {
     const link = join(tmpdir(), `fn-803-fusion-link-${process.pid}`);
     await rm(link, { recursive: true, force: true });

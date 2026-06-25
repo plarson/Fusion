@@ -260,8 +260,18 @@ const MAX_SESSIONS_PER_IP_PER_HOUR = 1000;
 /** Rate limiting window in milliseconds (1 hour) */
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 
-/** Generation timeout in milliseconds (120 seconds). */
+/*
+FNXC:PlanningLiveness 2026-06-24-00:00:
+Planning Mode must allow long-running reasoning when the agent is producing new thinking/text, because a fixed wall-clock cap incorrectly fails legitimate sessions. The watchdog is scoped to Planning Mode and treats this value as an inactivity window: non-empty, materially new output refreshes liveness; repeated identical output is counted separately and stopped as a loop so stuck sessions still fail deterministically without changing subtask, mission, milestone, or onboarding timeout semantics.
+*/
 export const GENERATION_TIMEOUT_MS = 120_000;
+
+/** Repeated identical planning stream chunks before the generation is classified as looping. */
+export const GENERATION_LOOP_REPEAT_LIMIT = 8;
+
+const PLANNING_STUCK_ERROR_MESSAGE = "AI generation appears stuck with no new output. You can retry or start a new session.";
+const PLANNING_LOOP_ERROR_MESSAGE = "AI generation appears stuck repeating the same output. You can retry or start a new session.";
+const PLANNING_USER_STOP_ERROR_MESSAGE = "Generation stopped by user. You can retry or start a new session.";
 
 export type PlanningDepth = "small" | "medium" | "large";
 
@@ -364,8 +374,17 @@ const sessions = new Map<string, Session>();
 /** Rate limiting state indexed by IP */
 const rateLimits = new Map<string, RateLimitEntry>();
 
+type PlanningGenerationAbortReason = "stuck" | "loop" | "user-stop" | "displaced";
+
+interface ActivePlanningGeneration {
+  abortController: AbortController;
+  timer: NodeJS.Timeout;
+  abortReason?: PlanningGenerationAbortReason;
+  markProgress: (output: string) => void;
+}
+
 /** Active planning generations keyed by session ID. */
-const activeGenerations = new Map<string, { abortController: AbortController; timer: NodeJS.Timeout }>();
+const activeGenerations = new Map<string, ActivePlanningGeneration>();
 
 // ── AI Session Persistence ────────────────────────────────────────────────
 
@@ -1471,6 +1490,7 @@ async function createPlanningAgent(
         }
       : {}),
     onThinking: (delta: string) => {
+      markPlanningGenerationProgress(session.id, delta);
       session.thinkingOutput += delta;
       persistThinking(session.id, session.thinkingOutput);
       planningStreamManager.broadcast(session.id, {
@@ -1482,6 +1502,7 @@ async function createPlanningAgent(
       // Capture AI response text — will be parsed at end of turn. Also
       // surface it through the same stream so non-thinking models (which
       // never emit thinking_delta) still show streaming output in the UI.
+      markPlanningGenerationProgress(session.id, delta);
       session.thinkingOutput += delta;
       persistThinking(session.id, session.thinkingOutput);
       planningStreamManager.broadcast(session.id, {
@@ -1630,22 +1651,71 @@ function createAbortError(): Error {
   return error;
 }
 
+function normalizeGenerationProgress(output: string): string {
+  return output.replace(/\s+/g, " ").trim();
+}
+
+function markPlanningGenerationProgress(sessionId: string, output: string): void {
+  activeGenerations.get(sessionId)?.markProgress(output);
+}
+
 async function runGenerationWithTimeout<T>(session: Session, operation: (abortSignal: AbortSignal) => Promise<T>): Promise<T> {
   const existing = activeGenerations.get(session.id);
   if (existing) {
     clearTimeout(existing.timer);
+    existing.abortReason = "displaced";
     existing.abortController.abort();
   }
 
   const abortController = new AbortController();
-  let timeoutTriggered = false;
-  const timer = setTimeout(() => {
-    timeoutTriggered = true;
-    setSessionError(session, "AI generation timed out. You can retry or start a new session.");
-    disposeSessionAgentForRetry(session);
+  let lastProgressSignature = "";
+  let repeatedProgressCount = 0;
+
+  const abortGeneration = (reason: PlanningGenerationAbortReason, message?: string): void => {
+    if (abortController.signal.aborted) {
+      return;
+    }
+    generationRecord.abortReason = reason;
+    clearTimeout(generationRecord.timer);
+    if (message) {
+      diagnostics.warn("Planning generation watchdog aborting session", {
+        sessionId: session.id,
+        reason,
+        operation: "planning-generation-watchdog",
+      });
+      setSessionError(session, message);
+      disposeSessionAgentForRetry(session);
+    }
     abortController.abort();
+  };
+
+  const scheduleInactivityTimer = (): NodeJS.Timeout => setTimeout(() => {
+    abortGeneration("stuck", PLANNING_STUCK_ERROR_MESSAGE);
   }, GENERATION_TIMEOUT_MS);
-  const generationRecord = { abortController, timer };
+
+  const generationRecord: ActivePlanningGeneration = {
+    abortController,
+    timer: scheduleInactivityTimer(),
+    markProgress: (output: string) => {
+      const signature = normalizeGenerationProgress(output);
+      if (!signature) {
+        return;
+      }
+
+      if (signature === lastProgressSignature) {
+        repeatedProgressCount += 1;
+        if (repeatedProgressCount >= GENERATION_LOOP_REPEAT_LIMIT) {
+          abortGeneration("loop", PLANNING_LOOP_ERROR_MESSAGE);
+        }
+        return;
+      }
+
+      lastProgressSignature = signature;
+      repeatedProgressCount = 0;
+      clearTimeout(generationRecord.timer);
+      generationRecord.timer = scheduleInactivityTimer();
+    },
+  };
 
   activeGenerations.set(session.id, generationRecord);
 
@@ -1661,13 +1731,14 @@ async function runGenerationWithTimeout<T>(session: Session, operation: (abortSi
     return await Promise.race([operation(abortController.signal), abortPromise]);
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      if (!timeoutTriggered && !session.error) {
-        setSessionError(session, "Generation stopped by user. You can retry or start a new session.");
+      const reason = generationRecord.abortReason;
+      if (reason === "user-stop" && !session.error) {
+        setSessionError(session, PLANNING_USER_STOP_ERROR_MESSAGE);
       }
     }
     throw error;
   } finally {
-    clearTimeout(timer);
+    clearTimeout(generationRecord.timer);
     if (activeGenerations.get(session.id) === generationRecord) {
       activeGenerations.delete(session.id);
     }
@@ -1715,6 +1786,8 @@ async function continueAgentConversation(session: Session, message: string): Pro
         }
       }
     }
+
+    markPlanningGenerationProgress(session.id, responseText);
 
     // Diagnostic: warn when response text is empty or very short
     if (!responseText || responseText.length < 10) {
@@ -1779,6 +1852,7 @@ async function continueAgentConversation(session: Session, message: string): Pro
               }
             }
             responseText = retryText;
+            markPlanningGenerationProgress(session.id, responseText);
           } catch (retryErr) {
             // Retry prompt itself failed — give up
             diagnostics.errorFromException(
@@ -2256,6 +2330,7 @@ export function stopGeneration(sessionId: string): boolean {
     return false;
   }
 
+  activeGeneration.abortReason = "user-stop";
   activeGeneration.abortController.abort();
   clearTimeout(activeGeneration.timer);
   activeGenerations.delete(sessionId);
@@ -2270,7 +2345,7 @@ export function stopGeneration(sessionId: string): boolean {
     session.agent = undefined;
   }
 
-  setSessionError(session, "Generation stopped by user. You can retry or start a new session.");
+  setSessionError(session, PLANNING_USER_STOP_ERROR_MESSAGE);
   return true;
 }
 

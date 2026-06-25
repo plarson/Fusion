@@ -18,12 +18,14 @@ import {
   __setCreateFnAgent,
   createSession,
   createSessionWithAgent,
+  GENERATION_LOOP_REPEAT_LIMIT,
   GENERATION_TIMEOUT_MS as PLANNING_GENERATION_TIMEOUT_MS,
   getSession,
   parseAgentResponse,
   planningStreamManager,
   retrySession,
   setAiSessionStore as setPlanningAiSessionStore,
+  stopGeneration,
   submitResponse,
 } from "../planning.js";
 import {
@@ -66,6 +68,16 @@ vi.mock("@fusion/engine", () => ({
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "kb-session-error-recovery-"));
+}
+
+function createDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
 }
 
 function createMockAgent(responses: string[]) {
@@ -346,7 +358,74 @@ The actual planning response is:
     unsubscribeError();
   });
 
-  it("times out planning sessions when createFnAgent construction stalls", async () => {
+  it("allows meaningful planning progress beyond the old fixed generation deadline", async () => {
+    vi.useFakeTimers();
+
+    const promptDeferred = createDeferred();
+    const messages: Array<{ role: string; content: string }> = [];
+    let streamOptions: { onThinking?: (delta: string) => void; onText?: (delta: string) => void } | undefined;
+
+    __setCreateFnAgent(async (options: { onThinking?: (delta: string) => void; onText?: (delta: string) => void }) => {
+      streamOptions = options;
+      return {
+        session: {
+          state: { messages },
+          prompt: vi.fn(async () => {
+            await promptDeferred.promise;
+            messages.push({
+              role: "assistant",
+              content: JSON.stringify({
+                type: "question",
+                data: { id: "q-long-progress", type: "text", question: "What should we build next?" },
+              }),
+            });
+          }),
+          dispose: vi.fn(),
+        },
+      };
+    });
+
+    const sessionId = await createSessionWithAgent(
+      "127.0.0.149",
+      "Planning long reasoning",
+      "/tmp/project",
+      taskStore,
+    );
+    const errorEvents: string[] = [];
+    const questionEvents: string[] = [];
+    const unsubscribe = planningStreamManager.subscribe(sessionId, (event) => {
+      if (event.type === "error") errorEvents.push(String(event.data));
+      if (event.type === "question") questionEvents.push(String((event.data as { id?: string }).id));
+    });
+
+    planningStreamManager.consumeInitialTurn(sessionId)?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(__getActiveGenerationForTests(sessionId)).toBeDefined();
+
+    streamOptions?.onThinking?.("Considering the project context");
+    await vi.advanceTimersByTimeAsync(PLANNING_GENERATION_TIMEOUT_MS / 2);
+    streamOptions?.onText?.("Drafting a focused planning question");
+    await vi.advanceTimersByTimeAsync(PLANNING_GENERATION_TIMEOUT_MS / 2 + 10_000);
+
+    expect(aiSessionStore.get(sessionId)?.status).toBe("generating");
+    expect(aiSessionStore.get(sessionId)?.error).toBeNull();
+    expect(errorEvents).toEqual([]);
+    expect(__getActiveGenerationForTests(sessionId)).toBeDefined();
+
+    promptDeferred.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(aiSessionStore.get(sessionId)?.status).toBe("awaiting_input");
+    expect(aiSessionStore.get(sessionId)?.error).toBeNull();
+    expect(getSession(sessionId)?.currentQuestion?.id).toBe("q-long-progress");
+    expect(questionEvents).toContain("q-long-progress");
+    expect(errorEvents).toEqual([]);
+    expect(__getActiveGenerationForTests(sessionId)).toBeUndefined();
+
+    unsubscribe();
+  });
+
+  it("marks planning sessions as stuck when createFnAgent construction stalls", async () => {
     vi.useFakeTimers();
 
     __setCreateFnAgent(async () => {
@@ -375,14 +454,14 @@ The actual planning response is:
     await vi.advanceTimersByTimeAsync(0);
 
     expect(aiSessionStore.get(sessionId)?.status).toBe("error");
-    expect(aiSessionStore.get(sessionId)?.error).toMatch(/timed out/i);
-    expect(errorEvents).toContainEqual(expect.stringMatching(/timed out/i));
+    expect(aiSessionStore.get(sessionId)?.error).toMatch(/stuck with no new output/i);
+    expect(errorEvents).toContainEqual(expect.stringMatching(/stuck with no new output/i));
     expect(__getActiveGenerationForTests(sessionId)).toBeUndefined();
 
     unsubscribe();
   });
 
-  it("times out planning sessions when prompt stalls and disposes the agent", async () => {
+  it("marks planning sessions as stuck when prompt stalls and disposes the agent", async () => {
     vi.useFakeTimers();
 
     const dispose = vi.fn();
@@ -417,8 +496,110 @@ The actual planning response is:
     await vi.advanceTimersByTimeAsync(0);
 
     expect(aiSessionStore.get(sessionId)?.status).toBe("error");
-    expect(aiSessionStore.get(sessionId)?.error).toMatch(/timed out/i);
-    expect(errorEvents).toContainEqual(expect.stringMatching(/timed out/i));
+    expect(aiSessionStore.get(sessionId)?.error).toMatch(/stuck with no new output/i);
+    expect(errorEvents).toContainEqual(expect.stringMatching(/stuck with no new output/i));
+    expect(__getActiveGenerationForTests(sessionId)).toBeUndefined();
+    expect(dispose).toHaveBeenCalled();
+
+    unsubscribe();
+  });
+
+  it("stops repeated planning output as a loop and retries to completion", async () => {
+    vi.useFakeTimers();
+
+    const dispose = vi.fn();
+    let streamOptions: { onText?: (delta: string) => void } | undefined;
+    __setCreateFnAgent(async (options: { onText?: (delta: string) => void }) => {
+      streamOptions = options;
+      return {
+        session: {
+          state: { messages: [] },
+          prompt: vi.fn(async () => {
+            await new Promise<never>(() => undefined);
+          }),
+          dispose,
+        },
+      };
+    });
+
+    const sessionId = await createSessionWithAgent(
+      "127.0.0.152",
+      "Planning repeated output",
+      "/tmp/project",
+      taskStore,
+    );
+    const errorEvents: string[] = [];
+    const unsubscribe = planningStreamManager.subscribe(sessionId, (event) => {
+      if (event.type === "error") errorEvents.push(String(event.data));
+    });
+
+    planningStreamManager.consumeInitialTurn(sessionId)?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(__getActiveGenerationForTests(sessionId)).toBeDefined();
+
+    for (let i = 0; i < GENERATION_LOOP_REPEAT_LIMIT + 1; i += 1) {
+      streamOptions?.onText?.("same repeated chunk");
+    }
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(aiSessionStore.get(sessionId)?.status).toBe("error");
+    expect(aiSessionStore.get(sessionId)?.error).toMatch(/repeating the same output/i);
+    expect(errorEvents).toContainEqual(expect.stringMatching(/repeating the same output/i));
+    expect(__getActiveGenerationForTests(sessionId)).toBeUndefined();
+    expect(dispose).toHaveBeenCalled();
+
+    __setCreateFnAgent(
+      async () =>
+        createMockAgent([
+          JSON.stringify({
+            type: "question",
+            data: { id: "q-loop-retry", type: "text", question: "Recovered after loop" },
+          }),
+        ]),
+    );
+
+    await retrySession(sessionId, "/tmp/project", undefined, taskStore);
+
+    expect(aiSessionStore.get(sessionId)?.status).toBe("awaiting_input");
+    expect(aiSessionStore.get(sessionId)?.error).toBeNull();
+    expect(getSession(sessionId)?.currentQuestion?.id).toBe("q-loop-retry");
+
+    unsubscribe();
+  });
+
+  it("manual stop preserves the user-stopped Planning Mode error", async () => {
+    vi.useFakeTimers();
+
+    const dispose = vi.fn();
+    __setCreateFnAgent(async () => ({
+      session: {
+        state: { messages: [] },
+        prompt: vi.fn(async () => {
+          await new Promise<never>(() => undefined);
+        }),
+        dispose,
+      },
+    }));
+
+    const sessionId = await createSessionWithAgent(
+      "127.0.0.153",
+      "Planning manual stop",
+      "/tmp/project",
+      taskStore,
+    );
+    const errorEvents: string[] = [];
+    const unsubscribe = planningStreamManager.subscribe(sessionId, (event) => {
+      if (event.type === "error") errorEvents.push(String(event.data));
+    });
+
+    planningStreamManager.consumeInitialTurn(sessionId)?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stopGeneration(sessionId)).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(aiSessionStore.get(sessionId)?.status).toBe("error");
+    expect(aiSessionStore.get(sessionId)?.error).toMatch(/stopped by user/i);
+    expect(errorEvents).toContainEqual(expect.stringMatching(/stopped by user/i));
     expect(__getActiveGenerationForTests(sessionId)).toBeUndefined();
     expect(dispose).toHaveBeenCalled();
 

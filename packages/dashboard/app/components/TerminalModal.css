@@ -819,12 +819,6 @@ FN-6659 keeps the loaded symbols @font-face out of xterm's measured font option 
   animation: terminal-spin 1s linear infinite;
 }
 
-@keyframes terminal-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .terminal-shell-name {
   font-size: 12px;
   color: var(--text-muted);

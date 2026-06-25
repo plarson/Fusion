@@ -255,6 +255,26 @@ export function refreshDashboardHealth(): Promise<DashboardHealthResponse> {
   return api<DashboardHealthResponse>("/health/refresh", { method: "POST" });
 }
 
+export interface EngineStatusResponse {
+  connected: boolean;
+  starting: boolean;
+  canStart: boolean;
+  reason?: "dashboard-only" | "no-project" | string;
+  projectId?: string;
+}
+
+/*
+ * FNXC:EngineStatusBanner 2026-06-22-00:00:
+ * Engine status is project-scoped because a multi-project dashboard can have one running engine while the current project is paused, failed, or not yet started. Thread `projectId` through the existing query helper so the server resolves the same project context as task and settings routes.
+ */
+export function fetchEngineStatus(projectId?: string): Promise<EngineStatusResponse> {
+  return api<EngineStatusResponse>(withProjectId("/engine/status", projectId));
+}
+
+export function startEngine(projectId?: string): Promise<EngineStatusResponse> {
+  return api<EngineStatusResponse>(withProjectId("/engine/start", projectId), { method: "POST" });
+}
+
 export function checkForUpdates(): Promise<UpdateCheckResponse> {
   return api<UpdateCheckResponse>("/updates/check");
 }
@@ -7980,18 +8000,19 @@ export function triageFeature(
   taskTitle?: string,
   taskDescription?: string,
   projectId?: string,
-  branchOptions?: {
+  options?: {
     branchSelection?: {
       mode: "project-default" | "auto-new" | "existing" | "custom-new";
       branchName?: string;
       baseBranch?: string;
     };
     branchAssignment?: { mode: "shared" | "per-task-derived" };
+    workflowId?: string | null;
   },
 ): Promise<MissionFeature> {
   return api<MissionFeature>(withProjectId(`/missions/features/${encodeURIComponent(featureId)}/triage`, projectId), {
     method: "POST",
-    body: JSON.stringify({ taskTitle, taskDescription, ...branchOptions }),
+    body: JSON.stringify({ taskTitle, taskDescription, ...options }),
   });
 }
 
@@ -7999,18 +8020,19 @@ export function triageFeature(
 export function triageAllSliceFeatures(
   sliceId: string,
   projectId?: string,
-  branchOptions?: {
+  options?: {
     branchSelection?: {
       mode: "project-default" | "auto-new" | "existing" | "custom-new";
       branchName?: string;
       baseBranch?: string;
     };
     branchAssignment?: { mode: "shared" | "per-task-derived" };
+    workflowId?: string | null;
   },
 ): Promise<{ triaged: MissionFeature[]; count: number }> {
   return api<{ triaged: MissionFeature[]; count: number }>(withProjectId(`/missions/slices/${encodeURIComponent(sliceId)}/triage-all`, projectId), {
     method: "POST",
-    body: JSON.stringify(branchOptions ?? {}),
+    body: JSON.stringify(options ?? {}),
   });
 }
 

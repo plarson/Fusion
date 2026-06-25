@@ -63,6 +63,7 @@ import type { SkillsAdapter } from "./skills-adapter.js";
 import { createAuthMiddleware, authenticateUpgradeRequest, getDaemonToken } from "./auth-middleware.js";
 import { setupCliSessionWebSocket } from "./cli-session-ws.js";
 import { createCliSessionsRouter } from "./routes/cli-sessions.js";
+import { getProjectIdFromRequest } from "./routes/context.js";
 import type { CliRelaunchRegistry } from "./cli-session-transport.js";
 import { validateRemoteAuthToken } from "./remote-auth.js";
 import { getCliPackageVersion } from "./cli-package-version.js";
@@ -497,6 +498,56 @@ function hasDashboardEngine(options?: ServerOptions): boolean {
   }
   const engines = manager.getAllEngines?.();
   return Boolean(engines && engines.size > 0);
+}
+
+export type EngineStatusReason = "dashboard-only" | "no-project";
+
+export interface EngineStatusPayload {
+  connected: boolean;
+  starting: boolean;
+  canStart: boolean;
+  reason?: EngineStatusReason;
+  projectId?: string;
+}
+
+function buildEngineStatusPayload(projectId: string | undefined, options?: ServerOptions): EngineStatusPayload {
+  const engineManager = options?.engineManager;
+  const base = projectId ? { projectId } : {};
+
+  if (!engineManager) {
+    return {
+      connected: false,
+      starting: false,
+      canStart: false,
+      reason: "dashboard-only",
+      ...base,
+    };
+  }
+
+  if (!projectId) {
+    return {
+      connected: false,
+      starting: false,
+      canStart: false,
+      reason: "no-project",
+    };
+  }
+
+  const engine = engineManager.getEngine(projectId);
+  /*
+   * FNXC:EngineStatusBanner 2026-06-22-00:00:
+   * The dashboard needs a project-scoped distinction between a missing engine and an engine start already in flight. `has(projectId) && !getEngine(projectId)` mirrors ProjectEngineManager's transient starting map so the UI can disable duplicate Start engine attempts while reconciliation or a prior click is still creating the engine.
+   */
+  return {
+    connected: Boolean(engine),
+    starting: Boolean(engineManager.has(projectId) && !engine),
+    canStart: true,
+    projectId,
+  };
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 type DashboardExpressApp = ReturnType<typeof express> & {
@@ -1450,6 +1501,44 @@ export function createServer(store: TaskStore, options?: ServerOptions): ReturnT
       cliPackageVersion,
       engineAvailable: hasDashboardEngine(options),
     }));
+  });
+
+  app.get("/api/engine/status", (req, res) => {
+    const projectId = getProjectIdFromRequest(req);
+    res.json(buildEngineStatusPayload(projectId, options));
+  });
+
+  app.post("/api/engine/start", async (req, res) => {
+    const projectId = getProjectIdFromRequest(req);
+    const engineManager = options?.engineManager;
+
+    if (!engineManager) {
+      res.status(409).json({ error: "Engine manager is unavailable", reason: "dashboard-only" });
+      return;
+    }
+
+    if (!projectId) {
+      res.status(409).json({ error: "Project id is required", reason: "no-project" });
+      return;
+    }
+
+    try {
+      /*
+       * FNXC:EngineStatusBanner 2026-06-22-00:00:
+       * The one-click Start engine action must also recover intentionally paused projects. `ensureEngine` refuses paused projects by design, so the route checks CentralCore first and uses `resumeProject` for paused status while keeping active projects on the normal `ensureEngine` path.
+       */
+      const project = await options?.centralCore?.getProject(projectId);
+      if (project && (project.status as string) === "paused") {
+        await engineManager.resumeProject(projectId);
+      } else {
+        await engineManager.ensureEngine(projectId);
+      }
+      res.json(buildEngineStatusPayload(projectId, options));
+    } catch (error) {
+      const message = getErrorMessage(error);
+      const isPausedGuard = message === `Project ${projectId} is paused`;
+      res.status(isPausedGuard ? 409 : 500).json({ error: message, reason: isPausedGuard ? "paused" : undefined });
+    }
   });
 
   app.get("/api/health/reliability", async (req, res) => {

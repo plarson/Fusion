@@ -923,8 +923,8 @@ The Automations sub-header scope button bar should match the Artifacts tab bar s
   background: color-mix(in srgb, var(--color-info) 5%, var(--card));
 }
 
-.spinner {
-  animation: spin 1s linear infinite;
+.scripts-modal .spinner {
+  animation: scripts-modal-spinner-spin 1s linear infinite;
 }
 
 .routine-card-header {
@@ -1278,13 +1278,25 @@ With the header now edge-to-edge and dividerless, the first body row still needs
   padding-left: 0;
 }
 
-/* Two-pane body: single column by default (narrow); two columns when the container is wide enough. */
+/*
+FNXC:Automations 2026-06-24-23:30:
+The embedded single-column Automations list/detail grid must not stretch implicit rows to fill the pane; stretch pushes the selected detail card far below the list row on tall/narrow surfaces. Keep rows content-sized and top-aligned so toolbar, list, and detail stay packed while the wide breakpoint only changes the column template.
+*/
 .automations-two-pane {
   display: grid;
   grid-template-columns: 1fr;
+  grid-auto-rows: max-content;
+  align-content: start;
+  align-items: start;
   gap: var(--space-lg);
   min-height: 0;
   flex: 1;
+}
+
+@media (max-width: 768px) {
+  .automations-two-pane {
+    grid-template-columns: 1fr;
+  }
 }
 
 .automations-single-pane {
@@ -1646,10 +1658,10 @@ queries already apply (the container-query rule above also fires and produces th
 }
 
 .activity-log-loading .spin {
-  animation: spin 1s linear infinite;
+  animation: scripts-modal-spinner-spin 1s linear infinite;
 }
 
-@keyframes spin {
+@keyframes scripts-modal-spinner-spin {
   from {
     transform: rotate(0deg);
   }
@@ -2330,7 +2342,7 @@ The previous bespoke rules here hid the tab labels (icon-only) and used a crampe
   flex: 1;
   min-width: 0;
   background: var(--bg-input);
-  color: var(--text-primary);
+  color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 2px 4px;

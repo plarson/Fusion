@@ -392,6 +392,58 @@ describe("ScheduledTasksModal", () => {
       expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
     });
 
+    it("packs populated list and selected detail panes in the embedded list/detail structure", async () => {
+      mockFetchRoutines.mockResolvedValue([
+        makeRoutine({ id: "routine-backup", name: "Database Backup", command: "fn backup --create" }),
+        makeRoutine({ id: "routine-disabled", name: "Disabled Import", command: "fn import", enabled: false }),
+      ]);
+
+      const { container } = render(
+        <ScheduledTasksModal onClose={onClose} addToast={addToast} presentation="embedded" />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("option", { name: /database backup/i })).toBeDefined();
+      });
+
+      const twoPane = container.querySelector(".automations-two-pane");
+      const listPane = container.querySelector(".automations-list-pane");
+      const detailPane = container.querySelector(".automations-detail-pane");
+      expect(twoPane).not.toBeNull();
+      expect(listPane).not.toBeNull();
+      expect(detailPane).not.toBeNull();
+      expect(twoPane?.children[0]).toBe(listPane);
+      expect(twoPane?.children[1]).toBe(detailPane);
+      expect(screen.getByText("Select an automation")).toBeDefined();
+      expect(screen.getByText("Disabled")).toBeDefined();
+
+      fireEvent.click(screen.getByRole("option", { name: /database backup/i }));
+
+      await waitFor(() => {
+        expect(detailPane?.querySelector(".routine-card .routine-card-name")?.textContent).toBe("Database Backup");
+      });
+      expect(screen.getByText("fn backup --create")).toBeDefined();
+      expect(container.querySelector(".automations-single-pane")).toBeNull();
+    });
+
+    it("keeps embedded automation grid rows top-packed while preserving wide two-pane rules", () => {
+      const source = readFileSync(resolve(__dirname, "../ScriptsModal.css"), "utf8");
+      const baseRule = source.match(/\.automations-two-pane\s*\{[^}]*\}/)?.[0] ?? "";
+      const containerRule = source.match(/@container \(min-width: 900px\)\s*\{\s*\.automations-two-pane\s*\{[^}]*\}/)?.[0] ?? "";
+      const mediaRule = source.match(/@media \(min-width: 900px\)\s*\{\s*\.automations-two-pane\s*\{[^}]*\}/)?.[0] ?? "";
+      const mobileRule = source.match(/@media \(max-width: 768px\)\s*\{[\s\S]*?\.automations-two-pane\s*\{[^}]*\}/)?.[0] ?? "";
+
+      expect(baseRule).toContain("grid-template-columns: 1fr;");
+      expect(baseRule).toContain("align-content: start;");
+      expect(baseRule).toContain("align-items: start;");
+      expect(baseRule).toContain("grid-auto-rows: max-content;");
+      expect(containerRule).toContain("grid-template-columns: minmax(0, 18rem) minmax(0, 1fr);");
+      expect(containerRule).toContain("align-items: start;");
+      expect(mediaRule).toContain("grid-template-columns: minmax(0, 18rem) minmax(0, 1fr);");
+      expect(mediaRule).toContain("align-items: start;");
+      expect(mobileRule).toContain("grid-template-columns: 1fr;");
+    });
+
     it("does not dismiss on Escape in embedded mode", async () => {
       render(<ScheduledTasksModal onClose={onClose} addToast={addToast} presentation="embedded" />);
 

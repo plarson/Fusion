@@ -9,10 +9,15 @@ export interface WorktreesSectionProps extends SectionBaseProps {
     worktrunkInstall: ReturnType<typeof useWorktrunkInstallStatus>;
     worktrunkInstallVerified: boolean;
     onOpenWorktreesDirPicker: () => void;
+    onWorktreeCopyFileChange: (index: number, value: string) => void;
+    onRemoveWorktreeCopyFile: (index: number) => void;
+    onAddWorktreeCopyFile: () => void;
+    onOpenWorktreeCopyFilePicker: (index: number) => void;
     onOpenApprovals?: (approvalId?: string) => void;
 }
-export function WorktreesSection({ scopeBanner, form, setForm, gitRemotes, worktrunkInstall, worktrunkInstallVerified, onOpenWorktreesDirPicker, onOpenApprovals, }: WorktreesSectionProps) {
+export function WorktreesSection({ scopeBanner, form, setForm, gitRemotes, worktrunkInstall, worktrunkInstallVerified, onOpenWorktreesDirPicker, onWorktreeCopyFileChange, onRemoveWorktreeCopyFile, onAddWorktreeCopyFile, onOpenWorktreeCopyFilePicker, onOpenApprovals, }: WorktreesSectionProps) {
     const { t } = useTranslation("app");
+    const worktreeCopyFileRows = (form.worktreeCopyFiles?.length ?? 0) > 0 ? form.worktreeCopyFiles ?? [] : [""];
     return (<>
       {scopeBanner}
       <h4 className="settings-section-heading">{t("settings.worktrees.worktrees", "Worktrees")}</h4>
@@ -33,6 +38,50 @@ export function WorktreesSection({ scopeBanner, form, setForm, gitRemotes, workt
         <label htmlFor="recycleWorktrees" className="checkbox-label">
           <input id="recycleWorktrees" type="checkbox" checked={form.recycleWorktrees} onChange={(e) => setForm((f) => ({ ...f, recycleWorktrees: e.target.checked }))}/>{t("settings.worktrees.recycleWorktrees", " Recycle worktrees ")}</label>
         <small>{t("settings.worktrees.offByDefaultOptInWhenEnabledCompleted", "Off by default (opt-in). When enabled, completed task worktrees are returned to an idle pool instead of being deleted, preserving build caches for faster startup")}</small>
+      </div>
+      <div className="form-group">
+        <label>{t("settings.worktrees.filesToCopyIntoNewWorktrees", "Files to copy into new worktrees")}</label>
+        {/*
+        FNXC:WorktreeCopyFiles 2026-06-24-00:00:
+        Users need a visible, editable allowlist for repository files such as `.env` that Fusion copies into freshly prepared task worktrees. The UI preserves blank rows while editing, but save normalization trims, removes blanks, and de-duplicates before persistence.
+        */}
+        <div className="settings-overlap-ignore-list" data-testid="worktree-copy-files-list">
+          {worktreeCopyFileRows.map((path, index) => (
+            <div className="settings-overlap-ignore-row" key={index}>
+              <div className="settings-overlap-ignore-path-controls">
+                <input
+                  id={`worktreeCopyFile-${index}`}
+                  type="text"
+                  className="input"
+                  placeholder={t("settings.worktrees.copyFilePlaceholder", ".env")}
+                  value={path}
+                  onChange={(e) => onWorktreeCopyFileChange(index, e.target.value)}
+                  aria-label={t("settings.worktrees.copyFilePathLabel", "File to copy into new worktrees")}
+                />
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => onOpenWorktreeCopyFilePicker(index)}
+                  aria-label={t("settings.worktrees.browseCopyFile", "Browse file to copy into new worktrees")}
+                >
+                  {t("settings.worktrees.browse", " Browse ")}
+                </button>
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => onRemoveWorktreeCopyFile(index)}
+                aria-label={t("settings.worktrees.removeCopyFile", "Remove copied worktree file")}
+              >
+                {t("settings.worktrees.remove", "Remove")}
+              </button>
+            </div>
+          ))}
+        </div>
+        <button type="button" className="btn btn-sm" onClick={onAddWorktreeCopyFile}>
+          {t("settings.worktrees.addCopyFile", "Add file")}
+        </button>
+        <small>{t("settings.worktrees.copyFilesHelp", "Optional. Repository-root-relative regular files are copied into fresh or pooled task worktrees before init commands run. Missing files or directories are skipped without exposing contents.")}</small>
       </div>
       <div className="form-group">
         <label htmlFor="executorAllowSiblingBranchRename" className="checkbox-label">
@@ -97,7 +146,7 @@ export function WorktreesSection({ scopeBanner, form, setForm, gitRemotes, workt
                 onFailure: f.worktrunk?.onFailure ?? "fail",
             },
         }))}/>{t("settings.worktrees.enableWorktrunkIntegration", " Enable worktrunk integration ")}</label>
-        <small>{t("settings.worktrees.disabledByDefaultOptInWhenEnabledFusion", " Disabled by default (opt-in). When enabled, Fusion shells out to ")}<code>worktrunk</code>{t("settings.worktrees.forWorktreeCreateSyncPruneAndRemoveOperations", " for worktree create, sync, prune, and remove operations and follows worktrunk&apos;s directory layout. ")}</small>
+        <small>{t("settings.worktrees.disabledByDefaultOptInWhenEnabledFusion", " Disabled by default (opt-in). When enabled, Fusion shells out to ")}<code>worktrunk</code>{t("settings.worktrees.forWorktreeCreateSyncPruneAndRemoveOperations", " for worktree create, sync, prune, and remove operations and follows worktrunk's directory layout. ")}</small>
         {!worktrunkInstallVerified && form.worktrunk?.enabled !== true && (<small className="settings-muted">{t("settings.worktrees.installTheWorktrunkBinaryBelowToEnableThis", "Install the worktrunk binary below to enable this integration.")}</small>)}
       </div>
       <div className="form-group" data-testid="worktrunk-install-affordance">
@@ -148,7 +197,7 @@ export function WorktreesSection({ scopeBanner, form, setForm, gitRemotes, workt
           <option value="fallback-native">{t("settings.worktrees.fallBackToFusionsNativeWorktreeBackend", "Fall back to Fusion's native worktree backend")}</option>
         </select>
         <small>
-          <code>fail</code>{t("settings.worktrees.stopsOnWorktrunkErrorsForExplicitOperatorRecovery", " stops on worktrunk errors for explicit operator recovery; ")}<code>fallback-native</code>{t("settings.worktrees.keepsProgressMovingBySwitchingToFusionApos", " keeps progress moving by switching to Fusion&apos;s built-in worktree backend. ")}</small>
+          <code>fail</code>{t("settings.worktrees.stopsOnWorktrunkErrorsForExplicitOperatorRecovery", " stops on worktrunk errors for explicit operator recovery; ")}<code>fallback-native</code>{t("settings.worktrees.keepsProgressMovingBySwitchingToFusionApos", " keeps progress moving by switching to Fusion's built-in worktree backend. ")}</small>
       </div>
     </>);
 }

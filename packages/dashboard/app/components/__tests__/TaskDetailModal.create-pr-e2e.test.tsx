@@ -31,7 +31,6 @@ vi.mock("../../api", async (importOriginal) => {
     updateGlobalSettings: vi.fn().mockResolvedValue({}),
     pauseTask: vi.fn().mockResolvedValue({}),
     unpauseTask: vi.fn().mockResolvedValue({}),
-    recoverBranchBinding: vi.fn(),
     fetchWorkflowResults: vi.fn().mockResolvedValue([]),
     fetchTaskReview: vi.fn().mockResolvedValue({ reviewState: { source: "reviewer-agent", items: [], addressing: [] }, automationStatus: null, emptyMessage: "No reviewer feedback yet" }),
     refreshTaskReview: vi.fn().mockResolvedValue({ reviewState: undefined, automationStatus: null }),

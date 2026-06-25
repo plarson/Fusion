@@ -277,6 +277,10 @@ Saved API keys are stored in settings but are masked in API responses and UI-loa
 
 For the stored settings shape, see [`customProviders` in the Settings Reference](./settings-reference.md#customproviders). For the API behavior, including masked keys in responses, see [Architecture → Custom Provider endpoints](./architecture.md#custom-provider-endpoints).
 
+## Worktree copy files
+
+Open **Settings → Worktrees** to maintain **Files to copy into new worktrees**. Add editable rows for repository-root-relative files such as `.env`, use **Browse** to select a project file, remove rows you no longer want, then Save. Fusion trims blank rows and de-duplicates paths before persisting. During task startup, configured regular files are copied into fresh or pooled task worktrees before the worktree init command and task execution begin; existing/resumed worktrees are not overwritten. Missing files, directories, absolute paths, traversal entries, and unreadable sources are skipped with non-fatal diagnostics and without logging file contents. See [`worktreeCopyFiles` in the Settings Reference](./settings-reference.md#project-settings) for the stored setting shape.
+
 ## Planning Mode
 
 Planning is a desktop/tablet left-sidebar main-content destination after **Command Center**. It opens the planning-session list and composer in the main content region; mobile continues to use the compact planning entry points. Planning Mode now includes branch controls on the summary screen before you create a task.
@@ -707,6 +711,17 @@ Features:
 
 For full lifecycle behavior, runtime/heartbeat settings, and budgets, see [Agents guide](./agents.md).
 
+## Missions View
+
+Missions view manages mission hierarchies and task handoff from milestones, slices, and features.
+
+<!-- FNXC:MissionWorkflows 2026-06-25-06:04: Missions creates tasks from feature and slice triage, so the user-facing guide must document that its header workflow selector matches Planning and carries the selected workflow into mission-created tasks. -->
+
+Workflow behavior:
+- When workflow columns are enabled and more than one workflow is available, Missions shows the same header workflow selector as Planning.
+- Feature triage and slice **Triage all features** create new tasks on the selected workflow.
+- If no workflow is selected, or workflow columns are unavailable, mission-created tasks continue to use the project default workflow.
+
 ## Roadmaps View
 
 Roadmaps view manages roadmap hierarchies (roadmaps, milestones, features) and planning handoff exports.
@@ -958,6 +973,14 @@ Use this panel when upgrading a project with pre-FN-6245/FN-6277 in-review rows 
 ### Executor footer engine controls
 
 The global AI engine stop/start control and triage pause/resume control live in the executor footer status bar rather than the header. Select the small engine-controls button beside the executor state badge, or select the state text such as **Running**, to open the footer popover. The popover includes **Stop AI engine** / **Start AI engine**, **Pause triage** / **Resume scheduling**, and live scheduler sliders for max concurrent tasks, max triage concurrency, and max worktrees. Slider changes save through the existing `/api/settings` path with the same debounced behavior used by Command Center controls; no separate backend route is required.
+
+### Engine status banner
+
+When a project dashboard is open but no project engine is connected, Fusion shows a sticky **Engine disconnected** banner above the project content. This covers paused projects, failed or still-starting project engines, delayed reconciliation, and dashboard-only/dev launches where the UI is available before an engine manager is attached.
+
+If the server can start the current project engine, use **Start engine** in the banner to resume a paused project or call the project engine startup path without reloading the dashboard. While the start request is in flight the button is disabled and shows the starting state so repeated clicks cannot create duplicate startup attempts. The banner disappears as soon as the status endpoint reports the project engine is connected.
+
+If the dashboard is running without engine management, the banner stays informational and disables the start action. Start the full server with `fn serve` to enable one-click engine startup and live task execution.
 
 ### Identifying high-impact blockers
 

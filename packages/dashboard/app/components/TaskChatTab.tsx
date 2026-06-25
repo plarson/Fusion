@@ -244,14 +244,33 @@ function formatEntryLabel(entry: AgentLogEntry, t: TFunction<"app">): string {
   }
 }
 
+/*
+FNXC:TaskChat 2026-06-22-03:05:
+Tool-call group copy intentionally preserves the pre-i18n grammar contract because the test i18n instance interpolates defaults without plural suffix resolution.
+Keep plural branches in source for deterministic "1 tool call" / "N tool calls" and use lowercase completion labels only for the inline "Tool call → result/error" kicker; detail headers remain capitalized below.
+*/
 function formatCompletionLabel(entry: AgentLogEntry, t: TFunction<"app">): string {
-  return entry.type === "tool_error" ? t("taskChat.error", "Error") : t("taskChat.result", "Result");
+  return entry.type === "tool_error" ? t("taskChat.errorInline", "error") : t("taskChat.resultInline", "result");
 }
 
 const TOOL_NAME_SUMMARY_LIMIT = 5;
 
 function formatToolCallCount(count: number, t: TFunction<"app">): string {
-  return t("taskChat.toolCallCount", "{{count}} tool call", { count });
+  return count === 1
+    ? t("taskChat.toolCallCount", "{{count}} tool call", { count })
+    : t("taskChat.toolCallCountPlural", "{{count}} tool calls", { count });
+}
+
+function formatErrorCount(count: number, t: TFunction<"app">): string {
+  return count === 1
+    ? t("taskChat.errorCount", "{{count}} error", { count })
+    : t("taskChat.errorCountPlural", "{{count}} errors", { count });
+}
+
+function formatEntryCount(count: number, t: TFunction<"app">): string {
+  return count === 1
+    ? t("taskChat.entryCount", "{{count}} entry", { count })
+    : t("taskChat.entryCountPlural", "{{count}} entries", { count });
 }
 
 function getToolInvocationEntries(entries: AgentLogEntry[]): AgentLogEntry[] {
@@ -414,7 +433,7 @@ function TaskChatToolGroup({ entries }: { entries: AgentLogEntry[] }) {
         ) : null}
         {errorCount > 0 ? (
           <span className="task-chat-tool-group-error-count">
-            {t("taskChat.errorCount", "{{count}} error", { count: errorCount })}
+            {formatErrorCount(errorCount, t)}
           </span>
         ) : null}
       </summary>
@@ -825,7 +844,7 @@ export function TaskChatTab({ task, projectId, active, addToast, onTaskUpdated, 
                   <div>
                     <div className="task-chat-role-label">{item.label}</div>
                     <div className="task-chat-group-meta">
-                      <span>{t("taskChat.entryCount", "{{count}} entry", { count: item.entries.length })}</span>
+                      <span>{formatEntryCount(item.entries.length, t)}</span>
                       {relativeTime ? (
                         <span className="task-chat-timestamp" data-testid="task-chat-group-time">
                           {relativeTime}

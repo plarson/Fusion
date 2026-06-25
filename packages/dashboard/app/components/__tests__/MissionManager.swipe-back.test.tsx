@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MissionManager } from "../MissionManager";
 import { NavigationHistoryProvider, useNavigationHistory } from "../../hooks/useNavigationHistory";
@@ -8,6 +8,7 @@ const mockViewportMode = vi.fn<() => "mobile" | "desktop">();
 const mockFetchMissions = vi.fn();
 const mockFetchMission = vi.fn();
 const mockFetchMissionsHealth = vi.fn();
+const mockFetchMissionEvents = vi.fn();
 const mockFetchAssertions = vi.fn();
 const mockFetchMilestoneValidation = vi.fn();
 const mockFetchMilestoneValidationTelemetry = vi.fn();
@@ -42,6 +43,7 @@ vi.mock("../../api", async (importOriginal) => {
     fetchMissions: (...args: unknown[]) => mockFetchMissions(...args),
     fetchMission: (...args: unknown[]) => mockFetchMission(...args),
     fetchMissionsHealth: (...args: unknown[]) => mockFetchMissionsHealth(...args),
+    fetchMissionEvents: (...args: unknown[]) => mockFetchMissionEvents(...args),
     fetchAssertions: (...args: unknown[]) => mockFetchAssertions(...args),
     fetchMilestoneValidation: (...args: unknown[]) => mockFetchMilestoneValidation(...args),
     fetchMilestoneValidationTelemetry: (...args: unknown[]) => mockFetchMilestoneValidationTelemetry(...args),
@@ -107,6 +109,18 @@ const rollup = {
   state: "not_started" as const,
 };
 
+const missionEvents = [
+  {
+    id: "ME-001",
+    missionId: "M-001",
+    eventType: "mission_updated",
+    description: "Activity tab loaded",
+    metadata: null,
+    timestamp: "2026-01-03T00:00:00.000Z",
+    seq: 1,
+  },
+];
+
 function HistoryHarness({ children }: { children: ReactNode }) {
   const history = useNavigationHistory({ enabled: true });
   return <NavigationHistoryProvider value={history}>{children}</NavigationHistoryProvider>;
@@ -121,6 +135,7 @@ describe("MissionManager mobile swipe-back", () => {
     mockFetchMissions.mockResolvedValue(missions);
     mockFetchMission.mockResolvedValue(missionDetail);
     mockFetchMissionsHealth.mockResolvedValue({});
+    mockFetchMissionEvents.mockResolvedValue({ events: missionEvents, total: missionEvents.length });
     mockFetchAssertions.mockResolvedValue([]);
     mockFetchMilestoneValidation.mockResolvedValue(rollup);
     mockFetchMilestoneValidationTelemetry.mockResolvedValue(null);
@@ -135,11 +150,7 @@ describe("MissionManager mobile swipe-back", () => {
   });
 
   it("pushes a mobile nav entry when opening mission detail and popstate returns to the list", async () => {
-    render(
-      <HistoryHarness>
-        <MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} isInline={true} />
-      </HistoryHarness>,
-    );
+    renderMissionManager();
 
     await userSelectMission();
     await waitFor(() => {
@@ -151,27 +162,76 @@ describe("MissionManager mobile swipe-back", () => {
       window.dispatchEvent(new PopStateEvent("popstate", { state: { navIndex: 0 } }));
     });
 
-    await waitFor(() => {
-      expect(screen.queryByText("Database Schema")).not.toBeInTheDocument();
-    });
-    expect(screen.getByText("Build Auth System")).toBeInTheDocument();
+    await expectMissionListVisible();
   });
 
-  it("does not push a nav entry on desktop mission selection", async () => {
+  it("returns from the Activity tab to the mobile mission list on browser back", async () => {
+    renderMissionManager();
+
+    await userSelectMission();
+    await openActivityTab();
+    expect(screen.getByTestId("mission-activity-tab")).toBeInTheDocument();
+    expect(screen.getByText("Activity tab loaded")).toBeInTheDocument();
+    expect(window.history.pushState).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      window.dispatchEvent(new PopStateEvent("popstate", { state: { navIndex: 0 } }));
+    });
+
+    await expectMissionListVisible();
+  });
+
+  it("returns from the Activity tab with the visible mobile Back button", async () => {
+    renderMissionManager();
+
+    await userSelectMission();
+    await openActivityTab();
+    fireEvent.click(screen.getByTestId("mission-back-btn"));
+
+    await expectMissionListVisible();
+  });
+
+  it("does not add duplicate mobile nav entries for repeated tab changes", async () => {
+    renderMissionManager();
+
+    await userSelectMission();
+    await openActivityTab();
+    fireEvent.click(screen.getByTestId("mission-tab-structure"));
+    fireEvent.click(screen.getByTestId("mission-tab-activity"));
+    fireEvent.click(screen.getByTestId("mission-tab-activity"));
+
+    expect(window.history.pushState).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      window.dispatchEvent(new PopStateEvent("popstate", { state: null }));
+    });
+
+    await expectMissionListVisible();
+  });
+
+  it("does not push a nav entry on desktop mission selection or tab switching", async () => {
     mockViewportMode.mockReturnValue("desktop");
 
-    render(
-      <HistoryHarness>
-        <MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} isInline={true} />
-      </HistoryHarness>,
-    );
+    renderMissionManager();
 
     await waitFor(() => {
       expect(screen.getByText("Database Schema")).toBeInTheDocument();
     });
+    fireEvent.click(screen.getByTestId("mission-tab-activity"));
+    await waitFor(() => {
+      expect(screen.getByTestId("mission-activity-tab")).toBeInTheDocument();
+    });
     expect(window.history.pushState).not.toHaveBeenCalled();
   });
 });
+
+function renderMissionManager() {
+  render(
+    <HistoryHarness>
+      <MissionManager isOpen={true} onClose={vi.fn()} addToast={vi.fn()} isInline={true} />
+    </HistoryHarness>,
+  );
+}
 
 async function userSelectMission() {
   await waitFor(() => {
@@ -181,4 +241,28 @@ async function userSelectMission() {
   await waitFor(() => {
     expect(mockFetchMission).toHaveBeenCalledWith("M-001", undefined);
   });
+}
+
+async function openActivityTab() {
+  await waitFor(() => {
+    expect(screen.getByTestId("mission-tab-activity")).toBeInTheDocument();
+  });
+  fireEvent.click(screen.getByTestId("mission-tab-activity"));
+  await waitFor(() => {
+    expect(mockFetchMissionEvents).toHaveBeenCalledWith(
+      "M-001",
+      expect.objectContaining({ limit: 50, offset: 0 }),
+      undefined,
+    );
+  });
+}
+
+async function expectMissionListVisible() {
+  await waitFor(() => {
+    expect(screen.queryByText("Database Schema")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("mission-activity-tab")).not.toBeInTheDocument();
+    expect(screen.queryByText("Activity tab loaded")).not.toBeInTheDocument();
+  });
+  expect(screen.getByText("Build Auth System")).toBeInTheDocument();
+  expect(screen.getByText("API Redesign")).toBeInTheDocument();
 }

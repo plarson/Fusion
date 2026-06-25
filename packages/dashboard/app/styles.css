@@ -225,22 +225,15 @@ html {
 }
 
 /*
-FNXC:LoadingIndicators 2026-06-23-20:40:
-Use a uniquely named global spinner keyframe for shared loading utilities. Component CSS files also define `@keyframes spin`; because keyframes are global, later-loaded modal/sidebar CSS can replace the shared `spin` definition and make SVG spinners appear frozen or inconsistent across sections such as Git Manager.
+FNXC:LoadingIndicators 2026-06-25-00:00:
+Shared loading utilities must animate with the collision-proof `fusion-spinner-spin` keyframe instead of generic global `spin`. Dashboard modal/view CSS chunks load lazily and keyframes are global, so any later `@keyframes spin` can replace a shared spinner's motion and make pending operations look stalled.
 */
 @keyframes fusion-spinner-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
 
-/* Global spinner animation — used by 25+ components via className="animate-spin"
-   or inline animation: "spin ...". Must live at the stylesheet top level (not
-   inside any selector block) so the keyframes and utility class are available
-   before any task cards are loaded. */
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
+/* Global spinner animation — used by dashboard-wide Lucide and CSS-only loaders. Must live at the stylesheet top level so the utilities are available before lazy dashboard chunks render. */
 .animate-spin {
   animation: fusion-spinner-spin 1s linear infinite;
   transform-origin: center;

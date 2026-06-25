@@ -40,6 +40,30 @@ describe("TaskStore", () => {
     });
   });
 
+  describe("worktreeCopyFiles setting", () => {
+    it("round-trips populated copy-file paths via getSettings and project serialization", async () => {
+      await harness.store().updateSettings({ worktreeCopyFiles: [".env", "config/local.env", "packages/api/.env.test"] });
+
+      const settings = await harness.store().getSettings();
+      expect(settings.worktreeCopyFiles).toEqual([".env", "config/local.env", "packages/api/.env.test"]);
+
+      const configRaw = await readFile(join(harness.rootDir(), ".fusion", "config.json"), "utf-8");
+      const config = JSON.parse(configRaw);
+      expect(config.settings.worktreeCopyFiles).toEqual([".env", "config/local.env", "packages/api/.env.test"]);
+    });
+
+    it("persists cleared copy-file paths without dropping the project key", async () => {
+      await harness.store().updateSettings({ worktreeCopyFiles: [".env"] });
+      await harness.store().updateSettings({ worktreeCopyFiles: [] });
+
+      const settings = await harness.store().getSettings();
+      expect(settings.worktreeCopyFiles).toEqual([]);
+
+      const { project } = await harness.store().getSettingsByScope();
+      expect(project.worktreeCopyFiles).toEqual([]);
+    });
+  });
+
   describe("worktreesDir setting", () => {
     it("round-trips worktreesDir via updateSettings and project serialization", async () => {
       await harness.store().updateSettings({ worktreesDir: "~/.fn-worktrees/{repo}" });

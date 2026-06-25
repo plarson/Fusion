@@ -129,7 +129,7 @@ export function MergeSection({ scopeBanner, form, setForm, integrationBranchOpti
         </select>
         <details className="settings-option-details">
           <summary>{t("settings.merge.moreDetails", "More details")}</summary>
-          <small>{t("settings.merge.aIModeMergesTheTaskBranchIntoAn", " AI mode merges the task branch into an isolated clean-room checkout at the target branch&apos;s tip, has an AI reviewer audit the squash (with corrective retries \u2014 advisory concerns land with a logged warning, an unfixable correctness concern hard-fails), then fast-forwards the target branch and syncs your local checkout (AI reconciles a conflicting restore). Each task merges to its own target branch, or the default integration branch. ")}<strong>{t("settings.merge.theLegacyMergeSettingsBelowDoNotApply", "The legacy merge settings below do not apply while AI merge is on.")}</strong>
+          <small>{t("settings.merge.aIModeMergesTheTaskBranchIntoAn", " AI mode merges the task branch into an isolated clean-room checkout at the target branch's tip, has an AI reviewer audit the squash (with corrective retries \u2014 advisory concerns land with a logged warning, an unfixable correctness concern hard-fails), then fast-forwards the target branch and syncs your local checkout (AI reconciles a conflicting restore). Each task merges to its own target branch, or the default integration branch. ")}<strong>{t("settings.merge.theLegacyMergeSettingsBelowDoNotApply", "The legacy merge settings below do not apply while AI merge is on.")}</strong>
           </small>
         </details>
       </div>
@@ -137,7 +137,7 @@ export function MergeSection({ scopeBanner, form, setForm, integrationBranchOpti
           <div className="form-group">
             <label htmlFor="mergerMaxReviewPasses">{t("settings.merge.maxAIReviewPasses", "Max AI review passes")}</label>
             <input id="mergerMaxReviewPasses" type="number" min={0} max={10} value={form.merger?.maxReviewPasses ?? 3} onChange={(e) => setForm((f) => ({ ...f, merger: { ...(f.merger ?? {}), maxReviewPasses: e.target.value === "" ? undefined : Number(e.target.value) } }))}/>
-            <small>{t("settings.merge.aICorrectiveRoundsBeforeLandingTheBestResult", "AI corrective rounds before landing the best result (advisory concern) or hard-failing (unfixable correctness concern). Default 3. The reviewer uses your project&apos;s reviewer/validator model.")}</small>
+            <small>{t("settings.merge.aICorrectiveRoundsBeforeLandingTheBestResult", "AI corrective rounds before landing the best result (advisory concern) or hard-failing (unfixable correctness concern). Default 3. The reviewer uses your project's reviewer/validator model.")}</small>
           </div>
           <div className="form-group">
             <label htmlFor="mergerAllowDirtyLocalCheckoutSync" className="checkbox-label">
@@ -214,7 +214,7 @@ export function MergeSection({ scopeBanner, form, setForm, integrationBranchOpti
           <summary>{t("settings.merge.moreDetails", "More details")}</summary>
           <small>{t("settings.merge.theCanonicalBranchFusionMergesTasksIntoAnd", " The canonical branch Fusion merges tasks into and uses as the reference for all ahead/behind / overlap / pre-rebase computations. Leave on ")}<em>{t("settings.merge.autoDetect", "auto-detect")}</em>{t("settings.merge.toResolveViaTheStandardCascade", " to resolve via the standard cascade (")}<code>integrationBranch</code>{t("settings.merge.legacy", " \u2192 legacy ")}<code>baseBranch</code> →
             <code>origin/HEAD</code>{t("settings.merge.symbolicRefFallback", " symbolic ref \u2192 fallback ")}<code>main</code>{t("settings.merge.pickALocalBranchFromTheDropdownCommon", "). Pick a local branch from the dropdown \u2014 common integration names like ")}<code>main</code>,
-            <code>master</code>, <code>trunk</code>{t("settings.merge.and", ", and ")}<code>develop</code>{t("settings.merge.areListedFirstOrChoose", " are listed first \u2014 or choose ")}<em>{t("settings.merge.custom", "Custom\u2026")}</em>{t("settings.merge.toTypeABranchThatDoesnAposT", " to type a branch that doesn&apos;t exist locally yet. Applies to both direct merges and pull-request mode; individual tasks can still override via task metadata. ")}</small>
+            <code>master</code>, <code>trunk</code>{t("settings.merge.and", ", and ")}<code>develop</code>{t("settings.merge.areListedFirstOrChoose", " are listed first \u2014 or choose ")}<em>{t("settings.merge.custom", "Custom\u2026")}</em>{t("settings.merge.toTypeABranchThatDoesnAposT", " to type a branch that doesn't exist locally yet. Applies to both direct merges and pull-request mode; individual tasks can still override via task metadata. ")}</small>
         </details>
       </div>
       {form.mergeStrategy !== "pull-request" && (form.merger?.mode ?? "ai") !== "ai" && (<>
@@ -230,7 +230,7 @@ export function MergeSection({ scopeBanner, form, setForm, integrationBranchOpti
             </select>
             <details className="settings-option-details">
               <summary>{t("settings.merge.moreDetails", "More details")}</summary>
-              <small>{t("settings.merge.autoKeepsTodayAposSSquashBehaviorFor", " Auto keeps today&apos;s squash behavior for branches with zero or one substantive commit, but switches multi-substantive branches to a history-preserving rebase-and-merge path. Individual tasks can override this in PROMPT.md with ")}<code>**Direct Merge Commit Strategy:** auto|always-squash|always-rebase</code>.
+              <small>{t("settings.merge.autoKeepsTodayAposSSquashBehaviorFor", " Auto keeps today's squash behavior for branches with zero or one substantive commit, but switches multi-substantive branches to a history-preserving rebase-and-merge path. Individual tasks can override this in PROMPT.md with ")}<code>**Direct Merge Commit Strategy:** auto|always-squash|always-rebase</code>.
               </small>
             </details>
           </div>
@@ -245,7 +245,7 @@ export function MergeSection({ scopeBanner, form, setForm, integrationBranchOpti
             </select>
             <small>{t("settings.merge.autoMergeRunsInTheTaskWorktreeBy", " Auto-merge runs in the task worktree by default. Switch to the legacy project-root path only if you need the pre-FN-5279 fallback; worktrunk-managed projects still defer to worktrunk. ")}</small>
             {(form.mergeIntegrationWorktree ?? "reuse-task-worktree") !== "reuse-task-worktree" && (<div className="settings-warning-banner" role="alert" aria-live="polite" data-testid="merge-integration-worktree-warning">
-                <strong>{t("settings.merge.legacyIntegrationBranchMode", "Legacy integration-branch mode.")}</strong>{" "}{t("settings.merge.autoMergeWillRunRebaseConflictResolutionAnd", " Auto-merge will run rebase, conflict resolution, and squash commits inside the project root (the user&apos;s checked-out integration-branch worktree) instead of the task worktree. Fusion assumes that directory is already on the integration branch and clean; if it isn&apos;t, merges may fail or touch the user&apos;s working tree. Reuse-task-worktree is the recommended default (FN-5279). Switch back unless you have a specific reason to opt in (FN-5348). ")}</div>)}
+                <strong>{t("settings.merge.legacyIntegrationBranchMode", "Legacy integration-branch mode.")}</strong>{" "}{t("settings.merge.autoMergeWillRunRebaseConflictResolutionAnd", " Auto-merge will run rebase, conflict resolution, and squash commits inside the project root (the user's checked-out integration-branch worktree) instead of the task worktree. Fusion assumes that directory is already on the integration branch and clean; if it isn't, merges may fail or touch the user's working tree. Reuse-task-worktree is the recommended default (FN-5279). Switch back unless you have a specific reason to opt in (FN-5348). ")}</div>)}
           </div>
           <div className="form-group">
             <label htmlFor="mergeAdvanceAutoSync">{t("settings.merge.autoSyncProjectCheckoutAfterMerge", "Auto-sync project checkout after merge")}</label>
@@ -370,7 +370,7 @@ export function MergeSection({ scopeBanner, form, setForm, integrationBranchOpti
           <option value="warn">{t("settings.merge.warnDefaultLogFindingsContinue", "Warn (default; log findings, continue)")}</option>
           <option value="off">{t("settings.merge.offSkipAudit", "Off (skip audit)")}</option>
         </select>
-        <small>{t("settings.merge.controlsThePostMergeAuditGate", " Controls the post-merge audit gate. ")}<strong>{t("settings.merge.warn", "Warn")}</strong>{t("settings.merge.defaultLogsFindingsButAutoCompletesTheMerge", " (default) logs findings but auto-completes the merge. ")}<strong>{t("settings.merge.block", "Block")}</strong>{t("settings.merge.isTheStricterOptInModeThatRefuses", " is the stricter opt-in mode that refuses to auto-complete merges with duplicate-subject or touched-file overlap risks. ")}<strong>{t("settings.merge.off", "Off")}</strong>{t("settings.merge.skipsTheAuditEntirelySwitchingToOffIs", " skips the audit entirely. Switching to Off is recommended only if you trust your branches don&apos;t silently drop edits. ")}</small>
+        <small>{t("settings.merge.controlsThePostMergeAuditGate", " Controls the post-merge audit gate. ")}<strong>{t("settings.merge.warn", "Warn")}</strong>{t("settings.merge.defaultLogsFindingsButAutoCompletesTheMerge", " (default) logs findings but auto-completes the merge. ")}<strong>{t("settings.merge.block", "Block")}</strong>{t("settings.merge.isTheStricterOptInModeThatRefuses", " is the stricter opt-in mode that refuses to auto-complete merges with duplicate-subject or touched-file overlap risks. ")}<strong>{t("settings.merge.off", "Off")}</strong>{t("settings.merge.skipsTheAuditEntirelySwitchingToOffIs", " skips the audit entirely. Switching to Off is recommended only if you trust your branches don't silently drop edits. ")}</small>
       </div>
       </>)}
       <div className="form-group">

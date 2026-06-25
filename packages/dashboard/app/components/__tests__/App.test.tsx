@@ -25,7 +25,12 @@ const defaultSettings: Settings = {
   buildCommand: "",
   capacityRiskBannerEnabled: false,
   capacityRiskTodoThreshold: 20,
-  experimentalFeatures: { insights: true, skillsView: true, agentsView: true, memoryView: true, evalsView: true },
+  /*
+   * FNXC:DashboardTests 2026-06-22-03:38:
+   * App.test.tsx keeps legacy Header view-toggle coverage unless a test explicitly opts into the left-sidebar default.
+   * The product now enables leftSidebarNav by default, so the test fixture must set the flag false instead of accidentally hiding Header controls.
+   */
+  experimentalFeatures: { insights: true, skillsView: true, agentsView: true, memoryView: true, evalsView: true, leftSidebarNav: false },
 };
 
 const mockAgentStats = {
@@ -623,6 +628,22 @@ async function waitForAppShell(): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  /*
+   * FNXC:DashboardTests 2026-06-22-03:47:
+   * App.test.tsx runs beside other dashboard specs in the same Vitest process, so reset API mock implementations as well as call counts to prevent cross-file implementation leakage.
+   */
+  vi.mocked(fetchSettings).mockResolvedValue({ ...defaultSettings });
+  vi.mocked(updateSettings).mockResolvedValue({ ...defaultSettings });
+  vi.mocked(fetchGlobalSettings).mockResolvedValue({ modelOnboardingComplete: true });
+  vi.mocked(fetchAuthStatus).mockResolvedValue({
+    providers: [
+      { id: "anthropic", name: "Anthropic", authenticated: true },
+      { id: "github", name: "GitHub", authenticated: true },
+    ],
+  });
+  vi.mocked(fetchModels).mockResolvedValue({ models: [], favoriteProviders: [], favoriteModels: [] });
+  vi.mocked(fetchScripts).mockResolvedValue({ build: "npm run build", test: "pnpm test" });
+  vi.mocked(runScript).mockResolvedValue({ sessionId: "sess-script-1", command: "echo hello" });
   __resetShellHostContextForTests();
   localStorage.clear();
   mockSubscribeSse.mockReset();
@@ -1758,8 +1779,17 @@ describe("App mission wiring", () => {
 });
 
 describe("App auto-open Settings on unauthenticated", () => {
+  beforeEach(() => {
+    vi.mocked(fetchAuthStatus).mockResolvedValue({
+      providers: [
+        { id: "anthropic", name: "Anthropic", authenticated: false },
+        { id: "github", name: "GitHub", authenticated: false },
+      ],
+    });
+  });
+
   it("auto-opens onboarding modal when all providers are unauthenticated and onboarding not complete", async () => {
-    // fetchGlobalSettings returns {} by default (modelOnboardingComplete is undefined)
+    vi.mocked(fetchGlobalSettings).mockResolvedValue({});
     render(<App />);
 
     // Wait for the auth status check and global settings check
@@ -1791,9 +1821,7 @@ describe("App auto-open Settings on unauthenticated", () => {
     await waitFor(() => expect(fetchSettings).toHaveBeenCalled());
 
     // Authentication section should be active — auth status is fetched when section is active
-    await waitFor(() => {
-      expect(screen.getByText("Anthropic")).toBeTruthy();
-    });
+    expect(await screen.findByText("Anthropic")).toBeTruthy();
     expect(screen.getByText("GitHub")).toBeTruthy();
 
     // Onboarding modal should NOT be open
@@ -1882,7 +1910,7 @@ describe("App auto-open Settings on unauthenticated", () => {
   });
 
   it("re-opening Settings via gear icon defaults to Authentication tab after closing onboarding", async () => {
-    // fetchGlobalSettings returns {} by default → onboarding opens
+    vi.mocked(fetchGlobalSettings).mockResolvedValue({});
     render(<App />);
 
     // Wait for onboarding to auto-open
@@ -1949,6 +1977,13 @@ describe("OnboardingResumeCard", () => {
   });
 
   it("renders onboarding modal when in resumable state and modal is open", async () => {
+    vi.mocked(fetchGlobalSettings).mockResolvedValue({});
+    vi.mocked(fetchAuthStatus).mockResolvedValue({
+      providers: [
+        { id: "anthropic", name: "Anthropic", authenticated: false },
+        { id: "github", name: "GitHub", authenticated: false },
+      ],
+    });
     // Set up localStorage with resumable state
     localStorage.setItem(
       STORAGE_KEY,
@@ -2459,7 +2494,7 @@ describe("App view switching", () => {
     // Override the default mock to exclude agentsView
     vi.mocked(fetchSettings).mockResolvedValue({
       ...defaultSettings,
-      experimentalFeatures: { insights: true, skillsView: true }, // no agentsView
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, insights: true, skillsView: true }, // no agentsView
     });
 
     render(<App />);
@@ -2620,7 +2655,7 @@ describe("App view switching", () => {
   it("keeps insights view button visible after graduation from experimental flags", async () => {
     (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...defaultSettings,
-      experimentalFeatures: { insights: false },
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, insights: false },
     });
 
     render(<App />);
@@ -2646,13 +2681,13 @@ describe("App view switching", () => {
 
     render(<App />);
 
-    await waitFor(() => {
-      expect(screen.getByTestId("sidebar-nav-board")).toBeTruthy();
-    });
+    expect(screen.queryByTitle("Board view")).toBeNull();
+    expect(document.querySelector(".insights-view")).toBeNull();
+    expect(document.querySelector(".board")).toBeNull();
 
     resolveSettings?.({
       ...defaultSettings,
-      experimentalFeatures: {},
+      experimentalFeatures: { leftSidebarNav: false },
     });
 
     await waitFor(() => {
@@ -2666,7 +2701,7 @@ describe("App view switching", () => {
   it("keeps memory view button visible after graduation from experimental flags", async () => {
     (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...defaultSettings,
-      experimentalFeatures: { memoryView: false, insights: true },
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, memoryView: false, insights: true },
     });
 
     render(<App />);
@@ -2682,7 +2717,7 @@ describe("App view switching", () => {
     localStorage.setItem(taskViewStorageKey(), "memory");
     (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...defaultSettings,
-      experimentalFeatures: { memoryView: false },
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, memoryView: false },
     });
 
     render(<App />);
@@ -2703,7 +2738,7 @@ describe("App view switching", () => {
     localStorage.setItem(taskViewStorageKey(), "goalsView");
     (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...defaultSettings,
-      experimentalFeatures: { goalsView: true },
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, goalsView: true },
     });
 
     render(<App />);
@@ -2719,7 +2754,7 @@ describe("App view switching", () => {
     localStorage.setItem(taskViewStorageKey(), "goalsView");
     (fetchSettings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...defaultSettings,
-      experimentalFeatures: { goalsView: false },
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, goalsView: false },
     });
 
     render(<App />);
@@ -2775,6 +2810,11 @@ describe("App GitHub import", () => {
 
 describe("App Planning Mode", () => {
   it("opens Planning Mode as an embedded view from the sidebar destination", async () => {
+    localStorage.setItem("kb-dashboard-view-mode", "project");
+    vi.mocked(fetchSettings).mockResolvedValueOnce({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, leftSidebarNav: true },
+    });
     render(<App />);
 
     const planningNavItem = await screen.findByTestId("sidebar-nav-planning");
@@ -2788,6 +2828,11 @@ describe("App Planning Mode", () => {
   });
 
   it("closes Planning Mode embedded view back to the board", async () => {
+    localStorage.setItem("kb-dashboard-view-mode", "project");
+    vi.mocked(fetchSettings).mockResolvedValueOnce({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, leftSidebarNav: true },
+    });
     render(<App />);
 
     fireEvent.click(await screen.findByTestId("sidebar-nav-planning"));
@@ -4070,6 +4115,9 @@ describe("App board branch filters", () => {
   });
 
   it("composes with search and does not affect list view tasks", async () => {
+    localStorage.setItem("kb-dashboard-view-mode", "project");
+    localStorage.setItem(taskViewStorageKey(), "board");
+    vi.mocked(fetchSettings).mockResolvedValue({ ...defaultSettings });
     mockUseTasks.mockImplementation(() => ({
       tasks: [
         makeTask("FN-4", "Alpha Search", "feature/a", "main"),
@@ -4216,8 +4264,14 @@ describe("App shell connection status plumbing", () => {
     expect(screen.queryByTestId("shell-connection-status-button")).toBeNull();
   });
 
-  it("renders shell connection status for mobile shell host in mobile More sheet only", async () => {
+  it("keeps shell connection status out of compact mobile header chrome", async () => {
     mockUseViewportMode.mockReturnValue("mobile");
+    localStorage.setItem("kb-dashboard-view-mode", "project");
+    vi.mocked(fetchSettings).mockResolvedValueOnce({
+      ...defaultSettings,
+      experimentalFeatures: { ...defaultSettings.experimentalFeatures, leftSidebarNav: true },
+    });
+    vi.mocked(fetchGlobalSettings).mockResolvedValueOnce({ modelOnboardingComplete: true });
     mockShellHostContextValue.host = { kind: "mobile-shell", mode: "remote", connectionId: "p1", serverUrl: "https://fusion.example.com" };
     mockGetShellConnectionNativeResult.mockResolvedValueOnce({
       hostKind: "mobile-shell",
@@ -4232,13 +4286,11 @@ describe("App shell connection status plumbing", () => {
 
     await waitFor(() => {
       expect(mockGetShellConnectionNativeResult).toHaveBeenCalledWith(mockShellHostContextValue.host);
-      expect(screen.getByTestId("mobile-nav-tab-more")).toBeInTheDocument();
+      expect(screen.getByTestId("mobile-view-toggle")).toBeInTheDocument();
     });
 
     expect(screen.queryByTestId("shell-connection-status-button")).toBeNull();
-    fireEvent.click(screen.getByTestId("mobile-nav-tab-more"));
-    expect(screen.getAllByTestId("shell-connection-status-button")).toHaveLength(1);
-    expect(screen.getByTestId("mobile-more-shell-connection")).toBeInTheDocument();
+    expect(screen.queryByTestId("mobile-more-shell-connection")).toBeNull();
   });
 
   it("keeps desktop shell connection status in header and out of mobile sheet", async () => {

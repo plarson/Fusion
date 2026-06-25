@@ -391,10 +391,10 @@ The descriptive subtitle renders inside ViewHeader's actions slot; mute it so it
 }
 
 .todo-loading-icon {
-  animation: spin calc(var(--duration-slow) * 4) linear infinite;
+  animation: todo-loading-spinner-spin calc(var(--duration-slow) * 4) linear infinite;
 }
 
-@keyframes spin {
+@keyframes todo-loading-spinner-spin {
   from {
     transform: rotate(0deg);
   }

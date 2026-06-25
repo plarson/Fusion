@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { COLOR_THEMES } from "@fusion/core";
 import { ThemeSelector } from "../ThemeSelector";
 import { COLOR_THEMES as THEME_OPTIONS } from "../themeOptions";
@@ -81,10 +81,15 @@ describe("ThemeSelector", () => {
     // FNXC:Theme 2026-06-22-09:30: Assert the accessibility invariant — every theme in the
     // shared COLOR_THEMES list renders an accessibly-labeled option — instead of a frozen
     // hardcoded label list that drifts whenever themes are renamed/added (e.g. FN-6813 mono variants).
+    const colorThemeGroup = screen.getByRole("radiogroup", { name: "Color theme" });
+    const themeButtons = within(colorThemeGroup).getAllByRole("button");
+
+    expect(themeButtons).toHaveLength(THEME_OPTIONS.length);
     for (const theme of THEME_OPTIONS) {
       expect(screen.getByLabelText(`${theme.label} theme`)).toBeDefined();
     }
     expect(THEME_OPTIONS.map((theme) => theme.value)).toEqual([...COLOR_THEMES]);
+    expect(screen.getByLabelText("Default theme").getAttribute("aria-pressed")).toBe("true");
   });
 
   it("renders every shared swatch class from themeOptions", () => {

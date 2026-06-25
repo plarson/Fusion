@@ -81,7 +81,13 @@
   border: calc(var(--space-xs) / 2) solid var(--border);
   border-top-color: var(--text-muted);
   border-radius: 50%;
-  animation: spin var(--duration-slow) linear infinite;
+  animation: issue-mention-popup-spinner-spin var(--duration-slow) linear infinite;
+}
+
+@keyframes issue-mention-popup-spinner-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 768px) {

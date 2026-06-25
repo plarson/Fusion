@@ -112,7 +112,7 @@
   margin-top: var(--space-xs);
 }
 
-.spin {
+.custom-provider-spin {
   animation: custom-provider-spin calc(var(--duration-slow) * 4) linear infinite;
 }
 

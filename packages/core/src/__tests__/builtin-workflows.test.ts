@@ -549,6 +549,12 @@ describe("built-in workflows", () => {
       expect(await store.getWorkflowDefinition("builtin:compound-engineering")).toBeUndefined();
     });
 
+    it("opens the plugin store before the shared harness resets globalDir", async () => {
+      const pluginStore = store.getPluginStore();
+      await pluginStore.init();
+      expect(await pluginStore.listPlugins()).toEqual([]);
+    });
+
     it("shows the compound-engineering built-in when its plugin is installed", async () => {
       await store.getPluginStore().registerPlugin({
         manifest: {

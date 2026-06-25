@@ -94,6 +94,14 @@ function resetMockPassThroughs() {
 }
 
 async function resetStoreFilesystem(rootDir: string, globalDir: string, store: TaskStore): Promise<void> {
+  /*
+   * FNXC:CoreTests 2026-06-25-03:32:
+   * The shared harness reuses a TaskStore while clearing globalDir between tests.
+   * Close and null the lazy PluginStore first so its file-backed central DB never survives after fusion-central.db is removed.
+   */
+  (store as any).pluginStore?.close?.();
+  (store as any).pluginStore = null;
+
   const fusionDir = store.getFusionDir();
   await clearDirectoryContents(join(fusionDir, "tasks"));
   await clearDirectoryContents(join(fusionDir, "task-documents"));

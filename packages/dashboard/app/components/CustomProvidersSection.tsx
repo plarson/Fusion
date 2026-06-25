@@ -278,7 +278,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
     <>
       {embedded ? null : loading ? (
         <div className="custom-provider-empty" role="status">
-          <Loader2 aria-hidden="true" className="spin" /> {t("providers.loading", "Loading custom providers…")}
+          <Loader2 aria-hidden="true" className="custom-provider-spin" /> {t("providers.loading", "Loading custom providers…")}
         </div>
       ) : null}
 
@@ -402,7 +402,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
                       >
                         {detecting ? (
                           <>
-                            <Loader2 className="spin" size={14} /> {t("providers.detecting", "Detecting…")}
+                            <Loader2 className="custom-provider-spin" size={14} /> {t("providers.detecting", "Detecting…")}
                           </>
                         ) : (
                           <>
@@ -519,7 +519,7 @@ export function CustomProvidersSection({ embedded = false, onProviderChange }: C
             >
               {detecting ? (
                 <>
-                  <Loader2 className="spin" size={14} /> {t("providers.detecting", "Detecting…")}
+                  <Loader2 className="custom-provider-spin" size={14} /> {t("providers.detecting", "Detecting…")}
                 </>
               ) : (
                 <>

@@ -736,6 +736,10 @@ export function assertNoSecretPlaintext(metadata?: Record<string, unknown>): voi
  * - secret:env-write-skipped -> { filename, reason: "disabled"|"no-secrets"|"not-gitignored"|"skip-existing"|"invalid-filename"|"no-store"|"list-failed", overwritePolicy?, checkIgnoreError?, symlink? }
  * - secret:env-cleanup -> { filename, fingerprint, reason: "fingerprint-match"|"directory-missing" }
  * - secret:env-cleanup-skipped -> { filename, reason: "fingerprint-mismatch"|"file-missing"|"no-record"|"disabled"|"stat-failed", checkError? }
+ * - worktree:copy-file / worktree:copy-file-skipped -> { path, outcome, reason?, error? } (never file contents)
+ *
+ * FNXC:WorktreeCopyFiles 2026-06-24-00:00:
+ * Worktree copy-file audit events are filesystem-domain setup diagnostics and must carry only paths/reasons, never `.env` contents or copied file bytes.
  */
 export type FilesystemMutationType =
   | "file:write"
@@ -751,6 +755,8 @@ export type FilesystemMutationType =
   | "binary:install-success"
   | "binary:install-failed"
   | "binary:install-denied"
+  | "worktree:copy-file"
+  | "worktree:copy-file-skipped"
   | (typeof SECRET_MUTATION_TYPES)[number];
 
 export type SandboxMutationType = "sandbox:prepare" | "sandbox:run" | "sandbox:failure" | "sandbox:fallback";

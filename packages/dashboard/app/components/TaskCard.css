@@ -1092,7 +1092,7 @@ The execution-time badge is part of the footer's bottom-right chip cluster, so i
 
 
 /* Animation for initializing spinner */
-@keyframes spin {
+@keyframes task-card-initializing-spinner-spin {
   from {
     transform: rotate(0deg);
   }
@@ -1101,10 +1101,15 @@ The execution-time badge is part of the footer's bottom-right chip cluster, so i
   }
 }
 
-.animate-spin {
-  animation: spin 1s linear infinite;
-}
 
+@keyframes task-card-edit-spinner-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 
 /* === Card Inline Editing === */
@@ -1429,7 +1434,7 @@ The execution-time badge is part of the footer's bottom-right chip cluster, so i
   border: 2px solid var(--border);
   border-top-color: var(--todo);
   border-radius: 50%;
-  animation: spin 1s linear infinite;
+  animation: task-card-edit-spinner-spin 1s linear infinite;
 }
 
 .card-edit-loading-text {

@@ -1409,7 +1409,7 @@ Across the thread: a top filter (All/Human/Bot) and prev/next chevrons live in t
   }
 }
 
-@keyframes spin {
+@keyframes github-import-spinner-spin {
   to {
     transform: rotate(360deg);
   }

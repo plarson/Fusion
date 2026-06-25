@@ -451,6 +451,135 @@ describe("createServer health and headless mode", () => {
     expect(res.body.engine).toEqual({ available: true });
   });
 
+  it("reports project engine status for connected, disconnected, starting, dashboard-only, and no-project states", async () => {
+    const store = createMockStore();
+    const runningEngine = { getTaskStore: vi.fn() };
+    const engineManager = {
+      getEngine: vi.fn((projectId: string) => (projectId === "connected" ? runningEngine : undefined)),
+      has: vi.fn((projectId: string) => projectId === "connected" || projectId === "starting"),
+      ensureEngine: vi.fn(),
+      resumeProject: vi.fn(),
+      getAllEngines: vi.fn().mockReturnValue(new Map()),
+    };
+    const app = createServer(store, { engineManager: engineManager as any });
+
+    const connected = await GET(app, "/api/engine/status?projectId=connected");
+    const disconnected = await GET(app, "/api/engine/status?projectId=missing");
+    const starting = await GET(app, "/api/engine/status?projectId=starting");
+    const noProject = await GET(app, "/api/engine/status");
+    const dashboardOnly = await GET(createServer(store), "/api/engine/status?projectId=missing");
+
+    expect(connected.body).toEqual({ connected: true, starting: false, canStart: true, projectId: "connected" });
+    expect(disconnected.body).toEqual({ connected: false, starting: false, canStart: true, projectId: "missing" });
+    expect(starting.body).toEqual({ connected: false, starting: true, canStart: true, projectId: "starting" });
+    expect(noProject.body).toEqual({ connected: false, starting: false, canStart: false, reason: "no-project" });
+    expect(dashboardOnly.body).toEqual({ connected: false, starting: false, canStart: false, reason: "dashboard-only", projectId: "missing" });
+  });
+
+  it("starts an active project engine and returns the updated status", async () => {
+    const store = createMockStore();
+    let engine: unknown;
+    const engineManager = {
+      getEngine: vi.fn(() => engine),
+      has: vi.fn(() => Boolean(engine)),
+      ensureEngine: vi.fn(async () => {
+        engine = { getTaskStore: vi.fn() };
+        return engine;
+      }),
+      resumeProject: vi.fn(),
+      getAllEngines: vi.fn().mockReturnValue(new Map()),
+    };
+    const centralCore = { getProject: vi.fn().mockResolvedValue({ id: "project-a", status: "active" }) };
+    const app = createServer(store, { engineManager: engineManager as any, centralCore: centralCore as any });
+
+    const res = await REQUEST(app, "POST", "/api/engine/start", JSON.stringify({ projectId: "project-a" }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(engineManager.ensureEngine).toHaveBeenCalledWith("project-a");
+    expect(engineManager.resumeProject).not.toHaveBeenCalled();
+    expect(res.body).toEqual({ connected: true, starting: false, canStart: true, projectId: "project-a" });
+  });
+
+  it("resumes a paused project before returning engine status", async () => {
+    const store = createMockStore();
+    let engine: unknown;
+    const engineManager = {
+      getEngine: vi.fn(() => engine),
+      has: vi.fn(() => Boolean(engine)),
+      ensureEngine: vi.fn(),
+      resumeProject: vi.fn(async () => {
+        engine = { getTaskStore: vi.fn() };
+      }),
+      getAllEngines: vi.fn().mockReturnValue(new Map()),
+    };
+    const centralCore = { getProject: vi.fn().mockResolvedValue({ id: "project-paused", status: "paused" }) };
+    const app = createServer(store, { engineManager: engineManager as any, centralCore: centralCore as any });
+
+    const res = await REQUEST(app, "POST", "/api/engine/start", JSON.stringify({ projectId: "project-paused" }), {
+      "Content-Type": "application/json",
+    });
+
+    expect(res.status).toBe(200);
+    expect(engineManager.resumeProject).toHaveBeenCalledWith("project-paused");
+    expect(engineManager.ensureEngine).not.toHaveBeenCalled();
+    expect(res.body).toEqual({ connected: true, starting: false, canStart: true, projectId: "project-paused" });
+  });
+
+  it("rejects engine start when dashboard-only or project scope is missing", async () => {
+    const store = createMockStore();
+    const dashboardOnly = await REQUEST(createServer(store), "POST", "/api/engine/start?projectId=project-a");
+    const noProject = await REQUEST(createServer(store, {
+      engineManager: {
+        getEngine: vi.fn(),
+        has: vi.fn(),
+        ensureEngine: vi.fn(),
+        resumeProject: vi.fn(),
+        getAllEngines: vi.fn().mockReturnValue(new Map()),
+      } as any,
+    }), "POST", "/api/engine/start");
+
+    expect(dashboardOnly.status).toBe(409);
+    expect(dashboardOnly.body).toEqual({ error: "Engine manager is unavailable", reason: "dashboard-only" });
+    expect(noProject.status).toBe(409);
+    expect(noProject.body).toEqual({ error: "Project id is required", reason: "no-project" });
+  });
+
+  it("returns sanitized start failures without leaking stack traces", async () => {
+    const store = createMockStore();
+    const engineManager = {
+      getEngine: vi.fn(),
+      has: vi.fn().mockReturnValue(false),
+      ensureEngine: vi.fn().mockRejectedValue(new Error("Project project-a disappeared")),
+      resumeProject: vi.fn(),
+      getAllEngines: vi.fn().mockReturnValue(new Map()),
+    };
+    const app = createServer(store, { engineManager: engineManager as any });
+
+    const res = await REQUEST(app, "POST", "/api/engine/start?projectId=project-a");
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: "Project project-a disappeared" });
+  });
+
+  it("returns a paused conflict when ensureEngine hits the paused guard", async () => {
+    const store = createMockStore();
+    const engineManager = {
+      getEngine: vi.fn(),
+      has: vi.fn().mockReturnValue(false),
+      ensureEngine: vi.fn().mockRejectedValue(new Error("Project project-a is paused")),
+      resumeProject: vi.fn(),
+      getAllEngines: vi.fn().mockReturnValue(new Map()),
+    };
+    const app = createServer(store, { engineManager: engineManager as any });
+
+    const res = await REQUEST(app, "POST", "/api/engine/start?projectId=project-a");
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "Project project-a is paused", reason: "paused" });
+  });
+
   it("reports degraded status when database corruption is detected", async () => {
     const store = createMockStore({
       getDatabaseHealth: vi.fn().mockReturnValue({

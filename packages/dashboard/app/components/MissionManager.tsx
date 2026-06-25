@@ -106,6 +106,7 @@ import {
 import type { AutopilotState, MissionInterviewDraftSummary } from "./mission-types";
 import { readCache, SWR_CACHE_KEYS, writeCache } from "../utils/swrCache";
 import { getRelativeTimeBucket } from "../utils/relativeTimeAgo";
+import { getSessionTabId } from "../utils/getSessionTabId";
 
 const MISSION_SIDEBAR_DEFAULT_WIDTH = 300;
 const MISSION_SIDEBAR_MIN_WIDTH = 220;
@@ -118,6 +119,7 @@ interface MissionManagerProps {
   onClose: () => void;
   addToast: (message: string, type?: ToastType) => void;
   projectId?: string;
+  workflowId?: string | null;
   onSelectTask?: (taskId: string) => void;
   availableTasks?: Array<{ id: string; title?: string }>;
   resumeSessionId?: string;
@@ -613,9 +615,10 @@ function normalizeMissionHierarchy(mission: MissionWithHierarchy): MissionWithHi
   };
 }
 
-export function MissionManager({ isOpen, isInline = false, onClose, addToast, projectId, onSelectTask, availableTasks = [], resumeSessionId, targetMissionId, milestoneSliceResumeSessionId, onMilestoneSliceResumeFetchError, onNavigateToGoal }: MissionManagerProps) {
+export function MissionManager({ isOpen, isInline = false, onClose, addToast, projectId, workflowId, onSelectTask, availableTasks = [], resumeSessionId, targetMissionId, milestoneSliceResumeSessionId, onMilestoneSliceResumeFetchError, onNavigateToGoal }: MissionManagerProps) {
   const { t } = useTranslation("app");
   const { confirm } = useConfirm();
+  const sessionTabId = useMemo(() => getSessionTabId(), []);
   const isActive = isInline || isOpen;
   const cacheSuffix = projectId ?? "";
   const missionsCacheKey = `${SWR_CACHE_KEYS.MISSIONS_PREFIX}${cacheSuffix}`;
@@ -2018,11 +2021,23 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     }
   }, [addToast, loadMissionDetail, selectedMission, projectId]);
 
+  const missionTriageOptions = useMemo(() => {
+    const branchOptions = toMissionBranchOptions(selectedMission ?? undefined);
+    /*
+    FNXC:MissionWorkflows 2026-06-25-00:00:
+    Mission feature and slice triage must carry the active header workflow into task creation just like Planning. Omit the field when the switcher has no resolved selection so API/tool/autopilot paths continue inheriting the project default.
+    */
+    return {
+      ...branchOptions,
+      ...(workflowId ? { workflowId } : {}),
+    } as NonNullable<Parameters<typeof triageFeature>[4]> & { workflowId?: string };
+  }, [selectedMission, workflowId]);
+
   // Triage a single feature — creates a task and links it
   const handleTriageFeature = useCallback(async (featureId: string) => {
     try {
       setSaving(true);
-      await triageFeature(featureId, undefined, undefined, projectId, toMissionBranchOptions(selectedMission ?? undefined));
+      await triageFeature(featureId, undefined, undefined, projectId, missionTriageOptions);
       addToast(t("missions.featureTriaged", "Feature triaged — task created"), "success");
       await loadMissionDetail(selectedMission!.id);
     } catch (err) {
@@ -2030,7 +2045,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     } finally {
       setSaving(false);
     }
-  }, [addToast, loadMissionDetail, selectedMission, projectId]);
+  }, [addToast, loadMissionDetail, missionTriageOptions, selectedMission, projectId]);
 
   // Triage with preview — fetches enriched description first
   const handleTriageFeatureWithPreview = useCallback(async (featureId: string) => {
@@ -2062,7 +2077,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
   const handleTriageAllSliceFeatures = useCallback(async (sliceId: string) => {
     try {
       setSaving(true);
-      const result = await triageAllSliceFeatures(sliceId, projectId, toMissionBranchOptions(selectedMission ?? undefined));
+      const result = await triageAllSliceFeatures(sliceId, projectId, missionTriageOptions);
       addToast(t("missions.sliceTriaged", { count: result.count, defaultValue_one: "Triaged {{count}} feature", defaultValue_other: "Triaged {{count}} features" }), "success");
       await loadMissionDetail(selectedMission!.id);
     } catch (err) {
@@ -2070,7 +2085,7 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     } finally {
       setSaving(false);
     }
-  }, [addToast, loadMissionDetail, selectedMission, projectId]);
+  }, [addToast, loadMissionDetail, missionTriageOptions, selectedMission, projectId]);
 
   // ── Assertion handlers ──
 
@@ -2476,22 +2491,37 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
     t,
   );
 
-  const previousSelectedMissionIdRef = useRef<string | null>(selectedMission?.id ?? null);
+  const previousMobileDetailVisibleRef = useRef(false);
 
   useEffect(() => {
-    const previousSelectedMissionId = previousSelectedMissionIdRef.current;
-    const currentSelectedMissionId = selectedMission?.id ?? null;
-    previousSelectedMissionIdRef.current = currentSelectedMissionId;
+    if (!isActive) {
+      previousMobileDetailVisibleRef.current = false;
+    }
+  }, [isActive]);
 
-    if (!isActive || !isMobile || !currentSelectedMissionId || previousSelectedMissionId === currentSelectedMissionId) {
+  useEffect(() => {
+    const isMobileDetailVisible = isActive && isMobile && Boolean(selectedMission);
+
+    if (!isMobile) {
+      // Keep the mobile detail flag untouched on desktop so split-pane refreshes do not consume or create mobile nav entries.
       return;
     }
 
-    // MissionManager may already sit behind an App-level modal nav entry.
-    // On mobile, selecting a mission stacks a view entry on top so back goes
-    // detail → list → modal close instead of skipping the in-modal list.
-    pushNav({ type: "view", revert: handleBackToList });
-  }, [handleBackToList, isActive, isMobile, pushNav, selectedMission?.id]);
+    if (!isMobileDetailVisible) {
+      previousMobileDetailVisibleRef.current = false;
+      return;
+    }
+
+    /*
+    FNXC:MissionNavigation 2026-06-24-23:48:
+    Mobile Missions treats Structure and Activity as tabs inside one detail view. Push one view entry when detail becomes visible so browser/Android Back exits to the Missions list before any outer modal or app navigation, and do not push again for tab switches, SSE refreshes, or cached mission rehydration.
+    */
+    if (!previousMobileDetailVisibleRef.current) {
+      pushNav({ type: "view", revert: handleBackToList });
+    }
+
+    previousMobileDetailVisibleRef.current = true;
+  }, [handleBackToList, isActive, isMobile, pushNav, selectedMission]);
 
   const selectedMilestoneTelemetry = useMemo(() => {
     if (!validationTelemetry || !selectedMilestoneId || !isMilestoneValidationTelemetry(validationTelemetry)) {
@@ -4217,7 +4247,11 @@ export function MissionManager({ isOpen, isInline = false, onClose, addToast, pr
 
   const handleDiscardInterviewSession = async (sessionId: string) => {
     try {
-      await discardMissionInterviewDraft(sessionId, projectId);
+      /*
+      FNXC:MissionDraftDiscard 2026-06-24-02:42:
+      The mission draft Discard confirmation must send the current browser tab id so a draft locked by this tab can be removed while a draft actively owned by another tab returns the lock warning and stays visible.
+      */
+      await discardMissionInterviewDraft(sessionId, projectId, sessionTabId);
       setMissionInterviewDrafts((current) => current.filter((session) => session.id !== sessionId));
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 409) {

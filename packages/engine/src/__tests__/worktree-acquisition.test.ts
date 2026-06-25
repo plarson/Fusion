@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -471,6 +471,29 @@ describe("acquireTaskWorktree", () => {
     expect(cleanupOrder).toBeLessThan(initOrder);
   });
 
+  it("copies configured files for fresh acquisition before init command", async () => {
+    const rootDir = track(mkdtempSync(join(tmpdir(), "fn-copy-fresh-root-")));
+    const worktreePath = track(mkdtempSync(join(tmpdir(), "fn-copy-fresh-worktree-")));
+    writeFileSync(join(rootDir, ".env"), "SECRET=redacted\n", "utf-8");
+    const runConfiguredCommand = vi.fn().mockImplementation(async () => {
+      expect(readFileSync(join(worktreePath, ".env"), "utf-8")).toBe("SECRET=redacted\n");
+      return { exitCode: 0, stderr: "", stdout: "" };
+    });
+
+    await acquireTaskWorktree({
+      task,
+      rootDir,
+      store,
+      settings: { worktreeCopyFiles: [".env"], worktreeInitCommand: "pnpm install" } as any,
+      createWorktree: vi.fn().mockResolvedValue({ path: worktreePath, branch: "fusion/fn-1" }),
+      runConfiguredCommand,
+      runInitCommand: true,
+    });
+
+    expect(readFileSync(join(worktreePath, ".env"), "utf-8")).toBe("SECRET=redacted\n");
+    expect(store.logEntry).toHaveBeenCalledWith("FN-1", "Copied configured worktree files into fresh worktree: .env", undefined, undefined);
+  });
+
   it("invokes desktop artifact cleanup once for pooled acquisition", async () => {
     const runConfiguredCommand = vi.fn();
 
@@ -492,6 +515,50 @@ describe("acquireTaskWorktree", () => {
     expect(desktopArtifacts.removeDesktopBuildArtifacts).toHaveBeenCalledTimes(1);
     expect(desktopArtifacts.removeDesktopBuildArtifacts).toHaveBeenCalledWith("/tmp/pooled", undefined);
     expect(runConfiguredCommand).not.toHaveBeenCalled();
+  });
+
+  it("copies configured files into pooled worktrees after preparation", async () => {
+    const rootDir = track(mkdtempSync(join(tmpdir(), "fn-copy-pool-root-")));
+    const worktreePath = track(mkdtempSync(join(tmpdir(), "fn-copy-pool-worktree-")));
+    writeFileSync(join(rootDir, ".env"), "POOL=updated\n", "utf-8");
+    writeFileSync(join(worktreePath, ".env"), "POOL=old\n", "utf-8");
+
+    const result = await acquireTaskWorktree({
+      task,
+      rootDir,
+      store,
+      settings: { recycleWorktrees: true, worktreeCopyFiles: [".env"] } as any,
+      pool: {
+        acquire: (_taskId: string) => worktreePath,
+        prepareForTask: vi.fn().mockResolvedValue({ branch: "fusion/fn-1", worktreePath, reclaimed: false }),
+        release: vi.fn(),
+      } as any,
+      createWorktree: vi.fn(),
+    });
+
+    expect(result.source).toBe("pool");
+    expect(readFileSync(join(worktreePath, ".env"), "utf-8")).toBe("POOL=updated\n");
+    expect(store.logEntry).toHaveBeenCalledWith("FN-1", "Copied configured worktree files into pool worktree: .env", undefined, undefined);
+  });
+
+  it("does not copy configured files over resumed worktree state", async () => {
+    const rootDir = track(mkdtempSync(join(tmpdir(), "fn-copy-resume-root-")));
+    const worktreePath = track(mkdtempSync(join(tmpdir(), "fn-copy-resume-worktree-")));
+    writeFileSync(join(rootDir, ".env"), "ROOT=updated\n", "utf-8");
+    writeFileSync(join(worktreePath, ".env"), "RESUME=keep\n", "utf-8");
+
+    const result = await acquireTaskWorktree({
+      task: { ...task, worktree: worktreePath, branch: "fusion/fn-1" },
+      rootDir,
+      store,
+      settings: { worktreeCopyFiles: [".env"] } as any,
+      createWorktree: vi.fn(),
+    });
+
+    expect(result.source).toBe("existing");
+    expect(readFileSync(join(worktreePath, ".env"), "utf-8")).toBe("RESUME=keep\n");
+    expect(store.logEntry).not.toHaveBeenCalledWith("FN-1", expect.stringContaining("Copied configured worktree files"), undefined, undefined);
+    expect(existsSync(join(worktreePath, ".env"))).toBe(true);
   });
 
   it("FN-4834: logs worktree init stderr in task log outcome", async () => {

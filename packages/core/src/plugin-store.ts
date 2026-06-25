@@ -129,6 +129,18 @@ export class PluginStore extends EventEmitter<PluginStoreEvents> {
     return this._centralDb;
   }
 
+  /**
+   * FNXC:Plugins 2026-06-25-03:31:
+   * Shared test harnesses clear the file-backed global settings directory between tests while reusing one TaskStore.
+   * Dispose both plugin database handles first so future plugin access reopens a fresh central DB instead of writing through a connection whose backing file was removed.
+   */
+  close(): void {
+    this._localDb?.close();
+    this._localDb = null;
+    this._centralDb?.close();
+    this._centralDb = null;
+  }
+
   async init(): Promise<void> {
     const _ = this.localDb;
     const __ = this.centralDb;

@@ -3650,6 +3650,13 @@ export interface ProjectSettings {
    */
   heartbeatPromptTemplate?: HeartbeatPromptTemplate;
   groupOverlappingFiles: boolean;
+  /**
+   * When true (default), file-overlap serialization ignores project-relative paths
+   * containing any hidden dot segment (for example `.fusion/`, `.changeset/`,
+   * `.github/`, `.env`, or `packages/.cache/out.js`). Set false to restore the
+   * legacy behavior that counts hidden paths as overlap blockers.
+   */
+  ignoreHiddenOverlapPaths?: boolean;
   /** File/directory paths to ignore when evaluating overlap serialization.
    *  Entries are project-relative paths (for example: `docs/README.md`, `docs/`, `generated/*`).
    *  Absolute paths and `..` traversal are not allowed.
@@ -3778,6 +3785,13 @@ export interface ProjectSettings {
   /** Shell command to run inside each new worktree immediately after creation.
    *  Useful for project-specific setup (e.g. `pnpm install --frozen-lockfile`, `cp .env.local .env`). */
   worktreeInitCommand?: string;
+  /**
+   * Repository-root-relative regular files copied into newly assigned non-resume task worktrees.
+   *
+   * FNXC:WorktreeCopyFiles 2026-06-24-00:00:
+   * Operators need `.env`-style repo files available before worktree init commands run without embedding shell copy commands in setup. Entries stay root-relative, copy only regular files, and apply only when Fusion prepares a fresh or pooled assignment so resume worktrees keep their existing on-disk state.
+   */
+  worktreeCopyFiles?: string[];
   /** Custom test command for the project (e.g. "pnpm test") */
   testCommand?: string;
   /** Custom build command for the project (e.g. "pnpm build") */

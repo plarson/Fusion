@@ -275,6 +275,7 @@ export const DEFAULT_PROJECT_SETTINGS = {
   heartbeatScopeDiscipline: "strict",
   heartbeatPromptTemplate: "default",
   groupOverlappingFiles: true,
+  ignoreHiddenOverlapPaths: true,
   overlapIgnorePaths: [],
   autoMerge: true,
   // U18 (R15): the Review-response loop is default-on. Independent of `autoMerge` —
@@ -295,6 +296,11 @@ export const DEFAULT_PROJECT_SETTINGS = {
   defaultNodeId: undefined,
   secretsEnv: undefined,
   worktreeInitCommand: undefined,
+  /*
+  FNXC:WorktreeCopyFiles 2026-06-24-00:00:
+  The safe default is an empty allowlist so new worktrees never copy potentially sensitive repository files until the project owner explicitly configures root-relative regular-file paths.
+  */
+  worktreeCopyFiles: [],
   testCommand: undefined,
   buildCommand: undefined,
   recycleWorktrees: false,

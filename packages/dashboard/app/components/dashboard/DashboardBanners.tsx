@@ -6,6 +6,7 @@ import type { DashboardBannersProps } from "./types";
 import type { SectionId } from "../SettingsModal";
 import { TestModeBanner } from "../TestModeBanner";
 import { EngineUnavailableBanner } from "../EngineUnavailableBanner";
+import { EngineStatusBanner } from "../EngineStatusBanner";
 import { OAuthReloginBanner } from "../OAuthReloginBanner";
 import { SessionNotificationBanner } from "../SessionNotificationBanner";
 import { CliBinaryInstallBanner } from "../CliBinaryInstallBanner";
@@ -66,6 +67,8 @@ export function DashboardBanners({
         <>
           <TestModeBanner isActive={isTestMode} />
           <EngineUnavailableBanner isVisible={dashboardHealth?.engine?.available === false} />
+          {/* FNXC:EngineStatusBanner 2026-06-22-00:00: Project-scoped engine remediation belongs in the same project-only banner guard family as the existing operational notices, and the key resets polling immediately when the user switches projects. */}
+          <EngineStatusBanner key={currentProject.id} projectId={currentProject.id} />
           <OAuthReloginBanner
             onReLogin={(_providerId) => openSettingsWithNav("authentication" as SectionId)}
           />

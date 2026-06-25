@@ -557,7 +557,7 @@
   border: calc(var(--space-xs) / 2) solid transparent;
   border-top-color: currentColor;
   border-radius: 50%;
-  animation: spin var(--nodes-view-spin-duration) linear infinite;
+  animation: nodes-view-spinner-spin var(--nodes-view-spin-duration) linear infinite;
 }
 
 .nodes-view .node-status-indicator__name {
@@ -580,13 +580,13 @@
   }
 }
 
-@keyframes spin {
+@keyframes nodes-view-spinner-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
 
-.spin {
-  animation: spin var(--nodes-view-spin-duration) linear infinite;
+.nodes-view .spin {
+  animation: nodes-view-spinner-spin var(--nodes-view-spin-duration) linear infinite;
 }
 
 /* ── Nodes View Mobile Responsive ──────────────────────────────────────── */

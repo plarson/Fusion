@@ -36,6 +36,7 @@ import type { RunAuditor } from "./run-audit.js";
 import { writeSecretsEnvFile } from "./secrets-env-writer.js";
 import { removeDesktopBuildArtifacts } from "./worktree-desktop-artifacts.js";
 import { installTaskWorktreeIdentityGuard } from "./worktree-hooks.js";
+import { copyConfiguredWorktreeFiles, type WorktreeCopyFileResult } from "./worktree-copy-files.js";
 import { resolveCapturedBaseCommitSha } from "./base-commit-capture.js";
 import { resolveIntegrationBranch } from "./integration-branch.js";
 import { activeSessionRegistry, type ActiveSessionRegistry } from "./active-session-registry.js";
@@ -307,8 +308,34 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
       }
     };
 
+  const logConfiguredCopyFileResults = async (results: WorktreeCopyFileResult[], source: "fresh" | "pool") => {
+    if (results.length === 0) return;
+    const copied = results.filter((result) => result.outcome === "copied");
+    const skipped = results.filter((result) => result.outcome === "skipped" && result.reason !== "blank" && result.reason !== "duplicate");
+    if (copied.length > 0) {
+      await store.logEntry(task.id, `Copied configured worktree files into ${source} worktree: ${copied.map((result) => result.path).join(", ")}`, undefined, runContext);
+    }
+    for (const result of skipped) {
+      await store.logEntry(task.id, `Skipped configured worktree copy file ${result.path}: ${result.reason ?? "unknown"}`, undefined, runContext);
+    }
+  };
+
+  const copyConfiguredFilesForPreparedWorktree = async (source: "fresh" | "pool") => {
+    const preparedWorktreePath = worktreePath;
+    if (!preparedWorktreePath) return;
+    const results = await copyConfiguredWorktreeFiles({
+      rootDir,
+      worktreePath: preparedWorktreePath,
+      paths: settings.worktreeCopyFiles,
+      taskId: task.id,
+      logger,
+      audit,
+    });
+    await logConfiguredCopyFileResults(results, source);
+  };
+
   const emitRepoRootReturnGuardAudit = async (guardedPath: string, source: string) => {
-    await audit?.git({
+    await audit?.git({ 
       type: "worktree:incomplete-detected",
       target: guardedPath,
       metadata: {
@@ -354,6 +381,8 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
     if (cleanup.removed.length > 0) {
       await store.logEntry(task.id, `Removed desktop build artifacts from worktree: ${cleanup.removed.join(", ")}`, undefined, runContext);
     }
+
+    await copyConfiguredFilesForPreparedWorktree(source);
 
     if (runInitCommand && settings.worktreeInitCommand && runConfiguredCommand) {
       const initStartedAt = Date.now();
@@ -516,6 +545,7 @@ export async function acquireTaskWorktree(opts: AcquireTaskWorktreeOptions): Pro
           if (cleanup.removed.length > 0) {
             await store.logEntry(task.id, `Removed desktop build artifacts from worktree: ${cleanup.removed.join(", ")}`, undefined, runContext);
           }
+          await copyConfiguredFilesForPreparedWorktree("pool");
           await maybeWarnForeignTaskStartPoint({
             baseBranch,
             rootDir,

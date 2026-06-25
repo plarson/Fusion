@@ -16534,6 +16534,21 @@ ${stepsSection}`;
       this.secretsCentralCore = null;
     }
     this.secretsStore = null;
+    if (this.pluginStore) {
+      /**
+       * FNXC:Plugins 2026-06-25-00:00:
+       * FN-7005 requires TaskStore.close() to own the cached PluginStore lifecycle because PluginStore has separate local and central SQLite connections.
+       * Dispose it here so long-running processes and tests outside shared reset helpers do not leak handles after TaskStore shutdown; PluginStore.close() follows FN-7003's null-safe handle teardown.
+       */
+      const pluginStore = this.pluginStore;
+      this.pluginStore = null;
+      pluginStore.removeAllListeners();
+      try {
+        pluginStore.close();
+      } catch (err) {
+        console.warn(`[fusion] Could not close plugin store on TaskStore close:`, err);
+      }
+    }
   }
 
   get fts5Available(): boolean {

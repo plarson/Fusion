@@ -19,6 +19,7 @@ import { ExperimentalSection } from "../components/settings/sections/Experimenta
 import { MovedSettingsStub } from "../components/settings/sections/MovedSettingsStub";
 import { PromptsSection } from "../components/settings/sections/PromptsSection";
 import { SecretsSection } from "../components/settings/sections/SecretsSection";
+import { WorktreesSection } from "../components/settings/sections/WorktreesSection";
 import type { SettingsFormState } from "../components/settings/sections/context";
 
 vi.mock("../components/AgentPromptsManager", () => ({
@@ -117,6 +118,71 @@ describe("SecretsSection", () => {
     expect(screen.getByTestId("scope-banner")).toBeInTheDocument();
     expect(screen.getByText("Secrets")).toBeInTheDocument();
     expect(screen.getByTestId("secrets-view")).toBeInTheDocument();
+  });
+});
+
+describe("WorktreesSection", () => {
+  const worktrunkInstall = {
+    status: "installed",
+    version: "1.0.0",
+    installPath: "/tmp/worktrunk",
+    requesting: false,
+    requestInstall: vi.fn(),
+  } as never;
+
+  it("renders editable copy-file rows with add, browse, and remove controls", () => {
+    const onChange = vi.fn();
+    const onBrowse = vi.fn();
+    const onRemove = vi.fn();
+    const onAdd = vi.fn();
+    render(
+      <WorktreesSection
+        scopeBanner={null}
+        form={{ recycleWorktrees: false, worktreeCopyFiles: [".env"] } as SettingsFormState}
+        setForm={vi.fn()}
+        gitRemotes={[]}
+        worktrunkInstall={worktrunkInstall}
+        worktrunkInstallVerified={true}
+        onOpenWorktreesDirPicker={vi.fn()}
+        onWorktreeCopyFileChange={onChange}
+        onRemoveWorktreeCopyFile={onRemove}
+        onAddWorktreeCopyFile={onAdd}
+        onOpenWorktreeCopyFilePicker={onBrowse}
+      />,
+    );
+
+    expect(screen.getByText("Files to copy into new worktrees")).toBeInTheDocument();
+    const input = screen.getByLabelText("File to copy into new worktrees") as HTMLInputElement;
+    expect(input.value).toBe(".env");
+    fireEvent.change(input, { target: { value: "config/local.env" } });
+    expect(onChange).toHaveBeenCalledWith(0, "config/local.env");
+    fireEvent.click(screen.getByRole("button", { name: "Browse file to copy into new worktrees" }));
+    expect(onBrowse).toHaveBeenCalledWith(0);
+    fireEvent.click(screen.getByRole("button", { name: "Remove copied worktree file" }));
+    expect(onRemove).toHaveBeenCalledWith(0);
+    fireEvent.click(screen.getByRole("button", { name: "Add file" }));
+    expect(onAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an empty copy-file row reachable when the setting is undefined", () => {
+    render(
+      <WorktreesSection
+        scopeBanner={null}
+        form={{ recycleWorktrees: false, worktreeCopyFiles: undefined } as SettingsFormState}
+        setForm={vi.fn()}
+        gitRemotes={[]}
+        worktrunkInstall={worktrunkInstall}
+        worktrunkInstallVerified={true}
+        onOpenWorktreesDirPicker={vi.fn()}
+        onWorktreeCopyFileChange={vi.fn()}
+        onRemoveWorktreeCopyFile={vi.fn()}
+        onAddWorktreeCopyFile={vi.fn()}
+        onOpenWorktreeCopyFilePicker={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("File to copy into new worktrees")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Browse file to copy into new worktrees" })).toBeInTheDocument();
   });
 });
 

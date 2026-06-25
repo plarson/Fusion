@@ -82,7 +82,7 @@ export function SchedulingSection({ scopeBanner, form, setForm, globalMaxConcurr
             const num = Number(val);
             setForm((f) => ({ ...f, taskStuckTimeoutMs: val && num > 0 ? num * 60000 : undefined }));
         }}/>
-        <small>{t("settings.scheduling.timeoutInMinutesForDetectingStuckTasksWhen", "Timeout in minutes for detecting stuck tasks. When a task&apos;s agent session shows no activity for longer than this duration, the task is terminated and retried. Leave empty to disable. Suggested: 10.")}</small>
+        <small>{t("settings.scheduling.timeoutInMinutesForDetectingStuckTasksWhen", "Timeout in minutes for detecting stuck tasks. When a task's agent session shows no activity for longer than this duration, the task is terminated and retried. Leave empty to disable. Suggested: 10.")}</small>
       </div>
       <div className="form-group">
         <label htmlFor="staleHighFanoutBlockerAgeThresholdMs">{t("settings.scheduling.staleHighFanOutEscalationHours", "Stale High Fan-out Escalation (hours)")}</label>
@@ -160,6 +160,16 @@ export function SchedulingSection({ scopeBanner, form, setForm, globalMaxConcurr
         <label htmlFor="groupOverlappingFiles" className="checkbox-label">
           <input id="groupOverlappingFiles" type="checkbox" checked={form.groupOverlappingFiles} onChange={(e) => setForm((f) => ({ ...f, groupOverlappingFiles: e.target.checked }))}/>{t("settings.scheduling.serializeTasksWithOverlappingFiles", " Serialize tasks with overlapping files ")}</label>
         <small>{t("settings.scheduling.whenEnabledTasksThatModifyTheSameFiles", "When enabled, tasks that modify the same files are queued serially to avoid merge conflicts")}</small>
+      </div>
+
+      {/**
+       * FNXC:SettingsScheduling 2026-06-23-13:22:
+       * Operators need a Scheduling toggle that defaults on for ignoring hidden dot paths in overlap checks while preserving the selected value independently of overlap serialization being enabled.
+       */}
+      <div className="form-group">
+        <label htmlFor="ignoreHiddenOverlapPaths" className="checkbox-label">
+          <input id="ignoreHiddenOverlapPaths" type="checkbox" checked={form.ignoreHiddenOverlapPaths !== false} onChange={(e) => setForm((f) => ({ ...f, ignoreHiddenOverlapPaths: e.target.checked }))}/>{t("settings.scheduling.ignoreHiddenDotPathsInOverlapChecks", " Ignore hidden dot paths in overlap checks ")}</label>
+        <small>{t("settings.scheduling.ignoreHiddenDotPathsHelp", "When enabled, overlap checks ignore hidden path segments such as .fusion/, .changeset/, .github/, .env, and nested .cache/ directories. Uncheck to restore legacy counting for stricter serialization.")}</small>
       </div>
 
       <div className="form-group settings-overlap-ignore-group">

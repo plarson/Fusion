@@ -640,10 +640,10 @@ non-notched devices, so this is a no-op there. Pair with viewport-fit=cover (ind
   border: 1px solid var(--triage);
   border-top-color: transparent;
   border-radius: 50%;
-  animation: spin 1s linear infinite;
+  animation: header-status-spinner-spin 1s linear infinite;
 }
 
-@keyframes spin {
+@keyframes header-status-spinner-spin {
   to { transform: rotate(360deg); }
 }
 

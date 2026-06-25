@@ -742,6 +742,86 @@ describe("TaskDetailModal", () => {
     expect(onRequestClose).toHaveBeenCalledTimes(1);
   });
 
+  function expectNoBranchReattachmentAffordance(container: HTMLElement): void {
+    // FN-6983: Task Detail must not ask users to manually reattach branches; self-healing owns recovery.
+    expect(screen.queryByText(/Branch needs reattachment/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Branch binding lost/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/isn't currently attached to a fusion branch/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Reattached branch/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Reattach branch/i })).not.toBeInTheDocument();
+    expect(container.querySelector(".rebind-banner")).toBeNull();
+    expect(container.querySelector(".rebind-banner-actions")).toBeNull();
+    expect(container.querySelector(".rebind-banner-result")).toBeNull();
+  }
+
+  function renderTaskDetail(task: ReturnType<typeof makeTask>, mobileHeaderMode?: "back") {
+    return render(
+      <TaskDetailModal
+        initialTab="definition"
+        task={task}
+        onClose={noop}
+        onMoveTask={noopMove}
+        onDeleteTask={noopDelete}
+        onMergeTask={noopMerge}
+        onOpenDetail={noopOpenDetail}
+        addToast={noop}
+        mobileHeaderMode={mobileHeaderMode}
+      />,
+    );
+  }
+
+  describe("branch reattachment affordance absence", () => {
+    it.each([
+      ["null branch and worktree", makeTask({ column: "in-review", branch: null, worktree: null })],
+      ["undefined branch with missing worktree", makeTask({ column: "in-review", branch: undefined, worktree: null })],
+      ["populated branch control", makeTask({ column: "in-review", branch: "fusion/fn-099", worktree: "/tmp/fn-099" })],
+      ["non-in-review missing branch", makeTask({ column: "todo", branch: null, worktree: null })],
+    ] as const)("renders no reattachment banner for %s", (_label, task) => {
+      const { container } = renderTaskDetail(task);
+
+      expectNoBranchReattachmentAffordance(container);
+    });
+
+    it("renders no reattachment banner for workspace in-review tasks with no singular branch", () => {
+      const task = makeTask({
+        column: "in-review",
+        worktree: null,
+        workspaceWorktrees: {
+          "repo-a": { worktreePath: "/tmp/fn-099/repo-a", branch: "fusion/fn-099", baseCommitSha: "abc123" },
+          "repo-b": { worktreePath: "/tmp/fn-099/repo-b", branch: "fusion/fn-099" },
+        },
+      });
+      delete (task as { branch?: string | null }).branch;
+
+      const { container } = renderTaskDetail(task);
+
+      expectNoBranchReattachmentAffordance(container);
+    });
+
+    it("keeps the removed mobile rebind action shell absent in narrow task detail rendering", () => {
+      const { container } = renderTaskDetail(makeTask({ column: "in-review", branch: null, worktree: null }), "back");
+
+      expect(screen.getByRole("button", { name: "Back to task list" })).toBeInTheDocument();
+      expectNoBranchReattachmentAffordance(container);
+    });
+
+    it("renders no reattachment banner from embedded TaskDetailContent", () => {
+      const { container } = render(
+        <TaskDetailContent
+          task={makeTask({ column: "in-review", branch: null, worktree: null })}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+          embedded
+        />,
+      );
+
+      expectNoBranchReattachmentAffordance(container);
+    });
+  });
+
   it("styles detail-body scrollbar rules", () => {
     const css = readDashboardStylesSource();
 

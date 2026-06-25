@@ -764,8 +764,8 @@ function buildReviewRequest(
       "Review the code changes for correctness, patterns, and test coverage.",
       "",
       "## Worktree Boundary",
-      `Assigned task worktree: \`${cwd}\``,
-      "Verify that implementation changes are in this worktree. If you find changes or commits in the primary project checkout or any other path, issue REVISE unless the outside path is an expected project-root exception such as .fusion/memory/ files, task attachments, or explicitly documented Fusion metadata.",
+      `Assigned review root: \`${cwd}\``,
+      "Verify that implementation changes are in this assigned review root. For ordinary tasks this is the task worktree; for explicitly routed external-checkout tasks it may be a validated external checkout. If you find changes or commits in the primary project checkout or any other unrelated path, issue REVISE unless the outside path is an expected project-root exception such as .fusion/memory/ files, task attachments, or explicitly documented Fusion metadata.",
       "",
     );
     const userCommentsSection = buildUserCommentsPromptSection(userComments ?? [], {

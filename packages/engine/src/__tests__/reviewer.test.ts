@@ -1097,7 +1097,7 @@ describe("reviewStep — user comments in spec review", () => {
     );
 
     expect(capturedPrompt).toContain("## Worktree Boundary");
-    expect(capturedPrompt).toContain("Assigned task worktree: `/tmp/project/.worktrees/happy-robin`");
+    expect(capturedPrompt).toContain("Assigned review root: `/tmp/project/.worktrees/happy-robin`");
     expect(capturedPrompt).toContain("primary project checkout");
     expect(capturedPrompt).toContain(".fusion/memory/");
   });

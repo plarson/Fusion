@@ -78,6 +78,7 @@ import {
 } from "./agent-session-helpers.js";
 import { buildSessionSkillContext } from "./session-skill-context.js";
 import { reviewStep, type ReviewVerdict, type ReviewResult } from "./reviewer.js";
+import { resolveReviewCheckoutForTask } from "./review-checkout-routing.js";
 import { selectUserCommentsForAgentContext } from "./agent-user-comments.js";
 import { resolveSandboxBackend } from "./sandbox/index.js";
 import type { SandboxBackend } from "./sandbox/types.js";
@@ -5796,7 +5797,7 @@ export class TaskExecutor {
         const invokeReviewer = () =>
           this.workspaceConfig
             ? this.reviewWorkspacePerRepo(detail, (cwd) => runForCwd(cwd))
-            : runForCwd(worktreePath);
+            : this.reviewSingleCheckout(detail, worktreePath, (cwd) => runForCwd(cwd));
 
         let review: { verdict: ReviewVerdict; review: string; summary: string };
         try {
@@ -11764,7 +11765,7 @@ export class TaskExecutor {
           };
           const result = this.workspaceConfig
             ? await this.reviewWorkspacePerRepo(currentTask, (cwd) => runForCwd(cwd))
-            : await runForCwd(worktreePath);
+            : await this.reviewSingleCheckout(latestDetailForReview, worktreePath, (cwd) => runForCwd(cwd));
 
           await store.logEntry(
             taskId,
@@ -12800,6 +12801,22 @@ ${failureFeedback}
       }
     }
     return aggregated;
+  }
+
+  private async reviewSingleCheckout(
+    task: Task,
+    fallbackWorktreePath: string,
+    invokeForCwd: (cwd: string) => Promise<ReviewResult>,
+  ): Promise<ReviewResult> {
+    const resolution = await resolveReviewCheckoutForTask(task, fallbackWorktreePath);
+    if (!resolution.ok) {
+      return {
+        verdict: "UNAVAILABLE",
+        review: `Review checkout routing failed: ${resolution.reason}`,
+        summary: `Review checkout unavailable: ${resolution.reason}`,
+      };
+    }
+    return invokeForCwd(resolution.cwd);
   }
 
   /**

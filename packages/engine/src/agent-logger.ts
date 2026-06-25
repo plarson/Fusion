@@ -144,6 +144,8 @@ export function summarizeToolArgs(name: string, args?: Record<string, unknown>):
  * 2. **Callback mode**: provide `appendLog`. Writes go to the callback instead.
  *    When both are provided, both sinks receive every entry.
  */
+export type AgentLoggerSink = "task" | "append";
+
 export interface AgentLoggerOptions {
   /** When true, persist `detail` payloads for tool entries; default false preserves rows without verbose payloads. */
   persistAgentToolOutput?: boolean;
@@ -165,6 +167,8 @@ export interface AgentLoggerOptions {
   onAgentText?: (taskId: string, delta: string) => void;
   /** Optional callback invoked alongside tool logging (e.g. for SSE streaming). */
   onAgentTool?: (taskId: string, toolName: string) => void;
+  /** Optional sink-level guard. Return false to skip persisting this entry to the selected sink. */
+  shouldPersistEntry?: (entry: AgentLogEntry, sink: AgentLoggerSink) => boolean;
   /** Byte threshold for automatic flush. Defaults to 1024. */
   flushSizeBytes?: number;
   /** Timer interval (ms) for periodic flush. Defaults to 500. */
@@ -217,6 +221,7 @@ export class AgentLogger {
   private readonly agent?: AgentRole;
   private readonly externalTextCb?: (taskId: string, delta: string) => void;
   private readonly externalToolCb?: (taskId: string, toolName: string) => void;
+  private readonly shouldPersistEntry?: (entry: AgentLogEntry, sink: AgentLoggerSink) => boolean;
   private readonly log = createLogger("agent-logger");
   private readonly persistAgentToolOutput: boolean;
   private readonly persistAgentThinkingLog: boolean;
@@ -231,6 +236,7 @@ export class AgentLogger {
     this.agent = options.agent;
     this.externalTextCb = options.onAgentText;
     this.externalToolCb = options.onAgentTool;
+    this.shouldPersistEntry = options.shouldPersistEntry;
     this.flushSizeBytes = options.flushSizeBytes ?? FLUSH_SIZE_BYTES;
     this.flushIntervalMs = options.flushIntervalMs ?? FLUSH_INTERVAL_MS;
     /*
@@ -479,10 +485,13 @@ export class AgentLogger {
     this.pendingEntries = [];
 
     if (this.store && this.taskId) {
-      if (typeof (this.store as TaskStore & { appendAgentLogBatch?: unknown }).appendAgentLogBatch === "function") {
+      const taskEntries = this.shouldPersistEntry
+        ? entries.filter((entry) => this.shouldPersistEntry!(entry, "task"))
+        : entries;
+      if (taskEntries.length > 0 && typeof (this.store as TaskStore & { appendAgentLogBatch?: unknown }).appendAgentLogBatch === "function") {
         await this.store
           .appendAgentLogBatch(
-            entries.map((entry) => ({
+            taskEntries.map((entry) => ({
               taskId: entry.taskId,
               text: entry.text,
               type: entry.type,
@@ -493,9 +502,9 @@ export class AgentLogger {
           .catch((err) => {
             this.log.warn(`Failed to flush agent log batch for ${this.taskId}: ${err instanceof Error ? err.message : String(err)}`);
           });
-      } else {
+      } else if (taskEntries.length > 0) {
         await Promise.all(
-          entries.map((entry) =>
+          taskEntries.map((entry) =>
             this.store!.appendAgentLog(entry.taskId, entry.text, entry.type, entry.detail, entry.agent).catch((err) => {
               this.log.warn(`Failed to flush agent log entry for ${this.taskId}: ${err instanceof Error ? err.message : String(err)}`);
             }),
@@ -505,8 +514,11 @@ export class AgentLogger {
     }
 
     if (this.appendLogCb) {
+      const appendEntries = this.shouldPersistEntry
+        ? entries.filter((entry) => this.shouldPersistEntry!(entry, "append"))
+        : entries;
       await Promise.all(
-        entries.map((entry) =>
+        appendEntries.map((entry) =>
           this.appendLogCb!(entry).catch((err) => {
             this.log.warn(`appendLog callback failed for entry (${entry.type}): ${err instanceof Error ? err.message : String(err)}`);
           }),

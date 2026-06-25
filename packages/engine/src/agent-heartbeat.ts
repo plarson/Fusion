@@ -24,7 +24,8 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
 import { createTaskCreateTool, createTaskLogToolWithContext, createTaskDocumentWriteTool, createTaskDocumentReadTool, createArtifactRegisterTool, createArtifactListTool, createArtifactViewTool, createListAgentsTool, createDelegateTaskTool, createGetAgentConfigTool, createUpdateAgentConfigTool, createAgentCreateTool, createAgentDeleteTool, createSendMessageTool, createReadMessagesTool, createPostRoomMessageTool, createMemoryTools, createGoalRetrievalTools, createReadEvaluationsTool, createUpdateIdentityTool, createReflectOnPerformanceTool, createWebFetchTool, readAgentMemoryWorkspaceLongTerm, taskCreateParams } from "./agent-tools.js";
-import { AgentLogger } from "./agent-logger.js";
+import { AgentLogger, type AgentLoggerSink } from "./agent-logger.js";
+import { HeartbeatNoopSuppressionGuard, type HeartbeatNoopActionContext } from "./heartbeat-noop-suppression.js";
 import {
   resolveAgentInstructionsWithRatings,
   buildPluginPromptSection,
@@ -878,6 +879,7 @@ export class HeartbeatMonitor {
   private isRunning = false;
   private cachedHeartbeatMultiplier = 1;
   private cachedHeartbeatMultiplierAt = 0;
+  private readonly heartbeatNoopSuppression = new HeartbeatNoopSuppressionGuard();
 
   /** Tasks created per agent during heartbeat runs (keyed by agentId) */
   private runCreatedTasks: Map<string, Array<{ id: string; description: string }>> = new Map();
@@ -2336,6 +2338,26 @@ export class HeartbeatMonitor {
         let toolCallCount = 0;
         let heartbeatSummary: string | undefined;
         let stdoutExcerpt = "";
+        let meaningfulToolCallCount = 0;
+        let noopSuppressionBoardInput: unknown;
+        let noopSuppressionActionContext: HeartbeatNoopActionContext = {};
+
+        const shouldPersistHeartbeatLogEntry = (entry: import("@fusion/core").AgentLogEntry, sink: AgentLoggerSink): boolean => {
+          if (entry.type !== "text") return true;
+          const decision = this.heartbeatNoopSuppression.evaluate({
+            source,
+            status: "completed",
+            agentId,
+            taskId,
+            stream: sink === "append" ? "run" : "task",
+            summary: heartbeatSummary,
+            logText: entry.text,
+            boardInput: noopSuppressionBoardInput,
+            isNoTaskRun,
+            actionContext: noopSuppressionActionContext,
+          });
+          return !decision.suppress;
+        };
 
         const appendStdoutExcerpt = (delta: string): void => {
           if (stdoutExcerpt.length >= STDOUT_EXCERPT_LIMIT) {
@@ -2551,6 +2573,7 @@ export class HeartbeatMonitor {
         if (isNoTaskRun) {
           agentLogger = new AgentLogger({
             appendLog: (entry) => this.store.appendRunLog(agentId, run.id, entry),
+            shouldPersistEntry: shouldPersistHeartbeatLogEntry,
             agent: agent.role as AgentRole,
             persistAgentToolOutput: memorySettings?.persistAgentToolOutput,
             persistAgentThinkingLog: resolvePersistAgentThinkingLog(memorySettings, { ephemeral: isAgentEphemeral }),
@@ -2561,6 +2584,7 @@ export class HeartbeatMonitor {
             taskId,
             agent: agent.role as AgentRole,
             appendLog: (entry) => this.store.appendRunLog(agentId, run.id, entry),
+            shouldPersistEntry: shouldPersistHeartbeatLogEntry,
             persistAgentToolOutput: memorySettings?.persistAgentToolOutput,
             persistAgentThinkingLog: resolvePersistAgentThinkingLog(memorySettings, { ephemeral: isAgentEphemeral }),
           });
@@ -2691,6 +2715,9 @@ export class HeartbeatMonitor {
           },
           onToolEnd: (name, isError, result) => {
             toolCallCount++;
+            if (name !== "fn_heartbeat_done") {
+              meaningfulToolCallCount++;
+            }
             agentLogger?.onToolEnd(name, isError, result);
           },
           // Skill selection: use waking agent's skills (heartbeat has no role fallback)
@@ -3027,6 +3054,33 @@ export class HeartbeatMonitor {
             ].join("\n");
           }
 
+          noopSuppressionBoardInput = {
+            source,
+            triggerDetail,
+            wakeReason,
+            isNoTaskRun,
+            taskId: taskId ?? null,
+            agent: { id: agent.id, role: agent.role, state: agent.state },
+            inbox: pendingMessages.map((message) => ({ id: message.id, fromType: message.fromType, fromId: message.fromId, content: message.content })),
+            roomMessages: pendingRoomMessages.entries.map((entry) => ({
+              roomId: entry.room.id,
+              messageIds: entry.messages.map((message) => message.id),
+            })),
+            triggeringCommentIds: effectiveTriggeringCommentIds ?? [],
+            autoClaim: {
+              enabled: autoClaimEnabled,
+              candidateIds: autoClaimPromptCandidates.map((candidate) => candidate.id),
+              roleFilteredCount: autoClaimRoleFilteredCount,
+              snapshotCandidateCount: autoClaimSnapshotCandidateCount,
+            },
+            task: taskDetail ? { id: taskDetail.id, column: taskDetail.column, status: taskDetail.status, blockedBy: taskDetail.blockedBy, overlapBlockedBy: taskDetail.overlapBlockedBy } : null,
+          };
+          noopSuppressionActionContext = {
+            inboundMessageCount: pendingMessages.length,
+            pendingRoomMessageCount: pendingRoomMessages.total,
+            triggeringCommentCount: effectiveTriggeringCommentIds?.length ?? 0,
+          };
+
           // Persist prompts on the run record before executing so they are
           // observable in the dashboard even if execution fails partway through.
           try {
@@ -3065,6 +3119,12 @@ export class HeartbeatMonitor {
 
           // Execute
           await promptWithFallback(session, executionPrompt);
+
+          noopSuppressionActionContext = {
+            ...noopSuppressionActionContext,
+            toolCallCount: meaningfulToolCallCount,
+            createdTaskCount: this.runCreatedTasks.get(agentId)?.length ?? 0,
+          };
 
           // Capture real per-session token counts from pi-coding-agent's
           // SessionStats. Falls back to a 4-chars-per-token estimate of output

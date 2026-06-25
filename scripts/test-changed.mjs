@@ -1311,6 +1311,12 @@ export function packageHasVitestConfig(pkgDir, projectRoot = rootDir) {
   return VITEST_CONFIG_BASENAMES.some((name) => existsSync(path.join(projectRoot, pkgDir, name)));
 }
 
+export const CLI_SCOPED_AFFECTED_PACKAGE = "@runfusion/fusion";
+export const CORE_SCOPED_AFFECTED_PACKAGE = "@fusion/core";
+export const DESKTOP_SCOPED_AFFECTED_PACKAGE = "@fusion/desktop";
+export const COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE = "@fusion-plugin-examples/compound-engineering";
+export const INTEGRATION_SCOPED_AFFECTED_HEAP_MB = "4096";
+export const INTEGRATION_SCOPED_AFFECTED_WORKERS = "1";
 export const ENGINE_SCOPED_AFFECTED_PACKAGE = "@fusion/engine";
 export const ENGINE_SCOPED_AFFECTED_HEAP_MB = "6144";
 export const ENGINE_SCOPED_AFFECTED_WORKERS = "1";
@@ -1319,6 +1325,26 @@ export const DASHBOARD_SCOPED_AFFECTED_HEAP_MB = "6144";
 export const DASHBOARD_SCOPED_AFFECTED_WORKERS = "1";
 
 export const SCOPED_AFFECTED_MEMORY_ENVELOPES = Object.freeze({
+  [CLI_SCOPED_AFFECTED_PACKAGE]: Object.freeze({
+    packageName: CLI_SCOPED_AFFECTED_PACKAGE,
+    heapMb: INTEGRATION_SCOPED_AFFECTED_HEAP_MB,
+    workers: INTEGRATION_SCOPED_AFFECTED_WORKERS,
+  }),
+  [CORE_SCOPED_AFFECTED_PACKAGE]: Object.freeze({
+    packageName: CORE_SCOPED_AFFECTED_PACKAGE,
+    heapMb: INTEGRATION_SCOPED_AFFECTED_HEAP_MB,
+    workers: INTEGRATION_SCOPED_AFFECTED_WORKERS,
+  }),
+  [DESKTOP_SCOPED_AFFECTED_PACKAGE]: Object.freeze({
+    packageName: DESKTOP_SCOPED_AFFECTED_PACKAGE,
+    heapMb: INTEGRATION_SCOPED_AFFECTED_HEAP_MB,
+    workers: INTEGRATION_SCOPED_AFFECTED_WORKERS,
+  }),
+  [COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE]: Object.freeze({
+    packageName: COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE,
+    heapMb: INTEGRATION_SCOPED_AFFECTED_HEAP_MB,
+    workers: INTEGRATION_SCOPED_AFFECTED_WORKERS,
+  }),
   [ENGINE_SCOPED_AFFECTED_PACKAGE]: Object.freeze({
     packageName: ENGINE_SCOPED_AFFECTED_PACKAGE,
     heapMb: ENGINE_SCOPED_AFFECTED_HEAP_MB,
@@ -1344,6 +1370,9 @@ export function createScopedAffectedMemoryEnvelopeEnv(packageName, env = process
 
   FNXC:TestInfrastructure 2026-06-21-16:28:
   FN-6874 showed the dashboard changed-mode affected lane can OOM/SIGKILL even with `FUSION_TEST_CONCURRENCY=1 FUSION_TEST_WORKSPACE_CONCURRENCY=1`, so worker fan-out alone is not the failure mode. Give each heavy scoped package its own bounded heap envelope while preserving caller env and keeping the finite changed-class watchdog outside this env so hangs still fail instead of being masked.
+
+  FNXC:TestInfrastructure 2026-06-25-14:20:
+  Node 25.6 changed-mode runs can couple CLI/core/desktop/compound-engineering startup into one recursive pnpm/vitest lane. Keep those integration-heavy packages as individual scoped affected lanes with single-worker envelopes instead of hiding their package-level timeouts behind global `--testTimeout` appeasement.
   */
   return {
     ...env,
@@ -1393,6 +1422,26 @@ export function normalizeForwardedArgs(argv) {
   }
 
   return normalized;
+}
+
+export function buildAffectedRunCommandArgs({ packages, mode, comparisonBase, workspaceConcurrency, forwardedArgs = [] }) {
+  const filterArgs = packages.flatMap((pkg) => ["--filter", pkg]);
+  if (mode === "scoped") {
+    return [
+      ...filterArgs,
+      `--workspace-concurrency=${workspaceConcurrency}`,
+      "exec",
+      "vitest",
+      "run",
+      "--changed",
+      comparisonBase,
+      "--passWithNoTests",
+      "--silent=passed-only",
+      "--reporter=dot",
+      ...forwardedArgs,
+    ];
+  }
+  return [...filterArgs, `--workspace-concurrency=${workspaceConcurrency}`, "test", ...forwardedArgs];
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -1601,23 +1650,13 @@ export async function main(argv = process.argv.slice(2)) {
     { packages: fallbackPkgs, mode: "full" },
   ]) {
     if (packages.length === 0) continue;
-    const filterArgs = packages.flatMap((pkg) => ["--filter", pkg]);
-    const commandArgs =
-      mode === "scoped"
-        ? [
-            ...filterArgs,
-            `--workspace-concurrency=${workspaceConcurrency}`,
-            "exec",
-            "vitest",
-            "run",
-            "--changed",
-            comparisonBase,
-            "--passWithNoTests",
-            "--silent=passed-only",
-            "--reporter=dot",
-            ...forwardedArgs,
-          ]
-        : [...filterArgs, `--workspace-concurrency=${workspaceConcurrency}`, "test", ...forwardedArgs];
+    const commandArgs = buildAffectedRunCommandArgs({
+      packages,
+      mode,
+      comparisonBase,
+      workspaceConcurrency,
+      forwardedArgs,
+    });
     const memoryEnvelopeLabel = memoryEnvelopePackage ? ` (${memoryEnvelopePackage} memory envelope)` : "";
     console.log(
       mode === "scoped"

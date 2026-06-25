@@ -36,6 +36,14 @@ import {
   computeOwnHash,
   createDashboardScopedAffectedEnv,
   createEngineScopedAffectedEnv,
+  buildAffectedRunCommandArgs,
+  normalizeForwardedArgs,
+  CLI_SCOPED_AFFECTED_PACKAGE,
+  CORE_SCOPED_AFFECTED_PACKAGE,
+  DESKTOP_SCOPED_AFFECTED_PACKAGE,
+  COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE,
+  INTEGRATION_SCOPED_AFFECTED_HEAP_MB,
+  INTEGRATION_SCOPED_AFFECTED_WORKERS,
   DASHBOARD_SCOPED_AFFECTED_HEAP_MB,
   DASHBOARD_SCOPED_AFFECTED_PACKAGE,
   DASHBOARD_SCOPED_AFFECTED_WORKERS,
@@ -285,6 +293,45 @@ function assertScopedAffectedEnv(env, { heapMb, workers }) {
   assert.equal(env.HOME, "/tmp/fusion-home");
 }
 
+test("partitionScopedAffectedPackages: isolates reported Node 25 affected packages into bounded lanes", () => {
+  assert.deepEqual(
+    summarizeScopedAffectedGroups([
+      CLI_SCOPED_AFFECTED_PACKAGE,
+      CORE_SCOPED_AFFECTED_PACKAGE,
+      DESKTOP_SCOPED_AFFECTED_PACKAGE,
+      COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE,
+      ENGINE_SCOPED_AFFECTED_PACKAGE,
+    ]),
+    [
+      {
+        packages: [CLI_SCOPED_AFFECTED_PACKAGE],
+        engineMemoryEnvelope: false,
+        memoryEnvelopePackage: CLI_SCOPED_AFFECTED_PACKAGE,
+      },
+      {
+        packages: [CORE_SCOPED_AFFECTED_PACKAGE],
+        engineMemoryEnvelope: false,
+        memoryEnvelopePackage: CORE_SCOPED_AFFECTED_PACKAGE,
+      },
+      {
+        packages: [DESKTOP_SCOPED_AFFECTED_PACKAGE],
+        engineMemoryEnvelope: false,
+        memoryEnvelopePackage: DESKTOP_SCOPED_AFFECTED_PACKAGE,
+      },
+      {
+        packages: [COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE],
+        engineMemoryEnvelope: false,
+        memoryEnvelopePackage: COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE,
+      },
+      {
+        packages: [ENGINE_SCOPED_AFFECTED_PACKAGE],
+        engineMemoryEnvelope: true,
+        memoryEnvelopePackage: ENGINE_SCOPED_AFFECTED_PACKAGE,
+      },
+    ],
+  );
+});
+
 test("partitionScopedAffectedPackages: isolates dashboard and engine into separate envelope groups", () => {
   assert.deepEqual(summarizeScopedAffectedGroups([DASHBOARD_SCOPED_AFFECTED_PACKAGE]), [
     {
@@ -294,8 +341,12 @@ test("partitionScopedAffectedPackages: isolates dashboard and engine into separa
     },
   ]);
 
-  assert.deepEqual(summarizeScopedAffectedGroups(["@fusion/core", DASHBOARD_SCOPED_AFFECTED_PACKAGE]), [
-    { packages: ["@fusion/core"], engineMemoryEnvelope: false, memoryEnvelopePackage: null },
+  assert.deepEqual(summarizeScopedAffectedGroups([CORE_SCOPED_AFFECTED_PACKAGE, DASHBOARD_SCOPED_AFFECTED_PACKAGE]), [
+    {
+      packages: [CORE_SCOPED_AFFECTED_PACKAGE],
+      engineMemoryEnvelope: false,
+      memoryEnvelopePackage: CORE_SCOPED_AFFECTED_PACKAGE,
+    },
     {
       packages: [DASHBOARD_SCOPED_AFFECTED_PACKAGE],
       engineMemoryEnvelope: false,
@@ -304,9 +355,13 @@ test("partitionScopedAffectedPackages: isolates dashboard and engine into separa
   ]);
 
   assert.deepEqual(
-    summarizeScopedAffectedGroups(["@fusion/core", DASHBOARD_SCOPED_AFFECTED_PACKAGE, ENGINE_SCOPED_AFFECTED_PACKAGE]),
+    summarizeScopedAffectedGroups([CORE_SCOPED_AFFECTED_PACKAGE, DASHBOARD_SCOPED_AFFECTED_PACKAGE, ENGINE_SCOPED_AFFECTED_PACKAGE]),
     [
-      { packages: ["@fusion/core"], engineMemoryEnvelope: false, memoryEnvelopePackage: null },
+      {
+      packages: [CORE_SCOPED_AFFECTED_PACKAGE],
+      engineMemoryEnvelope: false,
+      memoryEnvelopePackage: CORE_SCOPED_AFFECTED_PACKAGE,
+    },
       {
         packages: [ENGINE_SCOPED_AFFECTED_PACKAGE],
         engineMemoryEnvelope: true,
@@ -320,9 +375,29 @@ test("partitionScopedAffectedPackages: isolates dashboard and engine into separa
     ],
   );
 
-  assert.deepEqual(summarizeScopedAffectedGroups(["@fusion/core", "@runfusion/fusion"]), [
-    { packages: ["@fusion/core", "@runfusion/fusion"], engineMemoryEnvelope: false, memoryEnvelopePackage: null },
+  assert.deepEqual(summarizeScopedAffectedGroups([CORE_SCOPED_AFFECTED_PACKAGE, CLI_SCOPED_AFFECTED_PACKAGE]), [
+    { packages: [CLI_SCOPED_AFFECTED_PACKAGE], engineMemoryEnvelope: false, memoryEnvelopePackage: CLI_SCOPED_AFFECTED_PACKAGE },
+    {
+      packages: [CORE_SCOPED_AFFECTED_PACKAGE],
+      engineMemoryEnvelope: false,
+      memoryEnvelopePackage: CORE_SCOPED_AFFECTED_PACKAGE,
+    },
   ]);
+});
+
+test("partitionScopedAffectedPackages: integration-heavy lanes use bounded single-worker envelopes", () => {
+  for (const packageName of [
+    CLI_SCOPED_AFFECTED_PACKAGE,
+    CORE_SCOPED_AFFECTED_PACKAGE,
+    DESKTOP_SCOPED_AFFECTED_PACKAGE,
+    COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE,
+  ]) {
+    const [group] = partitionScopedAffectedPackages([packageName]);
+    assert.equal(group.packages.length, 1);
+    assert.equal(group.memoryEnvelopePackage, packageName);
+    assert.equal(group.memoryEnvelope.heapMb, INTEGRATION_SCOPED_AFFECTED_HEAP_MB);
+    assert.equal(group.memoryEnvelope.workers, INTEGRATION_SCOPED_AFFECTED_WORKERS);
+  }
 });
 
 test("createDashboardScopedAffectedEnv: caps heap, preserves env, lowers workers, and leaves watchdog finite", () => {
@@ -376,6 +451,41 @@ test("createEngineScopedAffectedEnv: preserves existing engine envelope contract
   const budgetMs = deriveBudgetMs({ klass: "changed" });
   assert.equal(Number.isFinite(budgetMs), true);
   assert.equal(budgetMs > 0, true);
+});
+
+test("buildAffectedRunCommandArgs: scoped affected command keeps --changed and does not force timeout flags", () => {
+  const args = buildAffectedRunCommandArgs({
+    packages: [CORE_SCOPED_AFFECTED_PACKAGE],
+    mode: "scoped",
+    comparisonBase: "abc123",
+    workspaceConcurrency: "1",
+    forwardedArgs: [],
+  });
+
+  assert.deepEqual(args.slice(0, 2), ["--filter", CORE_SCOPED_AFFECTED_PACKAGE]);
+  assert.ok(args.includes("exec"));
+  assert.ok(args.includes("vitest"));
+  assert.ok(args.includes("--changed"));
+  assert.ok(args.includes("abc123"));
+  assert.ok(args.includes("--passWithNoTests"));
+  assert.equal(args.some((arg) => /^--testTimeout/.test(arg)), false);
+  assert.equal(args.includes("NODE_NO_WARNINGS"), false);
+});
+
+test("buildAffectedRunCommandArgs: caller diagnostic args are forwarded but not synthesized", () => {
+  const forwardedArgs = normalizeForwardedArgs(["--no-cache", "--silent", "--testTimeout=30000", "--bail=1"]);
+  assert.deepEqual(forwardedArgs, ["--testTimeout=30000", "--bail=1"]);
+
+  const args = buildAffectedRunCommandArgs({
+    packages: [ENGINE_SCOPED_AFFECTED_PACKAGE],
+    mode: "scoped",
+    comparisonBase: "abc123",
+    workspaceConcurrency: "1",
+    forwardedArgs,
+  });
+
+  assert.equal(args.filter((arg) => arg === "--testTimeout=30000").length, 1);
+  assert.equal(args.includes("--silent"), false);
 });
 
 // ---------------------------------------------------------------------------

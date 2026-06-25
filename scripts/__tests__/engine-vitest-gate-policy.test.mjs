@@ -16,13 +16,32 @@ function readJson(relativePath) {
   return JSON.parse(read(relativePath));
 }
 
-test("engine-core gate keeps a Node 24/macOS-safe Vitest pool without hiding warnings", () => {
+test("engine-core gate keeps a Node 24/macOS-safe Vitest pool without changing broad engine lanes", () => {
   const config = read("packages/engine/vitest.config.ts");
+  const projectsIndex = config.indexOf("projects:");
+  const rootTestConfig = projectsIndex === -1 ? config : config.slice(0, projectsIndex);
+  const engineCoreBlock = config.match(/name:\s*"engine-core"[\s\S]*?include:\s*\[/)?.[0] ?? "";
+  const engineDefaultBlock = config.match(/name:\s*"engine-default"[\s\S]*?include:\s*\[/)?.[0] ?? "";
 
   assert.match(
-    config,
+    engineCoreBlock,
     /pool:\s*"forks"/,
-    "engine Vitest must use fork workers; thread workers abort with Node 24/macOS libuv kqueue",
+    "engine-core must use fork workers; thread workers abort with Node 24/macOS libuv kqueue",
+  );
+  assert.doesNotMatch(
+    rootTestConfig,
+    /pool:\s*"forks"/,
+    "fork workers must not be configured at root scope because that slows the broad engine-default lane",
+  );
+  assert.match(
+    rootTestConfig,
+    /pool:\s*"threads"/,
+    "root engine config must explicitly keep broad lanes on threads because Vitest 4 defaults to forks",
+  );
+  assert.doesNotMatch(
+    engineDefaultBlock,
+    /pool:\s*"forks"/,
+    "engine-default must keep inheriting Vitest's default thread pool for broad src/**/*.test.ts runs",
   );
   assert.doesNotMatch(
     config,

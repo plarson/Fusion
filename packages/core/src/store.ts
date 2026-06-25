@@ -27,6 +27,7 @@ export type OverlapBlockerRepairReason =
   | "blocker-missing"
   | "scopes-still-overlap"
   | "dependency-blocker-remains"
+  | "overlap-blocker-changed"
   | "rerouted-to-current-overlap"
   | "repaired";
 
@@ -10910,53 +10911,115 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
 
     const unresolvedDeps = (task.dependencies ?? []).filter((depId) => {
       const dep = taskById.get(depId);
-      return dep && !dep.deletedAt && dep.column !== "done" && dep.column !== "in-review" && dep.column !== "archived";
+      return dep && !dep.deletedAt && dep.column !== "done" && dep.column !== "archived";
     });
 
     const currentOverlapBlocker = await this.findCurrentOverlapBlockerForRepair(task, taskScope, tasks, getScope, previousOverlapBlockedBy);
     const statusCleared = unresolvedDeps.length === 0 && !currentOverlapBlocker && task.status === "queued";
 
+    /*
+    FNXC:OverlapRepair 2026-06-25-10:58:
+    Stale-blocker repair must not overwrite a fresh scheduler blocker that appears after the repair computation starts. Re-check overlapBlockedBy inside the task lock immediately before writing so operator repair can clear/reroute only the blocker it inspected.
+    */
+    const overlapBlockerChangedResult = (current: Task): RepairOverlapBlockerResult => ({
+      taskId: id,
+      dryRun,
+      repaired: false,
+      statusCleared: false,
+      previousOverlapBlockedBy,
+      currentOverlapBlockedBy: current.overlapBlockedBy,
+      reason: "overlap-blocker-changed",
+      message: `Task ${id} overlap blocker changed from ${previousOverlapBlockedBy} to ${current.overlapBlockedBy}; repair skipped`,
+      task: current,
+    });
+
     if (currentOverlapBlocker) {
-      if (!dryRun) {
-        await this.updateTask(id, { overlapBlockedBy: currentOverlapBlocker, status: "queued" });
-        await this.logEntry(id, `Repaired stale overlap blocker: rerouted from ${previousOverlapBlockedBy} to ${currentOverlapBlocker}${options.reason ? ` — ${options.reason}` : ""}`);
+      if (dryRun) {
+        return {
+          taskId: id,
+          dryRun,
+          repaired: false,
+          statusCleared: false,
+          previousOverlapBlockedBy,
+          currentOverlapBlockedBy: currentOverlapBlocker,
+          reason: "rerouted-to-current-overlap",
+          message: `Stale overlap blocker ${previousOverlapBlockedBy} would reroute to ${currentOverlapBlocker}`,
+          task,
+        };
       }
+
+      let skipped: RepairOverlapBlockerResult | undefined;
+      const repairedTask = await this.updateTaskAtomic(id, (current) => {
+        if ((current.overlapBlockedBy ?? undefined) !== previousOverlapBlockedBy) {
+          skipped = overlapBlockerChangedResult(current);
+          return null;
+        }
+        return { overlapBlockedBy: currentOverlapBlocker, status: "queued" };
+      });
+      if (skipped) return skipped;
+      await this.logEntry(id, `Repaired stale overlap blocker: rerouted from ${previousOverlapBlockedBy} to ${currentOverlapBlocker}${options.reason ? ` — ${options.reason}` : ""}`);
       return {
         taskId: id,
         dryRun,
-        repaired: !dryRun,
+        repaired: true,
         statusCleared: false,
         previousOverlapBlockedBy,
         currentOverlapBlockedBy: currentOverlapBlocker,
         reason: "rerouted-to-current-overlap",
         message: `Stale overlap blocker ${previousOverlapBlockedBy} rerouted to ${currentOverlapBlocker}`,
-        task: dryRun ? task : await this.getTask(id) ?? undefined,
+        task: repairedTask,
       };
     }
 
-    if (!dryRun) {
-      await this.updateTask(id, {
-        overlapBlockedBy: null,
-        ...(statusCleared ? { status: null } : {}),
-        ...(unresolvedDeps.length > 0 ? { blockedBy: unresolvedDeps[0] } : {}),
-      });
-      await this.logEntry(
-        id,
-        `Repaired stale overlap blocker: cleared ${previousOverlapBlockedBy}; statusCleared=${statusCleared}${unresolvedDeps.length > 0 ? `; dependency blocker remains ${unresolvedDeps[0]}` : ""}${options.reason ? ` — ${options.reason}` : ""}`,
-      );
+    if (dryRun) {
+      return {
+        taskId: id,
+        dryRun,
+        repaired: false,
+        statusCleared,
+        previousOverlapBlockedBy,
+        reason: unresolvedDeps.length > 0 ? "dependency-blocker-remains" : "repaired",
+        message: unresolvedDeps.length > 0
+          ? `Stale overlap blocker ${previousOverlapBlockedBy} would be cleared; dependency blocker remains ${unresolvedDeps[0]}`
+          : `Stale overlap blocker ${previousOverlapBlockedBy} would be cleared`,
+        task,
+      };
     }
+
+    let skipped: RepairOverlapBlockerResult | undefined;
+    const repairedTask = await this.updateTaskAtomic(id, (current) => {
+      if ((current.overlapBlockedBy ?? undefined) !== previousOverlapBlockedBy) {
+        skipped = overlapBlockerChangedResult(current);
+        return null;
+      }
+      const currentUnresolvedDeps = (current.dependencies ?? []).filter((depId) => {
+        const dep = taskById.get(depId);
+        return dep && !dep.deletedAt && dep.column !== "done" && dep.column !== "archived";
+      });
+      const currentStatusCleared = currentUnresolvedDeps.length === 0 && current.status === "queued";
+      return {
+        overlapBlockedBy: null,
+        ...(currentStatusCleared ? { status: null } : {}),
+        ...(currentUnresolvedDeps.length > 0 ? { blockedBy: currentUnresolvedDeps[0] } : {}),
+      };
+    });
+    if (skipped) return skipped;
+    await this.logEntry(
+      id,
+      `Repaired stale overlap blocker: cleared ${previousOverlapBlockedBy}; statusCleared=${statusCleared}${unresolvedDeps.length > 0 ? `; dependency blocker remains ${unresolvedDeps[0]}` : ""}${options.reason ? ` — ${options.reason}` : ""}`,
+    );
 
     return {
       taskId: id,
       dryRun,
-      repaired: !dryRun,
+      repaired: true,
       statusCleared,
       previousOverlapBlockedBy,
       reason: unresolvedDeps.length > 0 ? "dependency-blocker-remains" : "repaired",
       message: unresolvedDeps.length > 0
         ? `Cleared stale overlap blocker ${previousOverlapBlockedBy}; dependency blocker remains ${unresolvedDeps[0]}`
         : `Cleared stale overlap blocker ${previousOverlapBlockedBy}`,
-      task: dryRun ? task : await this.getTask(id) ?? undefined,
+      task: repairedTask,
     };
   }
 

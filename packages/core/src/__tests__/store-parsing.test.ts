@@ -643,6 +643,60 @@ Expected touched paths:
       expect(repaired?.overlapBlockedBy).toBeUndefined();
       expect(repaired?.status).toBeUndefined();
     });
+
+    it("keeps in-review dependencies blocked when clearing stale overlap blockers", async () => {
+      const dependency = await store.createTask({ description: "dependency under review" });
+      const stale = await store.createTask({ description: "stale blocker" });
+      const target = await store.createTask({ description: "target with review dependency" });
+      await writePrompt(dependency.id, ["packages/core/src/dependency.ts"]);
+      await writePrompt(stale.id, ["packages/core/**"]);
+      await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
+      await store.moveTask(dependency.id, "todo");
+      await store.moveTask(dependency.id, "in-progress");
+      await store.moveTask(dependency.id, "in-review");
+      await store.moveTask(stale.id, "todo");
+      await store.updateTask(target.id, { dependencies: [dependency.id] });
+      await store.moveTask(target.id, "todo");
+      await store.updateTask(target.id, { status: "queued", overlapBlockedBy: stale.id });
+
+      const result = await store.repairOverlapBlocker(target.id);
+
+      expect(result).toMatchObject({ repaired: true, statusCleared: false, reason: "dependency-blocker-remains" });
+      const repaired = await store.getTask(target.id);
+      expect(repaired?.overlapBlockedBy).toBeUndefined();
+      expect(repaired?.status).toBe("queued");
+      expect(repaired?.blockedBy).toBe(dependency.id);
+    });
+
+    it("does not overwrite a fresh overlap blocker written during repair", async () => {
+      const stale = await store.createTask({ description: "stale blocker" });
+      const current = await store.createTask({ description: "current blocker" });
+      const target = await store.createTask({ description: "target" });
+      await writePrompt(stale.id, ["packages/core/**"]);
+      await writePrompt(current.id, ["packages/engine/**"]);
+      await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
+      await store.moveTask(stale.id, "todo");
+      await store.moveTask(current.id, "todo");
+      await store.moveTask(current.id, "in-progress");
+      await store.moveTask(target.id, "todo");
+      await store.updateTask(target.id, { status: "queued", overlapBlockedBy: stale.id });
+
+      const originalFinder = (store as any).findCurrentOverlapBlockerForRepair.bind(store);
+      const freshBlocker = "FN-FRESH-BLOCKER";
+      const finderSpy = vi.spyOn(store as any, "findCurrentOverlapBlockerForRepair").mockImplementation(async (...args: any[]) => {
+        const result = await originalFinder(...args);
+        await store.updateTask(target.id, { overlapBlockedBy: freshBlocker });
+        return result;
+      });
+
+      const result = await store.repairOverlapBlocker(target.id);
+
+      expect(result).toMatchObject({ repaired: false, statusCleared: false, reason: "overlap-blocker-changed", currentOverlapBlockedBy: freshBlocker });
+      const unchanged = await store.getTask(target.id);
+      expect(unchanged?.overlapBlockedBy).toBe(freshBlocker);
+      expect(unchanged?.status).toBe("queued");
+      finderSpy.mockRestore();
+    });
   });
 
   describe("FN-5216 File Scope sanitization on copy paths", () => {

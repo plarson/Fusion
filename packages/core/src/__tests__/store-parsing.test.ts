@@ -419,6 +419,175 @@ describe("TaskStore", () => {
       const paths = await store.parseFileScopeFromPrompt(task.id);
       expect(paths).toEqual(["packages/dashboard/app/components/TaskDetailModal.tsx"]);
     });
+
+    it("deduplicates effective write scope while preserving broad mixed-case source globs", async () => {
+      const task = await store.createTask({ description: "Duplicate effective scope" });
+      const dir = join(rootDir, ".fusion", "tasks", task.id);
+      await writeFile(
+        join(dir, "PROMPT.md"),
+        `# ${task.id}: Duplicate effective scope
+
+## File Scope
+
+- \`packages/core/**\`
+- \`packages/core/**\`
+- \`Packages/MobileApp/**\`
+- \`Tests/AtlasNotesMobileUITests/**\`
+`,
+      );
+
+      const paths = await store.parseFileScopeFromPrompt(task.id);
+      expect(paths).toEqual([
+        "packages/core/**",
+        "Packages/MobileApp/**",
+        "Tests/AtlasNotesMobileUITests/**",
+      ]);
+    });
+
+    it("excludes poisoned FN-779/FN-756 context-only paths from effective write scope", async () => {
+      const task = await store.createTask({ description: "Poisoned Fusion prompt" });
+      const dir = join(rootDir, ".fusion", "tasks", task.id);
+      await writeFile(
+        join(dir, "PROMPT.md"),
+        `# ${task.id}: Poisoned Fusion prompt
+
+## File Scope
+
+Expected touched paths in \`/Users/plarson/src/Fusion-local-runtime\`:
+
+- \`packages/core/src/store.ts\`
+- \`packages/engine/src/scheduler.ts\`
+- \`packages/dashboard/**\`
+- \`packages/cli/**\`
+- \`packages/core/src/__tests__/store-parsing.test.ts\`
+
+Forbidden paths / non-goals:
+
+- Do not edit Atlas Notes Swift/mobile files: \`project.yml\`, \`AtlasNotes.xcodeproj/**\`, \`Tests/AtlasNotesMobileUITests/**\`, \`Packages/MobileApp/**\`, \`Sources/**\`.
+- Do not hand-edit \`.fusion/fusion.db\` or \`.fusion/tasks/*/task.json\`.
+- Generated locks such as \`Packages/*/Package.resolved\` are evidence only.
+- \`.changeset/*.md\` is required only if published behavior changes.
+- Operator routes/actions: \`/tasks/:id\`, \`fn_task_update\`, \`review\`, \`merge\`, \`retry\`, \`archive\`.
+`,
+      );
+
+      const paths = await store.parseFileScopeFromPrompt(task.id);
+      expect(paths).toEqual([
+        "packages/core/src/store.ts",
+        "packages/engine/src/scheduler.ts",
+        "packages/dashboard/**",
+        "packages/cli/**",
+        "packages/core/src/__tests__/store-parsing.test.ts",
+      ]);
+    });
+
+    it("keeps true Atlas mobile hot-file family writes when declared as implementation scope", async () => {
+      const task = await store.createTask({ description: "Atlas mobile scope" });
+      const dir = join(rootDir, ".fusion", "tasks", task.id);
+      await writeFile(
+        join(dir, "PROMPT.md"),
+        `# ${task.id}: Atlas mobile scope
+
+## File Scope
+
+Expected touched paths:
+
+- \`project.yml\`
+- \`AtlasNotes.xcodeproj/**\`
+- \`Tests/AtlasNotesMobileUITests/**\`
+- \`Packages/MobileApp/**\`
+- \`Sources/AtlasNotesMobileApp/**\`
+`,
+      );
+
+      const paths = await store.parseFileScopeFromPrompt(task.id);
+      expect(paths).toEqual([
+        "project.yml",
+        "AtlasNotes.xcodeproj/**",
+        "Tests/AtlasNotesMobileUITests/**",
+        "Packages/MobileApp/**",
+        "Sources/AtlasNotesMobileApp/**",
+      ]);
+    });
+  });
+
+  describe("repairOverlapBlocker", () => {
+    async function writePrompt(taskId: string, scope: string[]) {
+      const dir = join(rootDir, ".fusion", "tasks", taskId);
+      await writeFile(
+        join(dir, "PROMPT.md"),
+        `# ${taskId}: repair fixture\n\n## File Scope\n\n${scope.map((entry) => `- \`${entry}\``).join("\n")}\n`,
+      );
+    }
+
+    it("clears stale false-positive overlap blockers through the store API", async () => {
+      const blocker = await store.createTask({ description: "Atlas blocker" });
+      const target = await store.createTask({ description: "Fusion target" });
+      await writePrompt(blocker.id, ["project.yml", "Tests/AtlasNotesMobileUITests/**"]);
+      await writePrompt(target.id, ["packages/core/**", "packages/engine/**"]);
+      await store.moveTask(blocker.id, "todo");
+      await store.moveTask(blocker.id, "in-progress");
+      await store.moveTask(target.id, "todo");
+      await store.updateTask(target.id, { status: "queued", overlapBlockedBy: blocker.id });
+
+      const result = await store.repairOverlapBlocker(target.id, { reason: "test" });
+
+      expect(result).toMatchObject({ repaired: true, statusCleared: true, previousOverlapBlockedBy: blocker.id, reason: "repaired" });
+      const repaired = await store.getTask(target.id);
+      expect(repaired?.overlapBlockedBy).toBeUndefined();
+      expect(repaired?.status).toBeUndefined();
+      expect(repaired?.log.at(-1)?.action).toContain(`Repaired stale overlap blocker: cleared ${blocker.id}`);
+    });
+
+    it("returns structured not-found result instead of throwing", async () => {
+      const result = await store.repairOverlapBlocker("FN-MISSING");
+
+      expect(result).toMatchObject({
+        taskId: "FN-MISSING",
+        repaired: false,
+        statusCleared: false,
+        reason: "task-not-found",
+      });
+    });
+
+    it("rejects repair when the stored blocker still overlaps", async () => {
+      const blocker = await store.createTask({ description: "Fusion blocker" });
+      const target = await store.createTask({ description: "Fusion target" });
+      await writePrompt(blocker.id, ["packages/engine/**"]);
+      await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
+      await store.moveTask(blocker.id, "todo");
+      await store.moveTask(blocker.id, "in-progress");
+      await store.moveTask(target.id, "todo");
+      await store.updateTask(target.id, { status: "queued", overlapBlockedBy: blocker.id });
+
+      const result = await store.repairOverlapBlocker(target.id);
+
+      expect(result).toMatchObject({ repaired: false, statusCleared: false, reason: "scopes-still-overlap", currentOverlapBlockedBy: blocker.id });
+      const unchanged = await store.getTask(target.id);
+      expect(unchanged?.overlapBlockedBy).toBe(blocker.id);
+      expect(unchanged?.status).toBe("queued");
+    });
+
+    it("reroutes stale overlap blockers to another current overlap", async () => {
+      const stale = await store.createTask({ description: "stale blocker" });
+      const current = await store.createTask({ description: "current blocker" });
+      const target = await store.createTask({ description: "target" });
+      await writePrompt(stale.id, ["packages/core/**"]);
+      await writePrompt(current.id, ["packages/engine/**"]);
+      await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
+      await store.moveTask(stale.id, "todo");
+      await store.moveTask(current.id, "todo");
+      await store.moveTask(current.id, "in-progress");
+      await store.moveTask(target.id, "todo");
+      await store.updateTask(target.id, { status: "queued", overlapBlockedBy: stale.id });
+
+      const result = await store.repairOverlapBlocker(target.id);
+
+      expect(result).toMatchObject({ repaired: true, statusCleared: false, reason: "rerouted-to-current-overlap", currentOverlapBlockedBy: current.id });
+      const rerouted = await store.getTask(target.id);
+      expect(rerouted?.overlapBlockedBy).toBe(current.id);
+      expect(rerouted?.status).toBe("queued");
+    });
   });
 
   describe("FN-5216 File Scope sanitization on copy paths", () => {

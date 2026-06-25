@@ -18,6 +18,34 @@ import {
 import { parseWorkflowIr, serializeWorkflowIr, downgradeIrToV1IfPure } from "./workflow-ir.js";
 import { stepsToWorkflowIr, stepToFragmentIr, layoutForIr } from "./workflow-steps-to-ir.js";
 import { resolveAllowedColumns, workflowHasColumn } from "./workflow-transitions.js";
+import { extractEffectiveWriteScopeFromPrompt, extractFileScopeTokens, isValidFileScopeEntry } from "./file-scope-classification.js";
+
+export type OverlapBlockerRepairReason =
+  | "task-not-found"
+  | "no-overlap-blocker"
+  | "not-repairable-state"
+  | "blocker-missing"
+  | "scopes-still-overlap"
+  | "dependency-blocker-remains"
+  | "rerouted-to-current-overlap"
+  | "repaired";
+
+export interface RepairOverlapBlockerOptions {
+  dryRun?: boolean;
+  reason?: string;
+}
+
+export interface RepairOverlapBlockerResult {
+  taskId: string;
+  dryRun: boolean;
+  repaired: boolean;
+  statusCleared: boolean;
+  previousOverlapBlockedBy?: string;
+  currentOverlapBlockedBy?: string;
+  reason: OverlapBlockerRepairReason;
+  message: string;
+  task?: Task;
+}
 
 function isWorkflowColumnsCompatibilityFlagEnabled(settings: Pick<Settings, "experimentalFeatures"> | undefined): boolean {
   /*
@@ -1093,79 +1121,8 @@ export class InvalidFileScopeError extends Error {
   }
 }
 
-const KNOWN_FILE_SCOPE_ROOT_FILES = new Set([
-  "makefile",
-  "dockerfile",
-  "justfile",
-  "license",
-  "readme",
-  "changelog",
-  "agents.md",
-]);
-
-// `parseStepHeadings` (the `### Step N:` parser, step-inversion U1) was extracted
-// into `step-parsers.ts` as the `step-headings` built-in parser (U12, KTD-12).
-// It is re-exported here for back-compat with callers/tests that import it from
-// `store.ts`. `parseStepsFromPrompt` below delegates through the registry.
+export { isValidFileScopeEntry } from "./file-scope-classification.js";
 export { parseStepHeadings } from "./step-parsers.js";
-
-export function isValidFileScopeEntry(token: string): boolean {
-  const trimmed = token.trim();
-  if (!trimmed) return false;
-
-  const lower = trimmed.toLowerCase();
-  if (
-    lower.startsWith("origin/")
-    || lower.startsWith("upstream/")
-    || lower.startsWith("refs/")
-    || /^https?:\/\//i.test(trimmed)
-    || /^git@/i.test(trimmed)
-    || /^ssh:\/\//i.test(trimmed)
-    || /^[a-z]+\/fn-\d+$/i.test(trimmed)
-    || /^[a-f0-9]{7,}$/i.test(trimmed)
-    || trimmed.includes("..")
-    || trimmed.startsWith("/")
-  ) {
-    return false;
-  }
-
-  const segments = trimmed.split("/");
-  const lastSegment = segments[segments.length - 1];
-  const hasSlash = trimmed.includes("/");
-  const hasDotInLastSegment = lastSegment.includes(".");
-
-  if (KNOWN_FILE_SCOPE_ROOT_FILES.has(lastSegment.toLowerCase())) {
-    return true;
-  }
-
-  if (trimmed.includes("**") || trimmed.endsWith("/*") || (lastSegment.includes("*") && hasDotInLastSegment)) {
-    return true;
-  }
-
-  if (hasSlash && hasDotInLastSegment) {
-    return true;
-  }
-
-  return false;
-}
-
-function extractFileScopeTokens(content: string): string[] {
-  const headingMatch = content.match(/^##\s+File\s+Scope\s*$/m);
-  if (!headingMatch) return [];
-
-  const startIdx = headingMatch.index! + headingMatch[0].length;
-  const rest = content.slice(startIdx);
-  const nextHeading = rest.search(/\n##?\s/);
-  const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
-  const tokens: string[] = [];
-  const backtickRegex = /`([^`]+)`/g;
-  let match;
-  while ((match = backtickRegex.exec(section)) !== null) {
-    tokens.push(match[1]);
-  }
-
-  return tokens;
-}
 
 function validateFileScopeInPromptContent(prompt: string): { valid: string[]; invalid: string[] } {
   const tokens = extractFileScopeTokens(prompt);
@@ -1480,6 +1437,52 @@ export interface LegacyAutoMergeStampReconcileResult {
 
 const LEGACY_AUTO_MERGE_STAMP_MARKER_KEY = "legacyAutoMergeStampMarkedVersion";
 const LEGACY_AUTO_MERGE_STAMP_MARKER_VERSION = "1";
+
+function normalizeRepairOverlapPath(path: string): string {
+  return path.trim().replaceAll("\\", "/").replace(/^\.\//, "");
+}
+
+function repairOverlapPathPrefix(path: string): string | null {
+  const normalized = normalizeRepairOverlapPath(path);
+  if (normalized.endsWith("/**")) return normalized.slice(0, -2);
+  if (normalized.endsWith("/*")) return normalized.slice(0, -1);
+  if (normalized.endsWith("/")) return normalized;
+  return null;
+}
+
+function repairScopesOverlap(a: string[], b: string[]): boolean {
+  for (const rawA of a) {
+    const pa = normalizeRepairOverlapPath(rawA);
+    const prefixA = repairOverlapPathPrefix(pa);
+    const cleanA = prefixA ? prefixA.replace(/\/$/, "") : pa;
+    for (const rawB of b) {
+      const pb = normalizeRepairOverlapPath(rawB);
+      const prefixB = repairOverlapPathPrefix(pb);
+      const cleanB = prefixB ? prefixB.replace(/\/$/, "") : pb;
+      if (cleanA === cleanB || pa === pb) return true;
+      if (prefixA && (pb === cleanA || pb.startsWith(prefixA))) return true;
+      if (prefixB && (pa === cleanB || pa.startsWith(prefixB))) return true;
+      if (prefixA && prefixB && (prefixA.startsWith(prefixB) || prefixB.startsWith(prefixA))) return true;
+    }
+  }
+  return false;
+}
+
+function repairIgnoredOverlapPath(path: string, ignorePath: string): boolean {
+  const normalizedPath = normalizeRepairOverlapPath(path);
+  const normalizedIgnore = normalizeRepairOverlapPath(ignorePath);
+  const prefix = repairOverlapPathPrefix(normalizedIgnore);
+  if (prefix) {
+    const clean = prefix.replace(/\/$/, "");
+    return normalizedPath === clean || normalizedPath.startsWith(prefix);
+  }
+  return normalizedPath === normalizedIgnore || normalizedPath.startsWith(`${normalizedIgnore}/`);
+}
+
+function filterRepairOverlapIgnoredPaths(paths: string[], ignorePaths: string[]): string[] {
+  if (ignorePaths.length === 0) return paths;
+  return paths.filter((path) => !ignorePaths.some((ignorePath) => repairIgnoredOverlapPath(path, ignorePath)));
+}
 
 export class TaskStore extends EventEmitter<TaskStoreEvents> {
   private static readonly ACTIVE_TASKS_WHERE = '"deletedAt" IS NULL';
@@ -10834,8 +10837,181 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
 
     const content = await readFile(promptPath, "utf-8");
 
-    const paths = extractFileScopeTokens(content);
-    return paths.filter((path) => isValidFileScopeEntry(path));
+    return extractEffectiveWriteScopeFromPrompt(content);
+  }
+
+  async repairOverlapBlocker(id: string, options: RepairOverlapBlockerOptions = {}): Promise<RepairOverlapBlockerResult> {
+    /*
+    FNXC:OverlapRepair 2026-06-25-04:34:
+    Dashboard-initiated overlap repair is a narrow stale-blocker cleanup, not a general task mutation endpoint. Return structured reasons for missing tasks and cache empty scopes so route handlers can map failures predictably and repair decisions stay deterministic.
+    */
+    const dryRun = options.dryRun === true;
+    let task: Task;
+    try {
+      task = await this.getTask(id);
+    } catch {
+      return { taskId: id, dryRun, repaired: false, statusCleared: false, reason: "task-not-found", message: `Task ${id} not found` };
+    }
+
+    const previousOverlapBlockedBy = task.overlapBlockedBy ?? undefined;
+    if (!previousOverlapBlockedBy) {
+      return { taskId: id, dryRun, repaired: false, statusCleared: false, reason: "no-overlap-blocker", message: `Task ${id} has no overlap blocker`, task };
+    }
+
+    if (task.column !== "todo") {
+      return {
+        taskId: id,
+        dryRun,
+        repaired: false,
+        statusCleared: false,
+        previousOverlapBlockedBy,
+        reason: "not-repairable-state",
+        message: `Task ${id} is in ${task.column}, not a repairable todo state`,
+        task,
+      };
+    }
+
+    const tasks = await this.listTasks({ includeArchived: true, slim: true });
+    const taskById = new Map(tasks.map((candidate) => [candidate.id, candidate]));
+    const blocker = taskById.get(previousOverlapBlockedBy);
+    if (!blocker) {
+      return {
+        taskId: id,
+        dryRun,
+        repaired: false,
+        statusCleared: false,
+        previousOverlapBlockedBy,
+        reason: "blocker-missing",
+        message: `Overlap blocker ${previousOverlapBlockedBy} is missing; run scheduler/self-healing to reconcile current blockers`,
+        task,
+      };
+    }
+
+    const settings = await this.getSettings();
+    const ignorePaths = settings.overlapIgnorePaths ?? [];
+    const scopeCache = new Map<string, string[]>();
+    const getScope = async (taskId: string): Promise<string[]> => {
+      const cached = scopeCache.get(taskId);
+      if (cached !== undefined) return cached;
+      const scope = filterRepairOverlapIgnoredPaths(await this.parseFileScopeFromPrompt(taskId), ignorePaths);
+      scopeCache.set(taskId, scope);
+      return scope;
+    };
+
+    const taskScope = await getScope(task.id);
+    const blockerScope = await getScope(blocker.id);
+    if (repairScopesOverlap(taskScope, blockerScope)) {
+      return {
+        taskId: id,
+        dryRun,
+        repaired: false,
+        statusCleared: false,
+        previousOverlapBlockedBy,
+        currentOverlapBlockedBy: previousOverlapBlockedBy,
+        reason: "scopes-still-overlap",
+        message: `Task ${id} still overlaps ${previousOverlapBlockedBy}`,
+        task,
+      };
+    }
+
+    const unresolvedDeps = (task.dependencies ?? []).filter((depId) => {
+      const dep = taskById.get(depId);
+      return dep && !dep.deletedAt && dep.column !== "done" && dep.column !== "in-review" && dep.column !== "archived";
+    });
+
+    const currentOverlapBlocker = await this.findCurrentOverlapBlockerForRepair(task, taskScope, tasks, getScope, previousOverlapBlockedBy);
+    const statusCleared = unresolvedDeps.length === 0 && !currentOverlapBlocker && task.status === "queued";
+
+    if (currentOverlapBlocker) {
+      if (!dryRun) {
+        await this.updateTask(id, { overlapBlockedBy: currentOverlapBlocker, status: "queued" });
+        await this.logEntry(id, `Repaired stale overlap blocker: rerouted from ${previousOverlapBlockedBy} to ${currentOverlapBlocker}${options.reason ? ` — ${options.reason}` : ""}`);
+      }
+      return {
+        taskId: id,
+        dryRun,
+        repaired: !dryRun,
+        statusCleared: false,
+        previousOverlapBlockedBy,
+        currentOverlapBlockedBy: currentOverlapBlocker,
+        reason: "rerouted-to-current-overlap",
+        message: `Stale overlap blocker ${previousOverlapBlockedBy} rerouted to ${currentOverlapBlocker}`,
+        task: dryRun ? task : await this.getTask(id) ?? undefined,
+      };
+    }
+
+    if (!dryRun) {
+      await this.updateTask(id, {
+        overlapBlockedBy: null,
+        ...(statusCleared ? { status: null } : {}),
+        ...(unresolvedDeps.length > 0 ? { blockedBy: unresolvedDeps[0] } : {}),
+      });
+      await this.logEntry(
+        id,
+        `Repaired stale overlap blocker: cleared ${previousOverlapBlockedBy}; statusCleared=${statusCleared}${unresolvedDeps.length > 0 ? `; dependency blocker remains ${unresolvedDeps[0]}` : ""}${options.reason ? ` — ${options.reason}` : ""}`,
+      );
+    }
+
+    return {
+      taskId: id,
+      dryRun,
+      repaired: !dryRun,
+      statusCleared,
+      previousOverlapBlockedBy,
+      reason: unresolvedDeps.length > 0 ? "dependency-blocker-remains" : "repaired",
+      message: unresolvedDeps.length > 0
+        ? `Cleared stale overlap blocker ${previousOverlapBlockedBy}; dependency blocker remains ${unresolvedDeps[0]}`
+        : `Cleared stale overlap blocker ${previousOverlapBlockedBy}`,
+      task: dryRun ? task : await this.getTask(id) ?? undefined,
+    };
+  }
+
+  private async findCurrentOverlapBlockerForRepair(
+    task: Task,
+    taskScope: string[],
+    tasks: Task[],
+    getScope: (taskId: string) => Promise<string[]>,
+    previousOverlapBlockedBy: string,
+  ): Promise<string | null> {
+    const activeCandidates = tasks
+      .filter((candidate) => candidate.id !== task.id && candidate.id !== previousOverlapBlockedBy)
+      .filter((candidate) => candidate.column === "in-progress" || (candidate.column === "in-review" && Boolean(candidate.worktree) && !candidate.paused && candidate.status !== "failed"))
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    for (const candidate of activeCandidates) {
+      const candidateScope = await getScope(candidate.id);
+      if (repairScopesOverlap(taskScope, candidateScope)) return candidate.id;
+    }
+
+    const priorityRank: Record<TaskPriority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+    const taskRank = priorityRank[task.priority ?? "normal"] ?? 2;
+    const taskCreatedAt = Date.parse(task.createdAt);
+    const queuedCandidates = tasks
+      .filter((candidate) => candidate.id !== task.id && candidate.id !== previousOverlapBlockedBy && candidate.column === "todo")
+      .filter((candidate) => {
+        const candidateRank = priorityRank[candidate.priority ?? "normal"] ?? 2;
+        if (candidateRank < taskRank) return true;
+        if (candidateRank > taskRank) return false;
+        const candidateCreatedAt = Date.parse(candidate.createdAt);
+        if (Number.isFinite(candidateCreatedAt) && Number.isFinite(taskCreatedAt) && candidateCreatedAt !== taskCreatedAt) {
+          return candidateCreatedAt < taskCreatedAt;
+        }
+        return candidate.id.localeCompare(task.id) < 0;
+      })
+      .sort((a, b) => {
+        const priorityDiff = (priorityRank[a.priority ?? "normal"] ?? 2) - (priorityRank[b.priority ?? "normal"] ?? 2);
+        if (priorityDiff !== 0) return priorityDiff;
+        const ageDiff = Date.parse(a.createdAt) - Date.parse(b.createdAt);
+        if (Number.isFinite(ageDiff) && ageDiff !== 0) return ageDiff;
+        return a.id.localeCompare(b.id);
+      });
+
+    for (const candidate of queuedCandidates) {
+      const candidateScope = await getScope(candidate.id);
+      if (repairScopesOverlap(taskScope, candidateScope)) return candidate.id;
+    }
+
+    return null;
   }
 
   private makeSyntheticDeleteRunId(taskId: string): string {

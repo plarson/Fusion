@@ -10843,7 +10843,7 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
   async repairOverlapBlocker(id: string, options: RepairOverlapBlockerOptions = {}): Promise<RepairOverlapBlockerResult> {
     /*
     FNXC:OverlapRepair 2026-06-25-04:34:
-    Dashboard-initiated overlap repair is a narrow stale-blocker cleanup, not a general task mutation endpoint. Return structured reasons for missing tasks and cache empty scopes so route handlers can map failures predictably and repair decisions stay deterministic.
+    Dashboard-initiated overlap repair is a narrow stale-blocker cleanup, not a general task mutation endpoint. Missing target tasks still return structured failures, but a missing blocker reference is itself stale and should be cleared or rerouted after the current scheduler-visible blockers are checked.
     */
     const dryRun = options.dryRun === true;
     let task: Task;
@@ -10874,18 +10874,6 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
     const tasks = await this.listTasks({ includeArchived: true, slim: true });
     const taskById = new Map(tasks.map((candidate) => [candidate.id, candidate]));
     const blocker = taskById.get(previousOverlapBlockedBy);
-    if (!blocker) {
-      return {
-        taskId: id,
-        dryRun,
-        repaired: false,
-        statusCleared: false,
-        previousOverlapBlockedBy,
-        reason: "blocker-missing",
-        message: `Overlap blocker ${previousOverlapBlockedBy} is missing; run scheduler/self-healing to reconcile current blockers`,
-        task,
-      };
-    }
 
     const settings = await this.getSettings();
     const ignorePaths = settings.overlapIgnorePaths ?? [];
@@ -10899,19 +10887,21 @@ ${TASK_UPSERT_SQL_ASSIGNMENTS}
     };
 
     const taskScope = await getScope(task.id);
-    const blockerScope = await getScope(blocker.id);
-    if (repairScopesOverlap(taskScope, blockerScope)) {
-      return {
-        taskId: id,
-        dryRun,
-        repaired: false,
-        statusCleared: false,
-        previousOverlapBlockedBy,
-        currentOverlapBlockedBy: previousOverlapBlockedBy,
-        reason: "scopes-still-overlap",
-        message: `Task ${id} still overlaps ${previousOverlapBlockedBy}`,
-        task,
-      };
+    if (blocker) {
+      const blockerScope = await getScope(blocker.id);
+      if (repairScopesOverlap(taskScope, blockerScope)) {
+        return {
+          taskId: id,
+          dryRun,
+          repaired: false,
+          statusCleared: false,
+          previousOverlapBlockedBy,
+          currentOverlapBlockedBy: previousOverlapBlockedBy,
+          reason: "scopes-still-overlap",
+          message: `Task ${id} still overlaps ${previousOverlapBlockedBy}`,
+          task,
+        };
+      }
     }
 
     const unresolvedDeps = (task.dependencies ?? []).filter((depId) => {

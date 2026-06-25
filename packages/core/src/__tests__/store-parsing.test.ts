@@ -550,6 +550,20 @@ Expected touched paths:
       });
     });
 
+    it("clears stale overlap blockers when the referenced blocker task is missing", async () => {
+      const target = await store.createTask({ description: "target" });
+      await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
+      await store.moveTask(target.id, "todo");
+      await store.updateTask(target.id, { status: "queued", overlapBlockedBy: "FN-MISSING-BLOCKER" });
+
+      const result = await store.repairOverlapBlocker(target.id, { reason: "missing blocker" });
+
+      expect(result).toMatchObject({ repaired: true, statusCleared: true, previousOverlapBlockedBy: "FN-MISSING-BLOCKER", reason: "repaired" });
+      const repaired = await store.getTask(target.id);
+      expect(repaired?.overlapBlockedBy).toBeUndefined();
+      expect(repaired?.status).toBeUndefined();
+    });
+
     it("rejects repair when the stored blocker still overlaps", async () => {
       const blocker = await store.createTask({ description: "Fusion blocker" });
       const target = await store.createTask({ description: "Fusion target" });

@@ -3501,6 +3501,112 @@ describe("executeHeartbeat", () => {
       );
     });
 
+    it("suppresses duplicate timer no-task no-op text rows inside the suppression window while completing runs", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(Date.UTC(2026, 0, 1, 0, 0, 0)));
+      let runCounter = 0;
+      const store = createStoreWithAgentForExec({ taskId: undefined, soul: "Ambient coordination specialist" });
+      vi.mocked(store.startHeartbeatRun).mockImplementation(async () => {
+        runCounter += 1;
+        return {
+          id: `run-${runCounter}`,
+          agentId: "agent-001",
+          startedAt: new Date().toISOString(),
+          endedAt: null,
+          status: "active",
+        } as AgentHeartbeatRun;
+      });
+
+      let capturedDoneTool: any;
+      let onText: ((delta: string) => void) | undefined;
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockImplementation(async (opts: any) => {
+        capturedDoneTool = opts.customTools[opts.customTools.length - 1];
+        onText = opts.onText;
+        return { session: mockSession as any };
+      });
+      mockSession.prompt = vi.fn().mockImplementation(async () => {
+        onText?.("No coordination intervention needed; no new tasks or delegations created.\n");
+        await capturedDoneTool.execute("call-1", { summary: "No coordination intervention needed; no new tasks or delegations created." });
+      });
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      const first = await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+      vi.setSystemTime(new Date(Date.UTC(2026, 0, 1, 0, 5, 0)));
+      const duplicate = await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+      vi.setSystemTime(new Date(Date.UTC(2026, 0, 1, 0, 16, 0)));
+      const afterExpiry = await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+      vi.useRealTimers();
+
+      const textRunLogs = vi.mocked(store.appendRunLog).mock.calls
+        .map(([agentId, runId, entry]) => ({ agentId, runId, entry }))
+        .filter(({ entry }) => entry.type === "text" && entry.text.includes("No coordination intervention needed"));
+
+      expect(textRunLogs).toHaveLength(2);
+      expect(textRunLogs.map((row) => row.runId)).toEqual(["run-1", "run-3"]);
+      expect(textRunLogs.every(({ entry }) => entry.text.trim().length > 0)).toBe(true);
+      expect(textRunLogs.some(({ entry }) => entry.text.toLowerCase().includes("suppressed duplicate"))).toBe(false);
+      expect(first.status).toBe("completed");
+      expect(duplicate.status).toBe("completed");
+      expect(afterExpiry.status).toBe("completed");
+      expect(vi.mocked(store.endHeartbeatRun)).toHaveBeenCalledWith("run-2", "completed");
+      expect(vi.mocked(store.saveRun)).toHaveBeenCalledWith(expect.objectContaining({
+        id: "run-2",
+        status: "completed",
+        resultJson: expect.objectContaining({
+          summary: "No coordination intervention needed; no new tasks or delegations created.",
+          reason: "no_assignment_identity_run",
+        }),
+      }));
+    });
+
+    it("does not suppress the same timer no-task no-op text across agents", async () => {
+      let runCounter = 0;
+      const store = createStoreWithAgentForExec({ taskId: undefined, soul: "Ambient coordination specialist" });
+      vi.mocked(store.getAgent).mockImplementation(async (agentId: string) => ({
+        ...mockAgent,
+        id: agentId,
+        taskId: undefined,
+        soul: "Ambient coordination specialist",
+      } as Agent));
+      vi.mocked(store.startHeartbeatRun).mockImplementation(async (agentId: string) => {
+        runCounter += 1;
+        return {
+          id: `run-${runCounter}`,
+          agentId,
+          startedAt: new Date(Date.UTC(2026, 0, 1, 0, runCounter, 0)).toISOString(),
+          endedAt: null,
+          status: "active",
+        } as AgentHeartbeatRun;
+      });
+
+      let capturedDoneTool: any;
+      let onText: ((delta: string) => void) | undefined;
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockImplementation(async (opts: any) => {
+        capturedDoneTool = opts.customTools[opts.customTools.length - 1];
+        onText = opts.onText;
+        return { session: mockSession as any };
+      });
+      mockSession.prompt = vi.fn().mockImplementation(async () => {
+        onText?.("No coordination intervention needed; no new tasks or delegations created.\n");
+        await capturedDoneTool.execute("call-1", { summary: "No coordination intervention needed; no new tasks or delegations created." });
+      });
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+      await monitor.executeHeartbeat({ agentId: "agent-002", source: "timer" });
+
+      const textRunLogs = vi.mocked(store.appendRunLog).mock.calls
+        .map(([agentId, runId, entry]) => ({ agentId, runId, entry }))
+        .filter(({ entry }) => entry.type === "text" && entry.text.includes("No coordination intervention needed"));
+
+      expect(textRunLogs).toHaveLength(2);
+      expect(textRunLogs.map((row) => row.agentId)).toEqual(["agent-001", "agent-002"]);
+    });
+
     it("records agent logs, context taskId, and stdoutExcerpt for successful runs", async () => {
       const store = createStoreWithAgentForExec();
       const appendAgentLog = vi.fn().mockResolvedValue(undefined);

@@ -6,8 +6,7 @@
 // route registration, the flag-gated early-return shape, and the deduped
 // flag-ON payload were untested. This exercises the route end-to-end against a
 // REAL TaskStore via createApiRoutes:
-//   - workflowColumns graduated → a stale persisted `false` is treated as enabled,
-//     so the route returns the full payload (the legacy empty single-lane shape is retired)
+//   - flag OFF → { flagEnabled: false } (the legacy single-lane shape)
 //   - flag ON, mixed default + custom selections → correct taskWorkflowIds and a
 //     DEDUPED workflows array (two cards on the same default lane collapse to one
 //     workflow entry).
@@ -85,20 +84,20 @@ describe("GET /tasks/board-workflows", () => {
 
   const get = (path: string) => REQUEST(app, "GET", path);
 
-  // FNXC:WorkflowColumns 2026-06-25-11:40: workflowColumns graduated from the
-  // experimental flag (isWorkflowColumnsEnabled always returns true; stale persisted
-  // `false` must resolve as enabled). The retired flag-OFF empty single-lane shape no
-  // longer exists; assert the graduation invariant — a persisted `false` still yields
-  // the full enabled payload with the card mapped to the default lane.
-  it("persisted workflowColumns:false is treated as enabled (graduated)", async () => {
+  it("stale flag OFF still returns the graduated workflow payload", async () => {
+    /*
+     * FNXC:WorkflowColumns 2026-06-25-11:12:
+     * Workflow columns graduated from the experimental flag. Persisted `workflowColumns:false` settings are stale and must not reactivate the empty legacy board-workflows payload.
+     */
     await store.updateGlobalSettings({ experimentalFeatures: { workflowColumns: false } });
-    const card = await store.createTask({ description: "card" });
+    const task = await store.createTask({ description: "card" });
     const res = await get("/api/tasks/board-workflows");
     expect(res.status).toBe(200);
-    const body = res.body as { flagEnabled: boolean; workflows: unknown[]; taskWorkflowIds: Record<string, string> };
+    const body = res.body as { flagEnabled: boolean; defaultWorkflowId: string; workflows: unknown[]; taskWorkflowIds: Record<string, string> };
     expect(body.flagEnabled).toBe(true);
-    expect(body.taskWorkflowIds[card.id]).toBe(DEFAULT_LANE);
+    expect(body.defaultWorkflowId).toBeTruthy();
     expect(body.workflows.length).toBeGreaterThan(0);
+    expect(body.taskWorkflowIds[task.id]).toBe(body.defaultWorkflowId);
   });
 
   it("flag ON, mixed default + custom → correct taskWorkflowIds and deduped workflows", async () => {

@@ -49,4 +49,22 @@ describe("PlanningModeModal CSS responsive action contract", () => {
     expectSomeRule(mobileCss, ".planning-summary-actions-right", /flex-direction\s*:\s*column\s*;/);
     expectSomeRule(mobileCss, ".planning-summary-actions-right", /width\s*:\s*100%\s*;/);
   });
+
+  // FNXC:PlanningMode 2026-06-25-13:10: regression for the embedded Planning view not
+  // scrolling on mobile. The global mobile `.modal:not(.confirm-dialog), .modal-lg, ...`
+  // 100dvh rule (specificity 0,2,0) matched the embedded shell and stretched it past its
+  // bounded `.planning-view` pane, so `.planning-view { overflow:hidden }` clipped the
+  // footer action buttons. The mobile embedded override must (a) qualify with
+  // `.planning-view.open` so it outranks (0,3,0 > 0,2,0) that global rule, and (b) re-pin
+  // `max-height` so the embedded shell cannot exceed its pane and the inner flex scroll
+  // chain works.
+  it("pins the embedded view to its bounded pane height on mobile so the footer scrolls into reach", () => {
+    const css = loadPlanningCss();
+    const mobileCss = getMediaBlocks(css, MOBILE_ACTIONS_QUERY).join("\n");
+
+    const embeddedRule = findRule(mobileCss, ".planning-view.open .planning-modal--embedded");
+    expect(embeddedRule).toBeTruthy();
+    expect(embeddedRule).toMatch(/height\s*:\s*100%\s*;/);
+    expect(embeddedRule).toMatch(/max-height\s*:\s*100%\s*;/);
+  });
 });

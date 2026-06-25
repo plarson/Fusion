@@ -51,7 +51,8 @@ describe("WorkflowNodeEditor themed React Flow CSS contract", () => {
     expect(headerRule).toMatch(/min-height\s*:\s*var\(--view-header-min-height\)\s*;/);
     expect(headerRule).toMatch(/padding\s*:\s*var\(--space-lg\) var\(--space-xl\)\s*;/);
     expect(headerRule).toMatch(/background\s*:\s*var\(--surface\)\s*;/);
-    expect(headerRule).toMatch(/border-bottom\s*:\s*1px solid var\(--border\)\s*;/);
+    // FNXC:WorkflowEditorFloatingModal 2026-06-25-19:06: FloatingWindow owns the modal frame; the embedded editor header keeps shared ViewHeader sizing but no inner divider so the floating shell does not render double chrome.
+    expect(headerRule).toMatch(/border-bottom\s*:\s*none\s*;/);
     expect(titleRule).toMatch(/font-size\s*:\s*1\.125rem\s*;/);
     expect(titleRule).toMatch(/font-weight\s*:\s*600\s*;/);
     expect(iconRule).toMatch(/color\s*:\s*var\(--todo\)\s*;/);
@@ -205,12 +206,13 @@ describe("WorkflowNodeEditor sidebar overflow CSS contract", () => {
 });
 
 describe("WorkflowNodeEditor mobile CSS contract", () => {
-  it("FN-5992 preserves desktop editor min-width while adding full-screen mobile overrides", () => {
-    const baseCss = loadAllAppCssBaseOnly();
+  it("FN-5992 lets FloatingWindow own desktop minimum while keeping mobile overrides", () => {
     const editorCss = readComponentCss("WorkflowNodeEditor.css");
     const mobileBlocks = extractMediaBlocks(editorCss, "(max-width: 768px)");
 
-    expect(baseCss).toMatch(/\.wf-editor-modal\s*\{[^}]*min-width\s*:\s*640px\s*;/);
+    const desktopModalRule = findRule([editorCss], /\.wf-editor-modal\s*\{[^}]*\}/);
+    // FNXC:WorkflowEditorFloatingModal 2026-06-25-19:06: Desktop minimum size moved from the inner .wf-editor-modal CSS to the FloatingWindow minSize contract so persisted resizes clamp at the shared shell instead of fighting nested min-width rules.
+    expect(desktopModalRule).toMatch(/min-width\s*:\s*0\s*;/);
 
     // FN-6: the mobile viewport-takeover rule is scoped to the dialog presentation
     // via :not(.wf-editor-modal--embedded) so the embedded main-view variant keeps its
@@ -282,11 +284,12 @@ describe("WorkflowNodeEditor mobile CSS contract", () => {
     expect(collapsedToggleRule).toMatch(/bottom\s*:\s*var\(--space-sm\)\s*;/);
   });
 
-  it("FN-6034 keeps the desktop graph canvas shrinkable without removing the modal minimum", () => {
+  it("FN-6034 keeps the desktop graph canvas shrinkable while FloatingWindow owns the modal minimum", () => {
     const baseCss = loadAllAppCssBaseOnly();
 
     const desktopModalRule = findRule([baseCss], /\.wf-editor-modal\s*\{[^}]*\}/);
-    expect(desktopModalRule).toMatch(/min-width\s*:\s*640px\s*;/);
+    // FNXC:WorkflowEditorFloatingModal 2026-06-25-19:06: The inner editor remains shrinkable (min-width: 0); the non-embedded floating shell enforces the 640px minimum through WorkflowNodeEditor.tsx minSize.
+    expect(desktopModalRule).toMatch(/min-width\s*:\s*0\s*;/);
 
     const bodyRule = findRule([baseCss], /\.wf-editor-body\s*\{[^}]*\}/);
     expect(bodyRule).toMatch(/min-width\s*:\s*0\s*;/);
@@ -390,12 +393,10 @@ describe("WorkflowNodeEditor mobile CSS contract", () => {
     const editorCss = readComponentCss("WorkflowNodeEditor.css");
     const mobileBlocks = extractMediaBlocks(editorCss, "(max-width: 768px)");
 
-    // FN-6: overlay stretch is likewise scoped to the dialog editor via
-    // :not(.wf-editor-modal--embedded) so the embedded variant's overlay-less main view
-    // isn't forced full-bleed. .wf-create-modal stays unscoped.
+    // FNXC:WorkflowEditorFloatingModal 2026-06-25-19:02: The workflow editor modal now uses FloatingWindow, so the mobile overlay stretch contract only applies to the create dialog overlay. The editor takeover is covered by floating-window mobile rules and must not reintroduce a .wf-editor-modal overlay selector.
     const overlayRule = findRule(
       mobileBlocks,
-      /\.modal-overlay:has\(\.wf-editor-modal:not\(\.wf-editor-modal--embedded\)\),\s*\.modal-overlay:has\(\.wf-create-modal\)\s*\{[^}]*\}/,
+      /\.modal-overlay:has\(\.wf-create-modal\)\s*\{[^}]*\}/,
     );
     expect(overlayRule).toMatch(/padding-top\s*:\s*0\s*;/);
     expect(overlayRule).toMatch(/align-items\s*:\s*stretch\s*;/);

@@ -53,13 +53,13 @@ class MockStore extends EventEmitter {
     };
   }
 
-  // FNXC:CommandCenter 2026-06-25-11:35: The /command-center/tokens handler now reads
-  // settings.modelPricingOverrides via getGlobalSettingsStore().getSettings() for USD
-  // cost derivation. Stub it so the auth check reaches a 200 instead of a 500 from a
-  // missing store accessor.
   getGlobalSettingsStore() {
     return {
-      getSettings: async () => ({ modelPricingOverrides: {} }),
+      /*
+       * FNXC:CommandCenter 2026-06-25-11:10:
+       * The authenticated `/command-center/tokens` route reads global pricing overrides through the scoped store. Auth coverage must provide that collaborator so a valid bearer token verifies authorization instead of failing on missing test-store plumbing.
+       */
+      getSettings: vi.fn(async () => ({})),
     };
   }
 

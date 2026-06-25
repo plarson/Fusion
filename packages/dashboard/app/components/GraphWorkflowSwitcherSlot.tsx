@@ -13,7 +13,11 @@ export interface GraphWorkflowSelection {
 
 interface GraphWorkflowSwitcherSlotProps {
   projectId?: string;
-  onOpenWorkflowEditor?: () => void;
+  /*
+  FNXC:WorkflowEditorFloating 2026-06-24-00:00:
+  Graph shares the Board/List workflow dropdown contract, so row edit must forward the workflow id into the floating editor. Keeping the parameter prevents Graph edits from falling back to the default workflow.
+  */
+  onOpenWorkflowEditor?: (workflowId?: string) => void;
   onCreateWorkflow?: () => void;
   onWorkflowSelectionChange?: (selection: GraphWorkflowSelection | null) => void;
 }

@@ -99,6 +99,16 @@ describe("HeaderWorkflowSwitcherSlot", () => {
     expect(headerSlot.contains(selector)).toBe(true);
   });
 
+  it("forwards dropdown edit workflow ids from the shared header slot", async () => {
+    const onOpenWorkflowEditor = vi.fn();
+    renderWithHeader(<HeaderWorkflowSwitcherSlot projectId="project-header-edit" onOpenWorkflowEditor={onOpenWorkflowEditor} />);
+
+    fireEvent.click(await screen.findByTestId("workflow-switcher"));
+    fireEvent.click(screen.getByTestId("workflow-switcher-edit-wf-missions"));
+
+    expect(onOpenWorkflowEditor).toHaveBeenCalledWith("wf-missions");
+  });
+
   it("renders no toolbar shell when workflow mode is off or only one workflow exists", async () => {
     fetchBoardWorkflowsMock.mockResolvedValueOnce(workflowPayload({ flagEnabled: false, workflows: [] }));
     const { unmount } = renderWithHeader(<HeaderWorkflowSwitcherSlot projectId="project-off" />);

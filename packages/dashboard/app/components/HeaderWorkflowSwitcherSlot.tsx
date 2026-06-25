@@ -13,7 +13,11 @@ export interface HeaderWorkflowSelection {
 
 interface HeaderWorkflowSwitcherSlotProps {
   projectId?: string;
-  onOpenWorkflowEditor?: () => void;
+  /*
+  FNXC:WorkflowEditorFloating 2026-06-24-00:00:
+  Header-slot workflow edit actions serve Planning and Missions, so this callback must forward the row workflow id exactly like Board/List. Dropping the argument opens the floating editor on the default workflow instead of the selected row.
+  */
+  onOpenWorkflowEditor?: (workflowId?: string) => void;
   onCreateWorkflow?: () => void;
   onWorkflowSelectionChange?: (selection: HeaderWorkflowSelection | null) => void;
 }

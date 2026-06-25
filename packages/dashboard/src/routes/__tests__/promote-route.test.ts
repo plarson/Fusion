@@ -2,14 +2,15 @@
 //
 // FN-1404: route-level integration coverage for POST /tasks/:id/promote.
 //
-// The promote endpoint has four error branches plus a success path, none of
+// The promote endpoint has three live error branches plus a success path, none of
 // which were exercised at the HTTP layer:
-//   - workflowColumns graduated      → a stale persisted `false` is treated as
-//                                      enabled, so promote proceeds (no legacy 400)
 //   - promoteHeldTask success        → 200 (returns the promoted task)
 //   - capacity-exhausted-or-no-slot  → 409 code:"capacity-exhausted"
 //   - other engine rejection         → 409 code:"guard-rejected"
 //   - TransitionRejectionError       → 409 carrying the rejection's code/messageKey
+//
+// FNXC:WorkflowColumns 2026-06-25-11:14:
+// Workflow columns graduated, so the historical flag-OFF 400 guard is unreachable; route coverage should pin only the live promote branches rather than reintroducing retired feature-gate behavior.
 //
 // promoteHeldTask is engine-internal cross-package logic; we mock it so the
 // route's branch-to-HTTP mapping is what's under test (the documented incident
@@ -59,19 +60,6 @@ const promote = (app: express.Express) =>
 describe("POST /tasks/:id/promote", () => {
   beforeEach(() => {
     promoteHeldTask.mockReset();
-  });
-
-  // FNXC:WorkflowColumns 2026-06-25-11:40: workflowColumns graduated from the
-  // experimental flag (isWorkflowColumnsEnabled always returns true and stale
-  // persisted `false` must be treated as enabled). The retired flag-OFF → 400
-  // branch no longer exists; assert the graduation invariant instead — a persisted
-  // `false` still lets promote proceed and reach the engine.
-  it("persisted workflowColumns:false is treated as enabled (graduated) → proceeds to engine", async () => {
-    const { app } = buildApp({ flagEnabled: false });
-    promoteHeldTask.mockResolvedValue({ released: true, toColumn: "in-progress" });
-    const res = await promote(app);
-    expect(res.status).toBe(200);
-    expect(promoteHeldTask).toHaveBeenCalledTimes(1);
   });
 
   it("success → 200 and returns the promoted task", async () => {

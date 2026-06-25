@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
+import { useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import { parseWorkflowIr, WORKFLOW_STEP_TEMPLATES, type WorkflowDefinition, type Settings } from "@fusion/core";
-import type { Agent } from "../../api";
+import type { Agent, BoardWorkflowDefinition } from "../../api";
 import {
   irToFlow,
   flowToIr,
@@ -85,6 +86,7 @@ import type { TraitCatalogEntry } from "../../api";
 import type { WorkflowStepTemplate } from "@fusion/core";
 import { beforeEach as viBeforeEach } from "vitest";
 import { WorkflowNodeEditor } from "../WorkflowNodeEditor";
+import { WorkflowSwitcher } from "../WorkflowSwitcher";
 import { ConfirmDialogProvider } from "../../hooks/useConfirm";
 import { MOBILE_MEDIA_QUERY } from "../../hooks/useViewportMode";
 
@@ -464,25 +466,25 @@ describe("WorkflowNodeEditor", () => {
   it("lets users collapse and restore the workflow mini map", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([def()]);
 
-    const { container } = render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
 
     expect(await screen.findByTestId("wf-workflow-name")).toHaveTextContent("QA");
     const toggle = await screen.findByTestId("wf-minimap-toggle");
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(toggle).toHaveTextContent("Hide mini map");
-    expect(container.querySelector(".react-flow__minimap")).toBeTruthy();
+    expect(document.body.querySelector(".react-flow__minimap")).toBeTruthy();
 
     fireEvent.click(toggle);
 
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(toggle).toHaveTextContent("Show mini map");
-    expect(container.querySelector(".react-flow__minimap")).toBeNull();
+    expect(document.body.querySelector(".react-flow__minimap")).toBeNull();
 
     fireEvent.click(toggle);
 
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(toggle).toHaveTextContent("Hide mini map");
-    expect(container.querySelector(".react-flow__minimap")).toBeTruthy();
+    expect(document.body.querySelector(".react-flow__minimap")).toBeTruthy();
   });
 
   it("lets desktop users switch to the simple graph layout and back", async () => {
@@ -659,6 +661,22 @@ describe("WorkflowNodeEditor", () => {
     expect(css.indexOf(".wf-mobile-actions .wf-editor-action")).toBeLessThan(mobileMediaIndex);
   });
 
+  it("routes modal sizing through FloatingWindow without stale overlay or native resize shells", () => {
+    const css = readFileSync("app/components/WorkflowNodeEditor.css", "utf8");
+    const modalBlock = css.match(/\.wf-editor-modal \{[\s\S]*?\n\}/)?.[0] ?? "";
+    const mobileBlock = css.slice(css.indexOf("@media (max-width: 768px)"));
+
+    expect(modalBlock).toContain("width: 100%;");
+    expect(modalBlock).toContain("height: 100%;");
+    expect(modalBlock).toContain("resize: none;");
+    expect(modalBlock).not.toContain("resize: both");
+    expect(css).toContain(".floating-window--workflow-editor .floating-window__body");
+    expect(mobileBlock).toContain(".floating-window--workflow-editor");
+    expect(mobileBlock).toContain(".floating-window--workflow-editor .floating-window__resize-handle");
+    expect(mobileBlock).toContain("display: none;");
+    expect(mobileBlock).not.toContain(".modal-overlay:has(.wf-editor-modal");
+  });
+
   it("lets tablet users switch to the simple graph layout", async () => {
     mockWorkflowEditorViewport("tablet");
     vi.mocked(fetchWorkflows).mockResolvedValue([def()]);
@@ -692,6 +710,48 @@ describe("WorkflowNodeEditor", () => {
     expect(screen.queryByTestId("wf-mobile-select-note")).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "QA" })[0]).toHaveClass("active");
     expect(screen.getByRole("button", { name: "Custom" })).not.toHaveClass("active");
+  });
+
+  it("opens the selected workflow from a real dropdown edit button into the floating modal", async () => {
+    vi.mocked(fetchWorkflows).mockResolvedValue([def(), v2Def()]);
+    const switcherWorkflows: BoardWorkflowDefinition[] = [
+      { id: "WF-001", name: "QA", columns: [] },
+      { id: "WF-002", name: "Custom", columns: [] },
+    ];
+
+    function DropdownEditHarness() {
+      const [editorWorkflowId, setEditorWorkflowId] = useState<string | undefined>();
+      const [editorOpen, setEditorOpen] = useState(false);
+      return (
+        <>
+          <WorkflowSwitcher
+            workflows={switcherWorkflows}
+            value="WF-001"
+            onChange={() => {}}
+            counts={new Map()}
+            onEditWorkflow={(workflowId) => {
+              setEditorWorkflowId(workflowId);
+              setEditorOpen(true);
+            }}
+          />
+          <WorkflowNodeEditor
+            isOpen={editorOpen}
+            onClose={() => setEditorOpen(false)}
+            addToast={() => {}}
+            initialWorkflowId={editorWorkflowId}
+          />
+        </>
+      );
+    }
+
+    render(<DropdownEditHarness />);
+    fireEvent.click(screen.getByTestId("workflow-switcher"));
+    fireEvent.click(await screen.findByTestId("workflow-switcher-edit-WF-002"));
+
+    expect(await screen.findByTestId("wf-workflow-name")).toHaveTextContent("Custom");
+    expect(screen.getByTestId("floating-window-workflow-node-editor")).toBeInTheDocument();
+    expect(screen.getByTestId("floating-window-resize-se")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Custom" })[0]).toHaveClass("active");
   });
 
   it("skips the mobile workflow list stage when the initial workflow id is valid", async () => {
@@ -1288,7 +1348,7 @@ describe("WorkflowNodeEditor", () => {
 
 // FNXC:EmbeddedPresentation 2026-06-22-12:00:
 // presentation="embedded" was a zero-coverage branch. These assert the embedded contract via useEmbeddedPresentation:
-// no fixed .modal-overlay backdrop, Escape does NOT dismiss (escapeEnabled is false), and the embedded root class renders.
+// no fixed floating/overlay chrome, Escape does NOT dismiss (escapeEnabled is false), and the embedded root class renders.
 describe("WorkflowNodeEditor — embedded presentation", () => {
   beforeEach(() => {
     vi.mocked(fetchWorkflows).mockResolvedValue([]);
@@ -1310,9 +1370,11 @@ describe("WorkflowNodeEditor — embedded presentation", () => {
     expect(await screen.findByText("Workflows")).toBeInTheDocument();
     expect(container.querySelector(".workflow-editor-embedded")).not.toBeNull();
     expect(container.querySelector(".wf-editor-modal--embedded")).not.toBeNull();
-    // No fixed full-screen overlay host in embedded mode.
+    // No fixed full-screen overlay host or floating-window chrome in embedded mode.
     expect(container.querySelector(".modal-overlay")).toBeNull();
     expect(container.querySelector(".wf-editor-overlay")).toBeNull();
+    expect(document.body.querySelector(".floating-window--workflow-editor")).toBeNull();
+    expect(document.body.querySelector(".floating-window__resize-handle")).toBeNull();
   });
 
   it("does not dismiss on Escape in embedded mode", async () => {
@@ -1328,15 +1390,24 @@ describe("WorkflowNodeEditor — embedded presentation", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("keeps the modal overlay and Escape-to-close in modal mode", async () => {
+  it("uses FloatingWindow chrome and Escape-to-close in modal mode", async () => {
     const onClose = vi.fn();
-    const { container } = render(<WorkflowNodeEditor isOpen onClose={onClose} addToast={() => {}} />);
+    render(<WorkflowNodeEditor isOpen onClose={onClose} addToast={() => {}} />);
 
     expect(await screen.findByText("Workflows")).toBeInTheDocument();
-    expect(container.querySelector(".wf-editor-overlay")).not.toBeNull();
-    expect(container.querySelector(".wf-editor-modal--embedded")).toBeNull();
+    const floating = document.body.querySelector(".floating-window--workflow-editor") as HTMLElement | null;
+    expect(floating).not.toBeNull();
+    expect(screen.getByTestId("floating-window-workflow-node-editor")).toBe(floating);
+    expect(screen.getByTestId("floating-window-overlay-workflow-node-editor")).toHaveAttribute("aria-modal", "false");
+    expect(document.body.querySelector(".wf-editor-overlay")).toBeNull();
+    expect(document.body.querySelector(".modal-overlay .wf-editor-modal")).toBeNull();
+    expect(document.body.querySelector(".wf-editor-modal--embedded")).toBeNull();
+    expect(document.body.querySelectorAll(".wf-editor-close")).toHaveLength(1);
+    expect(screen.getByTestId("floating-window-resize-se")).toBeInTheDocument();
+    expect(screen.queryByTestId("floating-window-drag-handle-workflow-node-editor")).not.toBeInTheDocument();
+    expect(floating!.querySelector(".wf-editor-header")).not.toBeNull();
     // Modal-mode Escape is handled on the modal element (onKeyDown), not document.
-    const modal = container.querySelector(".wf-editor-modal")!;
+    const modal = floating!.querySelector(".wf-editor-modal")!;
     fireEvent.keyDown(modal, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });
@@ -1583,13 +1654,13 @@ describe("WorkflowNodeEditor — U5 auto-layout", () => {
 
   it("runs auto-layout on load (nodes are positioned at layout positions)", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
-    const { container } = render(
+    render(
       <WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />,
     );
     await screen.findByTestId("wf-node-start");
     // React Flow positions step nodes via a translate transform on their wrapper.
     const wrapperFor = (id: string) =>
-      container.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`);
+      document.body.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`);
     // After load, the step node should have been auto-laid-out (positioned).
     await waitFor(() => {
       const transform = wrapperFor("step")?.style.transform ?? "";
@@ -1599,14 +1670,14 @@ describe("WorkflowNodeEditor — U5 auto-layout", () => {
 
   it("starts the canvas viewport at the top-left on first open", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([v2Def()]);
-    const { container } = render(
+    render(
       <WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />,
     );
 
     await screen.findByTestId("wf-node-start");
 
     await waitFor(() => {
-      const viewport = container.querySelector<HTMLElement>(".react-flow__viewport");
+      const viewport = document.body.querySelector<HTMLElement>(".react-flow__viewport");
       expect(viewport).not.toBeNull();
       expect(viewport?.style.transform).toMatch(/translate\(0px,\s*0px\)/);
       expect(viewport?.style.transform).toContain("scale(1)");
@@ -2128,14 +2199,14 @@ describe("WorkflowNodeEditor — built-in stepwise selection render path", () =>
 
   it("renders built-in and custom workflow nodes with handles matching projected edges", async () => {
     vi.mocked(fetchWorkflows).mockResolvedValue([builtinPrDef(), v2Def()]);
-    const { container } = render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
+    render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} />);
 
     await screen.findByTestId("wf-readonly-banner");
     await waitFor(() => expect(screen.getAllByTestId("wf-node-hold").length).toBeGreaterThan(0));
     const builtInFlow = irToFlow(builtinPrDef());
     for (const edge of builtInFlow.edges.filter((candidate) => candidate.source === "pr-create")) {
-      expect(container.querySelector(`.react-flow__handle[data-nodeid="${edge.source}"][data-handlepos="right"]`)).toBeInTheDocument();
-      expect(container.querySelector(`.react-flow__handle[data-nodeid="${edge.target}"][data-handlepos="left"]`)).toBeInTheDocument();
+      expect(document.body.querySelector(`.react-flow__handle[data-nodeid="${edge.source}"][data-handlepos="right"]`)).toBeInTheDocument();
+      expect(document.body.querySelector(`.react-flow__handle[data-nodeid="${edge.target}"][data-handlepos="left"]`)).toBeInTheDocument();
     }
     expect(builtInFlow.edges.some((edge) => edge.label === "open")).toBe(true);
     expect(builtInFlow.edges.some((edge) => edge.label === "failed")).toBe(true);
@@ -2145,8 +2216,8 @@ describe("WorkflowNodeEditor — built-in stepwise selection render path", () =>
     await waitFor(() => expect(screen.queryByTestId("wf-readonly-banner")).not.toBeInTheDocument());
     const customFlow = irToFlow(v2Def());
     for (const edge of customFlow.edges) {
-      expect(container.querySelector(`.react-flow__handle[data-nodeid="${edge.source}"][data-handlepos="right"]`)).toBeInTheDocument();
-      expect(container.querySelector(`.react-flow__handle[data-nodeid="${edge.target}"][data-handlepos="left"]`)).toBeInTheDocument();
+      expect(document.body.querySelector(`.react-flow__handle[data-nodeid="${edge.source}"][data-handlepos="right"]`)).toBeInTheDocument();
+      expect(document.body.querySelector(`.react-flow__handle[data-nodeid="${edge.target}"][data-handlepos="left"]`)).toBeInTheDocument();
     }
     expect(customFlow.edges.every((edge) => edge.label === "success")).toBe(true);
   });
@@ -2326,6 +2397,19 @@ describe("WorkflowNodeEditor — U4 create dialog / delete / inline rename / dir
     render(<WorkflowNodeEditor isOpen onClose={() => {}} addToast={() => {}} initialAction="create" />);
 
     expect(await screen.findByTestId("wf-create-dialog")).toBeInTheDocument();
+  });
+
+  it("does not let parent Escape close the floating editor while create dialog is open", async () => {
+    const onClose = vi.fn();
+    vi.mocked(fetchWorkflows).mockResolvedValue([]);
+    render(<WorkflowNodeEditor isOpen onClose={onClose} addToast={() => {}} initialAction="create" />);
+
+    expect(await screen.findByTestId("wf-create-dialog")).toBeInTheDocument();
+    const modal = document.body.querySelector(".floating-window--workflow-editor .wf-editor-modal")!;
+    fireEvent.keyDown(modal, { key: "Escape" });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId("wf-create-dialog")).toBeInTheDocument();
   });
 
   it("creates and activates a workflow on a valid submit", async () => {

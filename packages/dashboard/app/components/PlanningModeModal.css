@@ -480,9 +480,14 @@ The New session button must look EXACTLY like Missions' primary sidebar create b
   .planning-view {
     padding: var(--space-sm);
   }
-  .planning-view .planning-modal--embedded {
+  /*
+  FNXC:PlanningMode 2026-06-25-13:10:
+  The global mobile modal rule in styles.css (`@media (max-width:768px) .modal:not(.confirm-dialog), .modal-lg, ...`) forces every full-screen modal to height/max-height:100dvh. The embedded Planning shell carries `.modal-lg`, so it matched that rule and was stretched to the full 100dvh viewport even though its parent `.planning-view` is bounded between the header and the bottom nav (≈688px). Because `.modal:not(.confirm-dialog)` resolves to specificity (0,2,0) — equal to `.planning-view .planning-modal--embedded` — the global rule won on source order, so the embedded shell overflowed past the viewport, `.planning-view { overflow:hidden }` clipped the footer action buttons, and the summary/question panes could not scroll on mobile. Qualify with `.planning-view.open` (0,3,0) and re-pin max-height so the embedded view stays inside its bounded pane and the inner flex scroll chain works.
+  */
+  .planning-view.open .planning-modal--embedded {
     width: 100%;
     height: 100%;
+    max-height: 100%;
   }
   .planning-modal-body--split {
     flex-direction: column;

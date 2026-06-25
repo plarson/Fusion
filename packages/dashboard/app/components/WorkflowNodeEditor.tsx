@@ -50,7 +50,6 @@ import { useConfirm } from "../hooks/useConfirm";
 FNXC:i18n-Localize 2026-06-20-00:00:
 FN-6770 localizes this workflow surface through t() and authored en catalog keys so hardcoded user-facing copy does not need a lint.ignore deferral.
 */
-import { useModalResizePersist } from "../hooks/useModalResizePersist";
 import { useEmbeddedPresentation, type ModalPresentation } from "../hooks/useEmbeddedPresentation";
 import { isMobileViewport, useViewportMode } from "../hooks/useViewportMode";
 import { workflowNodeTypes, type WorkflowFlowNodeData, type WorkflowEditorNodeKind } from "./nodes/WorkflowNodeTypes";
@@ -94,6 +93,7 @@ import { WorkflowFieldsPanel } from "./WorkflowFieldsPanel";
 import { WorkflowSettingsPanel } from "./WorkflowSettingsPanel";
 import type { WorkflowFieldDefinition, WorkflowSettingDefinition } from "../api";
 import { CustomModelDropdown } from "./CustomModelDropdown";
+import { FloatingWindow } from "./FloatingWindow";
 import { MobileWorkflowGraphView } from "./MobileWorkflowGraphView";
 import {
   buildMobileWorkflowGraph,
@@ -2458,7 +2458,6 @@ function InnerEditor({
     };
   }, [overrideColumnBinding, agents.length, projectId, addToast, t]);
 
-  const overlayProps = useOverlayDismiss(requestClose);
   const promptFullscreenOverlay =
     isPromptExpanded && (selectedNode?.data.kind === "prompt" || selectedNode?.data.kind === "gate")
       ? createPortal(
@@ -2513,12 +2512,10 @@ function InnerEditor({
         )
       : null;
 
-  // FNXC:WorkflowEditorEmbedding 2026-06-22-00:00:
-  // Embedded mode renders the editor inline inside the right-dock panel: no
-  // fixed .modal-overlay shell, no overlay-click dismiss, no Escape-to-close,
-  // and a --embedded sized variant of the modal element. The modal path stays
-  // byte-identical (same overlay + overlayProps + Escape handler) when not
-  // embedded.
+  /*
+  FNXC:WorkflowEditorFloating 2026-06-24-00:00:
+  Dropdown-launched workflow editing must use the shared movable/resizable FloatingWindow so workflow modals participate in drag, resize, viewport clamping, geometry persistence, and shared z-index stacking. The embedded Workflows destination remains fixed in its host panel and bypasses all floating chrome.
+  */
   const modalElement = (
       <div
         className={`modal wf-editor-modal${isEmbedded ? " wf-editor-modal--embedded" : ""}`}
@@ -4822,9 +4819,19 @@ function InnerEditor({
           {modalElement}
         </div>
       ) : (
-        <div className="modal-overlay open wf-editor-overlay" {...overlayProps}>
+        <FloatingWindow
+          title={t("workflows.title", "Workflows")}
+          onClose={requestClose}
+          windowKey="workflow-node-editor"
+          className="floating-window--workflow-editor"
+          hideHeader
+          dragHandleSelector=".wf-editor-header"
+          defaultSize={{ width: 1200, height: 820 }}
+          minSize={{ width: 640, height: 480 }}
+          persistGeometryKey="fusion:workflow-node-editor-floating-geometry"
+        >
           {modalElement}
-        </div>
+        </FloatingWindow>
       )}
       {promptFullscreenOverlay}
     </>
@@ -4842,11 +4849,7 @@ export function WorkflowNodeEditor({
   presentation = "modal",
 }: WorkflowNodeEditorProps) {
   const modalRef = useRef<HTMLDivElement>(null);
-  const { isEmbedded, resizePersistEnabled } = useEmbeddedPresentation(presentation);
-  // FNXC:WorkflowEditorEmbedding 2026-06-22-00:00:
-  // Size persistence + native resize are modal-only; an embedded view fills its
-  // host panel (width/height:100%) so persisting a saved pixel size is wrong.
-  useModalResizePersist(modalRef, isOpen && resizePersistEnabled, "fusion:workflow-node-editor-size");
+  const { isEmbedded } = useEmbeddedPresentation(presentation);
   if (!isOpen) return null;
   return (
     <ReactFlowProvider>

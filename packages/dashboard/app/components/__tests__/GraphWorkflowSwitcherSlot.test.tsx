@@ -140,6 +140,17 @@ describe("GraphWorkflowSwitcherSlot", () => {
     });
   });
 
+  it("forwards dropdown edit workflow ids to the graph editor launcher", async () => {
+    appendHeaderWorkflowSlot();
+    const onOpenWorkflowEditor = vi.fn();
+    render(<GraphWorkflowSwitcherSlot projectId="project-edit" onOpenWorkflowEditor={onOpenWorkflowEditor} />);
+
+    fireEvent.click(await screen.findByTestId("workflow-switcher"));
+    fireEvent.click(screen.getByTestId("workflow-switcher-edit-wf-review"));
+
+    expect(onOpenWorkflowEditor).toHaveBeenCalledWith("wf-review");
+  });
+
   it("renders no dropdown shell when the header slot is absent", async () => {
     render(<GraphWorkflowSwitcherSlot projectId="project-no-slot" />);
 

@@ -202,10 +202,18 @@ describe("Board mobile initial render stabilization (FN-4574)", () => {
 
     render(<Board {...boardProps} />);
 
-    expect(visualViewportResizeListeners).toHaveLength(1);
+    /*
+     * FNXC:MobileBoard 2026-06-25-11:24:
+     * Board owns more than one legitimate visualViewport resize subscriber (responsive mode plus mobile re-anchor). The Android seam is the missing `removeEventListener`, so assert every registered listener is safe instead of pinning an incidental listener count.
+     */
+    expect(visualViewportResizeListeners.length).toBeGreaterThan(0);
 
     expect(() => {
-      visualViewportResizeListeners[0]();
+      act(() => {
+        for (const listener of visualViewportResizeListeners) {
+          listener();
+        }
+      });
     }).not.toThrow();
 
     viewportSpy.mockRestore();

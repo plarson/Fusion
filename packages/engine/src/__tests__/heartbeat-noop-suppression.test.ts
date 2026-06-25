@@ -54,6 +54,7 @@ describe("heartbeat no-op suppression", () => {
     expect(guard.evaluate({ ...baseCandidate, actionContext: { inboundMessageCount: 1 }, nowMs: 100 })).toMatchObject({ suppress: false, reason: "meaningful-action" });
     expect(guard.evaluate({ ...baseCandidate, actionContext: { toolCallCount: 1 }, nowMs: 100 })).toMatchObject({ suppress: false, reason: "meaningful-action" });
     expect(guard.evaluate({ ...baseCandidate, actionContext: { warningCount: 1 }, nowMs: 100 })).toMatchObject({ suppress: false, reason: "meaningful-action" });
+    expect(guard.evaluate({ ...baseCandidate, nowMs: 200 })).toMatchObject({ suppress: false, reason: "first-observation" });
   });
 
   it("does not suppress different summaries or changed board/input fingerprints", () => {

@@ -172,8 +172,14 @@ export class HeartbeatNoopSuppressionGuard {
     if (!isHeartbeatNoopSummary(normalizedSummary)) return { suppress: false, reason: "not-noop-summary", key, normalizedSummary };
     const boardInputFingerprint = fingerprintHeartbeatBoardInput(candidate.boardInput);
     if (!boardInputFingerprint) return { suppress: false, reason: "missing-fingerprint", key, normalizedSummary };
-    if (isUnsafeContext(candidate.actionContext)) return { suppress: false, reason: "unsafe-context", key, normalizedSummary, boardInputFingerprint };
-    if (hasMeaningfulAction(candidate.actionContext)) return { suppress: false, reason: "meaningful-action", key, normalizedSummary, boardInputFingerprint };
+    if (isUnsafeContext(candidate.actionContext)) {
+      this.records.delete(key);
+      return { suppress: false, reason: "unsafe-context", key, normalizedSummary, boardInputFingerprint };
+    }
+    if (hasMeaningfulAction(candidate.actionContext)) {
+      this.records.delete(key);
+      return { suppress: false, reason: "meaningful-action", key, normalizedSummary, boardInputFingerprint };
+    }
 
     const previous = this.records.get(key);
     const next = { normalizedSummary, boardInputFingerprint, lastSeenMs: nowMs };

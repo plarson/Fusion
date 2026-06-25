@@ -3607,6 +3607,53 @@ describe("executeHeartbeat", () => {
       expect(textRunLogs.map((row) => row.agentId)).toEqual(["agent-001", "agent-002"]);
     });
 
+    it("keeps timer no-task no-op text when unread messages are present", async () => {
+      const store = createStoreWithAgentForExec({ taskId: undefined, soul: "Ambient coordination specialist" });
+      const messages = [createMessage({ id: "msg-noop-1", toId: "agent-001", content: "Please review coordination state" })];
+      const messageStore = {
+        setMessageToAgentHook: vi.fn(),
+        getInbox: vi.fn().mockReturnValue(messages),
+        markAllAsRead: vi.fn(),
+      } as unknown as MessageStore;
+
+      let runCounter = 0;
+      vi.mocked(store.startHeartbeatRun).mockImplementation(async () => {
+        runCounter += 1;
+        return {
+          id: `run-message-${runCounter}`,
+          agentId: "agent-001",
+          startedAt: new Date(Date.UTC(2026, 0, 1, 1, runCounter, 0)).toISOString(),
+          endedAt: null,
+          status: "active",
+        } as AgentHeartbeatRun;
+      });
+
+      let capturedDoneTool: any;
+      let onText: ((delta: string) => void) | undefined;
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockImplementation(async (opts: any) => {
+        capturedDoneTool = opts.customTools[opts.customTools.length - 1];
+        onText = opts.onText;
+        return { session: mockSession as any };
+      });
+      mockSession.prompt = vi.fn().mockImplementation(async () => {
+        onText?.("No coordination intervention needed; no new tasks or delegations created.\n");
+        await capturedDoneTool.execute("call-1", { summary: "No coordination intervention needed; no new tasks or delegations created." });
+      });
+
+      const monitor = new HeartbeatMonitor({ store, messageStore, taskStore: mockTaskStore, rootDir: "/tmp" });
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+      const textRunLogs = vi.mocked(store.appendRunLog).mock.calls
+        .map(([agentId, runId, entry]) => ({ agentId, runId, entry }))
+        .filter(({ entry }) => entry.type === "text" && entry.text.includes("No coordination intervention needed"));
+
+      expect(textRunLogs).toHaveLength(2);
+      expect(textRunLogs.map((row) => row.runId)).toEqual(["run-message-1", "run-message-2"]);
+      expect(messageStore.markAllAsRead).toHaveBeenCalledWith("agent-001", "agent");
+    });
+
     it("records agent logs, context taskId, and stdoutExcerpt for successful runs", async () => {
       const store = createStoreWithAgentForExec();
       const appendAgentLog = vi.fn().mockResolvedValue(undefined);

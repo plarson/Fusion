@@ -3,4 +3,6 @@
 "@fusion/engine": patch
 ---
 
-Fix file-scope overlap classification so forbidden/non-goal prompt sections remain excluded from scheduler leases, and keep `.github/workflows/**` paths lease-significant for true CI workflow conflicts.
+summary: Fix false file-scope overlap blocks from forbidden prompt sections.
+category: fix
+dev: Keeps forbidden/non-goal prompt sections out of effective write-scope leases while preserving `.github/workflows/**` as lease-significant for true CI workflow conflicts.

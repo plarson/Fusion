@@ -1011,6 +1011,8 @@ async function getFirstQuestionFromAgent(
   if (!parsed) {
     const errorMessage = buildRetryableParseErrorMessage(lastError);
     setSessionError(session, errorMessage);
+    sessions.delete(session.id);
+    unpersistSession(session.id);
     try {
       await session.agent.session.dispose?.();
     } catch (disposeErr) {

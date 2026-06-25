@@ -777,13 +777,13 @@ The markdown variant must NOT pre-wrap/clamp — MailboxMessageContent emits rea
 }
 
 .preview-state-badge--open {
-  color: var(--success, var(--accent));
-  border-color: color-mix(in srgb, var(--success, var(--accent)) 40%, transparent);
+  color: var(--color-success, var(--accent));
+  border-color: color-mix(in srgb, var(--color-success, var(--accent)) 40%, transparent);
 }
 
 .preview-state-badge--closed {
-  color: var(--danger, var(--text-muted));
-  border-color: color-mix(in srgb, var(--danger, var(--text-muted)) 40%, transparent);
+  color: var(--color-error, var(--text-muted));
+  border-color: color-mix(in srgb, var(--color-error, var(--text-muted)) 40%, transparent);
 }
 
 .preview-state-badge--merged {
@@ -853,7 +853,7 @@ Checks + Comments sections live below the PR body in the scrollable preview pane
 }
 
 .preview-detail-error {
-  color: var(--danger, var(--text-muted));
+  color: var(--color-error, var(--text-muted));
   font-size: 12px;
 }
 
@@ -894,18 +894,18 @@ Checks + Comments sections live below the PR body in the scrollable preview pane
 }
 
 .github-import-pr-check-pill--success {
-  color: var(--success, var(--accent));
-  border-color: color-mix(in srgb, var(--success, var(--accent)) 40%, transparent);
+  color: var(--color-success, var(--accent));
+  border-color: color-mix(in srgb, var(--color-success, var(--accent)) 40%, transparent);
 }
 
 .github-import-pr-check-pill--failure {
-  color: var(--danger, var(--text-muted));
-  border-color: color-mix(in srgb, var(--danger, var(--text-muted)) 40%, transparent);
+  color: var(--color-error, var(--text-muted));
+  border-color: color-mix(in srgb, var(--color-error, var(--text-muted)) 40%, transparent);
 }
 
 .github-import-pr-check-pill--pending {
-  color: var(--warning, var(--accent));
-  border-color: color-mix(in srgb, var(--warning, var(--accent)) 40%, transparent);
+  color: var(--color-warning, var(--accent));
+  border-color: color-mix(in srgb, var(--color-warning, var(--accent)) 40%, transparent);
 }
 
 .github-import-pr-check-pill--neutral {
@@ -1004,8 +1004,8 @@ Across the thread: a top filter (All/Human/Bot) and prev/next chevrons live in t
 }
 
 .github-import-comment__type-badge--bot {
-  color: var(--warning, var(--accent));
-  border-color: color-mix(in srgb, var(--warning, var(--accent)) 40%, transparent);
+  color: var(--color-warning, var(--accent));
+  border-color: color-mix(in srgb, var(--color-warning, var(--accent)) 40%, transparent);
 }
 
 .github-import-comment__time {
@@ -1092,7 +1092,7 @@ Across the thread: a top filter (All/Human/Bot) and prev/next chevrons live in t
 
 .github-import-comments-filter__chip.active {
   background: var(--accent);
-  color: var(--accent-contrast, #fff);
+  color: var(--accent-text, #fff);
 }
 
 /* Back button - hidden on desktop by default */

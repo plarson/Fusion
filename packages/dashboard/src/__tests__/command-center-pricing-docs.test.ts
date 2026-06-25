@@ -16,7 +16,10 @@ describe("Command Center pricing documentation contract", () => {
 
     expect(dashboardGuide).toContain("estimated cost");
     expect(dashboardGuide).toContain("derived at read time");
-    expect(dashboardGuide).toContain("it is not persisted");
+    // FNXC:CommandCenter 2026-06-25-13:30: assertion matches the doc's
+    // sentence-initial casing ("It is not persisted"); the lowercase form was a
+    // substring drift, the documented not-persisted semantic is correct as written.
+    expect(dashboardGuide).toContain("It is not persisted");
     expect(dashboardGuide).toContain("prices as of");
     expect(dashboardGuide).toContain("low-confidence");
     expect(dashboardGuide).toContain("cost unavailable");

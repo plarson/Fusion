@@ -3,10 +3,38 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { detectMissingWorkspaceEntry, execWithProcessGroup } from "../verification-utils.js";
+import {
+  classifyVerificationScope,
+  defaultVerificationTimeoutMs,
+  detectMissingWorkspaceEntry,
+  execWithProcessGroup,
+  VERIFICATION_TIMEOUT_PACKAGE_MS,
+  VERIFICATION_TIMEOUT_WORKSPACE_MS,
+} from "../verification-utils.js";
 
 const onPosix = process.platform !== "win32";
 const itPosix = onPosix ? it : it.skip;
+
+describe("scope-aware verification default timeout", () => {
+  it("classifies pnpm --filter / -F commands as package-scoped", () => {
+    expect(classifyVerificationScope("pnpm --filter @fusion/dashboard test")).toBe("package");
+    expect(classifyVerificationScope("pnpm -w --filter @fusion/core exec vitest run src/a.test.ts")).toBe("package");
+    expect(classifyVerificationScope("pnpm -F @runfusion/fusion test")).toBe("package");
+  });
+
+  it("classifies root-level commands as workspace-scoped", () => {
+    expect(classifyVerificationScope("pnpm test")).toBe("workspace");
+    expect(classifyVerificationScope("pnpm test:full")).toBe("workspace");
+    expect(classifyVerificationScope("npm run verify")).toBe("workspace");
+  });
+
+  it("derives the default budget from scope (package 300s, workspace 900s)", () => {
+    expect(defaultVerificationTimeoutMs("pnpm --filter @fusion/dashboard test")).toBe(VERIFICATION_TIMEOUT_PACKAGE_MS);
+    expect(VERIFICATION_TIMEOUT_PACKAGE_MS).toBe(300_000);
+    expect(defaultVerificationTimeoutMs("pnpm test")).toBe(VERIFICATION_TIMEOUT_WORKSPACE_MS);
+    expect(VERIFICATION_TIMEOUT_WORKSPACE_MS).toBe(900_000);
+  });
+});
 
 describe("execWithProcessGroup", { timeout: 10_000 }, () => {
   let tempDir: string;

@@ -284,6 +284,8 @@ svg.spinning {
   --surface-1: color-mix(in srgb, var(--surface) 97%, var(--text) 3%);
   --surface-2: color-mix(in srgb, var(--surface) 92%, var(--text) 8%);
   --border-subtle: color-mix(in srgb, var(--border) 60%, transparent);
+  /* FNXC:DashboardThemeTokens 2026-06-25-13:15: --border-strong is a higher-contrast border (mixes --text into --border) for surfaces that need a visible outline, e.g. the workflow minimap node stroke. Defined so the var(--border-strong, var(--border)) reference is backed by a real token (token-validity guard). */
+  --border-strong: color-mix(in srgb, var(--border) 55%, var(--text) 45%);
   --bg-secondary: color-mix(in srgb, var(--surface) 70%, var(--card));
   --bg-tertiary: color-mix(in srgb, var(--surface) 40%, var(--card));
   --border: #30363d;
@@ -528,6 +530,8 @@ svg.spinning {
   --surface-1: color-mix(in srgb, var(--surface) 98%, var(--text) 2%);
   --surface-2: color-mix(in srgb, var(--surface) 95%, var(--text) 5%);
   --border-subtle: color-mix(in srgb, var(--border) 60%, transparent);
+  /* FNXC:DashboardThemeTokens 2026-06-25-13:15: --border-strong is a higher-contrast border (mixes --text into --border) for surfaces that need a visible outline, e.g. the workflow minimap node stroke. Defined so the var(--border-strong, var(--border)) reference is backed by a real token (token-validity guard). */
+  --border-strong: color-mix(in srgb, var(--border) 55%, var(--text) 45%);
   --bg: #ffffff;
   --surface: #f6f8fa;
   --card: #ffffff;
@@ -2801,6 +2805,8 @@ Toast text must contrast its status background across every dashboard theme and 
   color: var(--bg);
 }
 
+/* FNXC:ToastTheming 2026-06-25-13:15: shadcn-custom light info toast must use dark --text, not white --bg. Its info background (#0284c7 sky-600) only reaches 4.10 contrast against white but ~4.85 against --text, so enroll it in the light-mode dark-text correction list to satisfy WCAG AA. */
+[data-color-theme="shadcn-custom"][data-theme="light"] .toast-info,
 [data-color-theme="shadcn"][data-theme="light"] .toast-info,
 [data-color-theme="shadcn-green"][data-theme="light"] .toast-success,
 [data-color-theme="shadcn-green"][data-theme="light"] .toast-info,

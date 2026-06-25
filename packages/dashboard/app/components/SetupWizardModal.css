@@ -492,7 +492,7 @@
   position: fixed;
   left: 50%;
   bottom: var(--space-xl);
-  z-index: var(--z-modal, 1000);
+  z-index: 1000;
   width: min(520px, calc(100vw - (var(--space-lg) * 2)));
   transform: translateX(-50%);
   align-items: flex-start;

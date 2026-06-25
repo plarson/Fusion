@@ -38,9 +38,15 @@ vi.mock("../../hooks/useNodes", () => ({
 }));
 
 // Mock api module
+// FNXC:Onboarding 2026-06-25-13:20:
+// SetupWizardModal now probes `detectWorkspace` on existing-directory path entry
+// (FNXC:Workspace 2026-06-24-21:00). The mock must export it or the component's
+// path-change handler throws an unhandled rejection. Default to a non-workspace
+// single-repo result so the legacy submit-payload assertions stay deterministic.
 vi.mock("../../api", () => ({
   registerProject: vi.fn(),
   createAgent: vi.fn(),
+  detectWorkspace: vi.fn().mockResolvedValue({ repos: [], isWorkspace: false }),
   browseDirectory: vi.fn().mockResolvedValue({
     currentPath: "/home/user",
     parentPath: "/home",
@@ -234,12 +240,18 @@ describe("SetupWizardModal", () => {
     fireEvent.click(screen.getByText("Register Project"));
 
     await waitFor(() => {
+      // FNXC:Onboarding 2026-06-25-13:20:
+      // Existing-directory payload now carries `workspaceMode` (FNXC:Workspace) and
+      // auto-derived `taskPrefix` (FNXC:TaskPrefix). A non-workspace dir stays
+      // workspaceMode:false; prefix derives from name "project" -> "PROJ".
       expect(mockRegisterProject).toHaveBeenCalledWith({
         name: "project",
         path: "/existing/project",
         isolationMode: "in-process",
         nodeId: undefined,
         cloneUrl: undefined,
+        workspaceMode: false,
+        taskPrefix: "PROJ",
       });
     });
   });
@@ -291,12 +303,17 @@ describe("SetupWizardModal", () => {
     fireEvent.click(screen.getByText("Register Project"));
 
     await waitFor(() => {
+      // FNXC:Onboarding 2026-06-25-13:20:
+      // Clone payload also carries workspaceMode:false (clone always creates a single
+      // fresh repo) and taskPrefix derived from name "fusion" -> "FUSI".
       expect(mockRegisterProject).toHaveBeenCalledWith({
         name: "fusion",
         path: "/tmp/fusion",
         isolationMode: "in-process",
         nodeId: undefined,
         cloneUrl: "https://github.com/runfusion/fusion.git",
+        workspaceMode: false,
+        taskPrefix: "FUSI",
       });
     });
     expect(await screen.findByText("Create your first agent")).toBeDefined();

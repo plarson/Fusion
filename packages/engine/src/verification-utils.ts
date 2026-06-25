@@ -9,9 +9,49 @@ import type { SandboxBackend, SandboxRunStreamingOptions, SandboxStreamingResult
 // ── Constants ──────────────────────────────────────────────────────────
 
 export const VERIFICATION_COMMAND_MAX_BUFFER = 50 * 1024 * 1024;
+/**
+ * Legacy flat default. Retained for back-compat; the merger/executor gate now
+ * derives its default from command scope (see VERIFICATION_TIMEOUT_*_MS below).
+ */
 export const VERIFICATION_COMMAND_TIMEOUT_MS = 600_000;
 export const VERIFICATION_COMMAND_HARD_CAP_MS = 1_800_000;
 export const VERIFICATION_LOG_MAX_CHARS = 20_000;
+
+/*
+FNXC:Verification 2026-06-25-13:55:
+The merger/executor verification gate used a flat 10-min default for ANY configured
+test/build command, while the fn_run_verification tool already derived its default
+from command scope. A workspace-scoped command (a full suite, ~10+ min) hit the flat
+10-min wall and was killed as an infra timeout; a package-scoped command got a too-
+generous bound. Make the shared runner scope-aware to match the tool: a package-scoped
+command (pnpm --filter/-F ...) defaults to 300s, anything else (root/workspace command)
+to 900s. An explicit project verificationCommandTimeoutMs still overrides, and the 30-min
+hard cap (VERIFICATION_COMMAND_HARD_CAP_MS) still clamps the result. These mirror
+run-verification-tool's DEFAULT_TIMEOUT_PACKAGE_SEC (300) / DEFAULT_TIMEOUT_WORKSPACE_SEC (900).
+*/
+export const VERIFICATION_TIMEOUT_PACKAGE_MS = 300_000;
+export const VERIFICATION_TIMEOUT_WORKSPACE_MS = 900_000;
+
+/**
+ * Classify a configured verification command by scope. A command that targets a
+ * single workspace package via pnpm's `--filter`/`-F` is "package"-scoped; every
+ * other shape (a root-level command such as `pnpm test`) is "workspace"-scoped.
+ */
+export function classifyVerificationScope(command: string): "package" | "workspace" {
+  const tokens = command.split(/\s+/).filter(Boolean);
+  return tokens.some((token) => token === "--filter" || token === "-F") ? "package" : "workspace";
+}
+
+/**
+ * The default per-command verification budget for a command when no explicit
+ * project `verificationCommandTimeoutMs` override is provided — scope-aware,
+ * matching the fn_run_verification tool.
+ */
+export function defaultVerificationTimeoutMs(command: string): number {
+  return classifyVerificationScope(command) === "package"
+    ? VERIFICATION_TIMEOUT_PACKAGE_MS
+    : VERIFICATION_TIMEOUT_WORKSPACE_MS;
+}
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -359,10 +399,12 @@ export async function runVerificationCommand(
   /*
    * FNXC:Verification 2026-06-17-14:38:
    * Configured test/build commands share the same project verification budget as fn_run_verification so merge/step verification cannot run marathon subprocesses outside the engine-level guardrail.
+   * FNXC:Verification 2026-06-25-13:55:
+   * The default is now scope-aware (defaultVerificationTimeoutMs): package-scoped commands get 300s, workspace-scoped 900s — matching the tool — instead of a flat 10-min budget that killed workspace-scoped suites as infra timeouts.
    */
   const rawTimeoutMs = typeof timeoutMsOverride === "number" && timeoutMsOverride > 0
     ? timeoutMsOverride
-    : VERIFICATION_COMMAND_TIMEOUT_MS;
+    : defaultVerificationTimeoutMs(command);
   const timeoutMs = Math.min(rawTimeoutMs, VERIFICATION_COMMAND_HARD_CAP_MS);
   try {
     const { stdout, stderr, bufferOverflow } = await execWithProcessGroup(

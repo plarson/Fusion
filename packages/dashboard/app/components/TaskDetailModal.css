@@ -2299,7 +2299,7 @@ Read-only list/placeholder only — not the deferred rich per-repo-status compon
 .workspace-worktrees-placeholder {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--color-text-secondary, inherit);
+  color: var(--text-muted, inherit);
   margin-bottom: var(--space-xs);
 }
 .workspace-worktrees-list {
@@ -2321,5 +2321,5 @@ Read-only list/placeholder only — not the deferred rich per-repo-status compon
   font-weight: 600;
 }
 .workspace-worktrees-branch {
-  color: var(--color-text-secondary, inherit);
+  color: var(--text-muted, inherit);
 }

@@ -24,7 +24,7 @@
 .shadcn-color-picker-description {
   margin: var(--space-xs) 0 0;
   color: var(--text-muted);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-xs);
 }
 
 .shadcn-color-picker-grid {
@@ -50,7 +50,7 @@
   flex-direction: column;
   gap: var(--space-xs);
   color: var(--text);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-xs);
   font-weight: 500;
 }
 

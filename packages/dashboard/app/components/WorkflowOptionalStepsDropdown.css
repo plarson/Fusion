@@ -37,7 +37,8 @@
   background: var(--surface, #fff);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm, 6px);
-  box-shadow: var(--shadow-md, 0 6px 20px rgba(0, 0, 0, 0.18));
+  /* FNXC:DashboardThemeTokens 2026-06-25-13:15: Shadow fallback must stay tokenized via color-mix, never a raw alpha color call, so the global/component no-raw-rgb CSS hygiene guards pass. */
+  box-shadow: var(--shadow-md, 0 6px 20px color-mix(in srgb, #000000 18%, transparent));
 }
 
 .wf-optional-steps-dropdown-option {

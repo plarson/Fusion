@@ -142,7 +142,10 @@ describe("ProjectOverview", () => {
     expect(projectOverviewCss).toContain("width: 100%;");
     expect(projectOverviewCss).toContain("flex: 0 0 auto;");
     expect(projectOverviewCss).toContain("background: var(--surface);");
-    expect(projectOverviewCss).toContain("border-bottom-color: var(--border);");
+    // FNXC:Dashboard 2026-06-25-12:30: The Dashboard header intentionally dropped its
+    // bottom divider so the shared ViewHeader chrome matches Missions and Chat (see
+    // ProjectOverview.css FNXC note). Assert the divider is absent rather than present.
+    expect(projectOverviewCss).not.toContain("border-bottom-color: var(--border);");
     expect(projectOverviewCss).toContain("max-width: 1400px;");
   });
 

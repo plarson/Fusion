@@ -128,7 +128,7 @@ Larger grab target for the docked terminal top resize handle: it straddles the p
   width: calc(var(--space-xl) * 2);
   height: calc(var(--space-xs) / 2);
   transform: translateX(-50%);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-pill);
   background: var(--border);
 }
 

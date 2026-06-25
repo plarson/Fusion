@@ -106,8 +106,13 @@ describe("Status color CSS custom properties", () => {
   });
 
   it("uses --surface-hover token references with tokenized fallback (no raw rgba)", () => {
+    // FNXC:DashboardThemeTokens 2026-06-25-13:15: The invariant is that every
+    // --surface-hover fallback stays tokenized (color-mix), never a raw rgba().
+    // The original example string (QuickChatFAB's `var(--surface) 55%, transparent`)
+    // was removed when quick chat was replaced by the modal chat refactor, so we
+    // assert against a still-present tokenized fallback form instead.
     expect(css).toContain("var(--surface-hover)");
-    expect(css).toContain("var(--surface-hover, color-mix(in srgb, var(--surface) 55%, transparent))");
+    expect(css).toContain("var(--surface-hover, color-mix(in srgb, var(--text) 6%, transparent))");
     expect(css).not.toMatch(/var\(--surface-hover,\s*rgba\(/);
   });
 

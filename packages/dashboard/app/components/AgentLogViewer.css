@@ -152,7 +152,8 @@ Keep each block full-width and float the role/timestamp badge as a sticky overla
   border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--surface) 88%, transparent);
-  box-shadow: 0 1px 4px color-mix(in srgb, var(--shadow-color, #000) 12%, transparent);
+  /* FNXC:DashboardThemeTokens 2026-06-25-13:15: Shadow base uses the repo #000000 color-mix convention; --shadow-color was never a defined token (token-validity guard). */
+  box-shadow: 0 1px 4px color-mix(in srgb, #000000 12%, transparent);
   pointer-events: none;
   white-space: nowrap;
 }

@@ -1,24 +1,24 @@
 .model-pricing-section {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-md, var(--space-md));
+  gap: var(--space-md);
 }
 
 .model-pricing-section__header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: var(--spacing-md, var(--space-md));
+  gap: var(--space-md);
 }
 
 .model-pricing-section__meta {
-  margin: var(--spacing-xs, var(--space-xs)) 0 0;
+  margin: var(--space-xs) 0 0;
 }
 
 .model-pricing-table {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-xs, var(--space-xs));
+  gap: var(--space-xs);
   overflow-x: auto;
 }
 
@@ -32,7 +32,7 @@
     minmax(7rem, 1fr)
     minmax(10rem, 1.2fr)
     minmax(5rem, auto);
-  gap: var(--spacing-xs, var(--space-xs));
+  gap: var(--space-xs);
   align-items: center;
 }
 
@@ -43,7 +43,7 @@
 }
 
 .model-pricing-row--add {
-  padding-top: var(--spacing-xs, var(--space-xs));
+  padding-top: var(--space-xs);
   border-top: thin solid var(--border);
 }
 
@@ -67,7 +67,7 @@
 
   .model-pricing-row {
     grid-template-columns: minmax(14rem, 1fr);
-    padding: var(--spacing-sm, var(--space-sm));
+    padding: var(--space-sm);
     border: thin solid var(--border);
     border-radius: var(--radius-md);
   }

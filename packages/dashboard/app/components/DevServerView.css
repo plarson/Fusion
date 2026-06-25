@@ -714,7 +714,11 @@ exactly when the surrounding chrome is gone.
     max-width: none;
   }
 
-  .devserver-preview-header,
+  /* FNXC:DevServerLayout 2026-06-25-13:15: Keep the preview header's mobile wrap rule standalone (not grouped) so the narrow-screen responsiveness guard can assert flex-wrap on the header specifically. */
+  .devserver-preview-header {
+    flex-wrap: wrap;
+  }
+
   .devserver-preview-modal-launcher__copy {
     flex-wrap: wrap;
   }
@@ -937,7 +941,11 @@ vertically (.dev-server-view overflow-y:auto), so each panel just needs to be fu
     max-width: none;
   }
 
-  .devserver-preview-header,
+  /* FNXC:DevServerLayout 2026-06-25-13:15: Keep the preview header's mobile wrap rule standalone (not grouped) so the narrow-screen responsiveness guard can assert flex-wrap on the header specifically. */
+  .devserver-preview-header {
+    flex-wrap: wrap;
+  }
+
   .devserver-preview-modal-launcher__copy {
     flex-wrap: wrap;
   }

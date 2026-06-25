@@ -273,7 +273,11 @@ describe("CommandCenterControls", () => {
     );
 
     await flushPromises();
-    fireEvent.click(screen.getByRole("button", { name: /default/i }));
+    // FNXC:Theme 2026-06-25-13:40:
+    // The historical "default" colorTheme id is now surfaced as "Fusion Legacy"
+    // (Ocean is the new default label, see themeOptions). The trigger button name
+    // therefore reads "Fusion Legacy" for colorTheme="default".
+    fireEvent.click(screen.getByRole("button", { name: /fusion legacy/i }));
     fireEvent.click(screen.getAllByRole("option").find((element) => element.textContent?.trim() === "Forest")!);
 
     expect(onColorThemeChange).toHaveBeenCalledWith("forest");

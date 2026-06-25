@@ -36,7 +36,12 @@ describe("chat tool-call mobile layout css", () => {
     const nowrapRule = mobileCss.match(/\.chat-tool-calls-names,\s*\n\s*\.chat-tool-call-name,\s*\n\s*\.chat-tool-call-status-text,\s*\n\s*\.chat-tool-calls-group-status,\s*\n\s*\.chat-tool-calls-count\s*\{[^}]*\}/m)?.[0] ?? "";
     expect(nowrapRule).toMatch(/white-space:\s*nowrap/);
 
-    const allMobileSummaryRules = [...mobileCss.matchAll(/\.chat-tool-calls-group-summary\s*\{[^}]*\}/g)].map((m) => m[0]);
+    // FNXC:ChatToolCalls 2026-06-25-13:15: Match any mobile rule whose selector list
+    // includes .chat-tool-calls-group-summary (grouped or standalone). The previously
+    // standalone quick-chat rule was removed when quick chat became the modal chat, so
+    // the invariant (no mobile group-summary rule may revert to flex-direction: column)
+    // must now be asserted against the grouped full-chat rule that actually exists.
+    const allMobileSummaryRules = [...mobileCss.matchAll(/\.chat-tool-calls-group-summary[^{}]*\{[^}]*\}/g)].map((m) => m[0]);
     expect(allMobileSummaryRules.length).toBeGreaterThan(0);
     expect(allMobileSummaryRules.every((rule) => !/flex-direction:\s*column/.test(rule))).toBe(true);
   });

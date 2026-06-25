@@ -239,11 +239,17 @@ describe("workflow routes (U4)", () => {
   it("GET /workflows/:id/optional-steps resolves declared optional steps", async () => {
     const builtin = await get("/api/workflows/builtin%3Acoding/optional-steps");
     expect(builtin.status).toBe(200);
+    // FNXC:WorkflowOptionalGroup 2026-06-25-13:25: optional-step metadata is now
+    // sourced from v2 `optional-group` NODES (see workflow-optional-steps.ts),
+    // which carry no icon. The retired legacy `ir.optionalSteps` declaration
+    // supplied `icon: "globe"`; the group node instead yields `description: ""`
+    // and `phase: "pre-merge"`. Assert the current group-sourced shape.
     expect(builtin.body).toEqual([
       expect.objectContaining({
         templateId: "browser-verification",
         name: "Browser Verification",
-        icon: "globe",
+        description: "",
+        phase: "pre-merge",
         defaultOn: false,
       }),
     ]);

@@ -1340,7 +1340,7 @@ instead of resolving to a flat --card with no accent emphasis.
 */
 .automation-list-row.active {
   border-color: var(--accent);
-  background: var(--accent-subtle, color-mix(in srgb, var(--accent) 10%, transparent));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .automation-list-row-name {
@@ -2341,7 +2341,7 @@ The previous bespoke rules here hid the tab labels (icon-only) and used a crampe
 .gm-repo-selector {
   flex: 1;
   min-width: 0;
-  background: var(--bg-input);
+  background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;

@@ -200,7 +200,7 @@ describe("Board mobile initial render stabilization (FN-4574)", () => {
       },
     });
 
-    render(<Board {...boardProps} />);
+    const { unmount } = render(<Board {...boardProps} />);
 
     /*
      * FNXC:MobileBoard 2026-06-25-11:24:
@@ -215,6 +215,9 @@ describe("Board mobile initial render stabilization (FN-4574)", () => {
         }
       });
     }).not.toThrow();
+
+    // Exercises the Android seam: cleanup must not throw without removeEventListener.
+    expect(() => unmount()).not.toThrow();
 
     viewportSpy.mockRestore();
   });

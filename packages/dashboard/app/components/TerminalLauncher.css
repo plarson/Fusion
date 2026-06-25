@@ -48,7 +48,7 @@ Quick Chat and Terminal are peer footer launchers. Keep the Terminal footer vari
 
 .terminal-launcher--footer .terminal-launcher__chevron {
   width: auto;
-  padding-inline: var(--space-xxs);
+  padding-inline: var(--space-xs);
 }
 
 .terminal-launcher--footer .terminal-launcher__label {
@@ -79,7 +79,7 @@ Quick Chat and Terminal are peer footer launchers. Keep the Terminal footer vari
 }
 
 .terminal-launcher__main {
-  min-height: var(--control-height-sm);
+  min-height: 28px;
   gap: var(--space-xs);
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
@@ -93,19 +93,19 @@ Quick Chat and Terminal are peer footer launchers. Keep the Terminal footer vari
 
 .terminal-launcher__label {
   font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
+  font-weight: 500;
 }
 
 .terminal-launcher__chevron {
-  min-height: var(--control-height-sm);
-  width: var(--control-height-sm);
+  min-height: 28px;
+  width: 28px;
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
   color: var(--text-muted);
 }
 
 .terminal-launcher__divider {
-  width: var(--border-width, 1px);
+  width: 1px;
   height: var(--space-md);
   background: var(--border);
 }
@@ -130,7 +130,7 @@ Quick Chat and Terminal are peer footer launchers. Keep the Terminal footer vari
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
-  z-index: var(--z-popover);
+  z-index: 1000;
   padding: var(--space-sm);
 }
 
@@ -155,11 +155,11 @@ Quick Chat and Terminal are peer footer launchers. Keep the Terminal footer vari
 .quick-scripts-dropdown__empty p {
   margin: 0;
   color: var(--text);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-xs);
 }
 
 .quick-scripts-dropdown__empty-action {
-  min-height: var(--control-height-sm);
+  min-height: 28px;
 }
 
 .quick-scripts-dropdown__list {
@@ -199,14 +199,14 @@ Quick Chat and Terminal are peer footer launchers. Keep the Terminal footer vari
 .quick-scripts-dropdown__item-info {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xxs);
+  gap: var(--space-xs);
   min-width: 0;
 }
 
 .quick-scripts-dropdown__item-name {
   color: var(--text);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
 }
 
 .quick-scripts-dropdown__item-command {
@@ -225,7 +225,7 @@ Quick Chat and Terminal are peer footer launchers. Keep the Terminal footer vari
 
 .quick-scripts-dropdown__manage {
   color: var(--text-muted);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-xs);
 }
 
 .quick-scripts-dropdown__manage span {

@@ -49,12 +49,19 @@ function makeStore(opts: {
 }
 
 describe("buildBoardWorkflowsPayload", () => {
-  it("returns flagEnabled:false and empty maps when the flag is OFF", async () => {
+  // FNXC:WorkflowColumns 2026-06-25-13:20: workflowColumns graduated from the
+  // experimental flag (isWorkflowColumnsEnabled always returns true; a stale
+  // persisted/explicit `false` must resolve as enabled). The retired flag-OFF
+  // empty single-lane shape no longer exists. Assert the graduation invariant:
+  // even with persisted workflowColumns:false the payload is fully enabled and
+  // maps the visible card to the default workflow lane. Mirrors the route test
+  // (board-workflows-route.test.ts, FNXC:WorkflowColumns 2026-06-25-11:40).
+  it("treats persisted workflowColumns:false as enabled (graduated)", async () => {
     const store = makeStore({ flagOn: false, selections: {} });
     const payload = await buildBoardWorkflowsPayload(store as never, ["FN-1"]);
-    expect(payload.flagEnabled).toBe(false);
-    expect(payload.workflows).toEqual([]);
-    expect(payload.taskWorkflowIds).toEqual({});
+    expect(payload.flagEnabled).toBe(true);
+    expect(payload.workflows.length).toBeGreaterThan(0);
+    expect(payload.taskWorkflowIds["FN-1"]).toBe(DEFAULT_WORKFLOW_LANE_ID);
   });
 
   it("resolves null selections to the default workflow lane", async () => {

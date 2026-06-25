@@ -80,7 +80,7 @@ Hidden until a file is selected; when selected it overlays the tree as the singl
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--font-sm);
+  font-size: var(--font-size-xs);
   font-weight: 600;
   color: var(--text);
 }
@@ -111,12 +111,12 @@ Hidden until a file is selected; when selected it overlays the tree as the singl
 
 .dock-files-viewer__status {
   padding: var(--space-md);
-  font-size: var(--font-sm);
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
 .dock-files-viewer__status--error {
-  color: var(--danger, var(--text));
+  color: var(--color-error, var(--text));
 }
 
 /* FNXC:RightDockFiles 2026-06-22-12:00: empty-state placeholder shown in the wide right pane until a file is selected. */

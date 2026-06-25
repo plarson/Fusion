@@ -1444,8 +1444,11 @@ function normalizeRepairOverlapPath(path: string): string {
 }
 
 function repairOverlapPathPrefix(path: string): string | null {
+  /*
+  FNXC:OverlapRepair 2026-06-25-11:50:
+  Store-side repair must mirror the scheduler's current file-scope overlap contract. Treat `/*` and trailing-slash entries as directory prefixes, but do not independently expand `/**`; otherwise repair can refuse or reroute blockers the next scheduler tick would immediately clear.
+  */
   const normalized = normalizeRepairOverlapPath(path);
-  if (normalized.endsWith("/**")) return normalized.slice(0, -2);
   if (normalized.endsWith("/*")) return normalized.slice(0, -1);
   if (normalized.endsWith("/")) return normalized;
   return null;

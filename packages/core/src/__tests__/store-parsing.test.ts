@@ -567,7 +567,7 @@ Expected touched paths:
     it("rejects repair when the stored blocker still overlaps", async () => {
       const blocker = await store.createTask({ description: "Fusion blocker" });
       const target = await store.createTask({ description: "Fusion target" });
-      await writePrompt(blocker.id, ["packages/engine/**"]);
+      await writePrompt(blocker.id, ["packages/engine/*"]);
       await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
       await store.moveTask(blocker.id, "todo");
       await store.moveTask(blocker.id, "in-progress");
@@ -585,7 +585,7 @@ Expected touched paths:
     it("clears stale overlap blockers when the previous blocker is paused even if scopes still overlap", async () => {
       const blocker = await store.createTask({ description: "paused Fusion blocker" });
       const target = await store.createTask({ description: "Fusion target" });
-      await writePrompt(blocker.id, ["packages/engine/**"]);
+      await writePrompt(blocker.id, ["packages/engine/*"]);
       await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
       await store.moveTask(blocker.id, "todo");
       await store.moveTask(blocker.id, "in-progress");
@@ -606,7 +606,7 @@ Expected touched paths:
       const current = await store.createTask({ description: "current blocker" });
       const target = await store.createTask({ description: "target" });
       await writePrompt(stale.id, ["packages/core/**"]);
-      await writePrompt(current.id, ["packages/engine/**"]);
+      await writePrompt(current.id, ["packages/engine/*"]);
       await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
       await store.moveTask(stale.id, "todo");
       await store.moveTask(current.id, "todo");
@@ -627,7 +627,7 @@ Expected touched paths:
       const pausedCurrent = await store.createTask({ description: "paused current blocker" });
       const target = await store.createTask({ description: "target" });
       await writePrompt(stale.id, ["packages/core/**"]);
-      await writePrompt(pausedCurrent.id, ["packages/engine/**"]);
+      await writePrompt(pausedCurrent.id, ["packages/engine/*"]);
       await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
       await store.moveTask(stale.id, "todo");
       await store.moveTask(pausedCurrent.id, "todo");
@@ -635,6 +635,24 @@ Expected touched paths:
       await store.updateTask(pausedCurrent.id, { paused: true, userPaused: true, pausedReason: "operator parked" });
       await store.moveTask(target.id, "todo");
       await store.updateTask(target.id, { status: "queued", overlapBlockedBy: stale.id });
+
+      const result = await store.repairOverlapBlocker(target.id);
+
+      expect(result).toMatchObject({ repaired: true, statusCleared: true, reason: "repaired" });
+      const repaired = await store.getTask(target.id);
+      expect(repaired?.overlapBlockedBy).toBeUndefined();
+      expect(repaired?.status).toBeUndefined();
+    });
+
+    it("does not treat double-star globs as overlaps beyond scheduler semantics", async () => {
+      const blocker = await store.createTask({ description: "scheduler-literal blocker" });
+      const target = await store.createTask({ description: "target" });
+      await writePrompt(blocker.id, ["packages/engine/**"]);
+      await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
+      await store.moveTask(blocker.id, "todo");
+      await store.moveTask(blocker.id, "in-progress");
+      await store.moveTask(target.id, "todo");
+      await store.updateTask(target.id, { status: "queued", overlapBlockedBy: blocker.id });
 
       const result = await store.repairOverlapBlocker(target.id);
 
@@ -673,7 +691,7 @@ Expected touched paths:
       const current = await store.createTask({ description: "current blocker" });
       const target = await store.createTask({ description: "target" });
       await writePrompt(stale.id, ["packages/core/**"]);
-      await writePrompt(current.id, ["packages/engine/**"]);
+      await writePrompt(current.id, ["packages/engine/*"]);
       await writePrompt(target.id, ["packages/engine/src/scheduler.ts"]);
       await store.moveTask(stale.id, "todo");
       await store.moveTask(current.id, "todo");

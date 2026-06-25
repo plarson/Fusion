@@ -23,6 +23,7 @@ const mockedFetchWorkflowSteps = vi.spyOn(api, "fetchWorkflowSteps");
 const mockedFetchTaskWorkflow = vi.spyOn(api, "fetchTaskWorkflow");
 const mockedFetchWorkflow = vi.spyOn(api, "fetchWorkflow");
 const mockedFetchWorkflows = vi.spyOn(api, "fetchWorkflows");
+const mockedFetchBoardWorkflows = vi.spyOn(api, "fetchBoardWorkflows");
 const mockedFetchWorkflowOptionalSteps = vi.spyOn(api, "fetchWorkflowOptionalSteps");
 const mockedSelectTaskWorkflow = vi.spyOn(api, "selectTaskWorkflow");
 const mockedSubmitTaskWorkflowInput = vi.spyOn(api, "submitTaskWorkflowInput");
@@ -66,6 +67,24 @@ describe("WorkflowResultsTab", () => {
       templateId: "browser-verification",
     },
   ];
+
+  const defaultWorkflow: WorkflowDefinition = {
+    id: "builtin:coding",
+    name: "Built-in Coding Workflow",
+    description: "Default workflow",
+    ir: {
+      version: 1,
+      nodes: [
+        { id: "start", kind: "start", config: {} },
+        { id: "execute", kind: "prompt", config: { name: "Execute task" } },
+        { id: "end", kind: "end", config: {} },
+      ],
+      edges: [
+        { from: "start", to: "execute" },
+        { from: "execute", to: "end" },
+      ],
+    },
+  } as WorkflowDefinition;
 
   const selectedWorkflow: WorkflowDefinition = {
     id: "WF-001",
@@ -131,9 +150,19 @@ describe("WorkflowResultsTab", () => {
     mockedFetchTaskWorkflow.mockReset();
     mockedFetchTaskWorkflow.mockResolvedValue({ workflowId: "WF-001" });
     mockedFetchWorkflow.mockReset();
-    mockedFetchWorkflow.mockResolvedValue(selectedWorkflow);
+    mockedFetchWorkflow.mockImplementation((workflowId) => Promise.resolve(workflowId === "builtin:coding" ? defaultWorkflow : selectedWorkflow));
     mockedFetchWorkflows.mockReset();
-    mockedFetchWorkflows.mockResolvedValue([selectedWorkflow]);
+    mockedFetchWorkflows.mockResolvedValue([defaultWorkflow, selectedWorkflow]);
+    mockedFetchBoardWorkflows.mockReset();
+    mockedFetchBoardWorkflows.mockResolvedValue({
+      flagEnabled: true,
+      defaultWorkflowId: "builtin:coding",
+      workflows: [
+        { id: "builtin:coding", name: "Built-in Coding Workflow", columns: [] },
+        { id: "WF-001", name: "Custom Delivery Workflow", columns: [] },
+      ],
+      taskWorkflowIds: {},
+    });
     mockedFetchWorkflowOptionalSteps.mockReset();
     mockedFetchWorkflowOptionalSteps.mockResolvedValue([
       {
@@ -259,15 +288,94 @@ describe("WorkflowResultsTab", () => {
     expect(await screen.findByTestId("react-flow-mock")).toBeInTheDocument();
   });
 
-  it("shows no workflow assigned when none is selected", async () => {
+  it("resolves a null task workflow selection through the board default and loads its graph", async () => {
+    mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: null });
+
+    render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} projectId="project-default" />);
+
+    await waitFor(() => expect(screen.getByTestId("workflow-state-summary-name")).toHaveTextContent("Built-in Coding Workflow"));
+    expect(screen.queryByText("No workflow assigned")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("workflow-graph-toggle"));
+
+    await waitFor(() => expect(mockedFetchWorkflow).toHaveBeenCalledWith("builtin:coding", "project-default"));
+    expect(await screen.findByTestId("workflow-graph-preview")).toBeInTheDocument();
+    expect(screen.getByTestId("react-flow-mock")).toHaveTextContent("nodes:");
+  });
+
+  it("keeps an explicit custom workflow ahead of the board default", async () => {
+    mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: "WF-001" });
+
+    render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} projectId="project-custom" />);
+
+    await waitFor(() => expect(screen.getByTestId("workflow-state-summary-name")).toHaveTextContent("Custom Delivery Workflow"));
+
+    fireEvent.click(screen.getByTestId("workflow-graph-toggle"));
+
+    await waitFor(() => expect(mockedFetchWorkflow).toHaveBeenCalledWith("WF-001", "project-custom"));
+    expect(mockedFetchWorkflow).not.toHaveBeenCalledWith("builtin:coding", "project-custom");
+    expect(await screen.findByTestId("workflow-graph-preview")).toBeInTheDocument();
+  });
+
+  it("returns to the effective default workflow when an explicit selection is cleared", async () => {
+    mockedSelectTaskWorkflow.mockResolvedValueOnce({ workflowId: null, enabledWorkflowSteps: [] });
+
+    render(
+      <WorkflowResultsTab
+        taskId="FN-001"
+        task={baseTask}
+        settings={mockSettings}
+        results={mockResults}
+        canEdit
+        projectId="project-cleared"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId("workflow-state-summary-name")).toHaveTextContent("Custom Delivery Workflow"));
+    fireEvent.change(await screen.findByLabelText("Custom workflow"), { target: { value: "" } });
+
+    await waitFor(() => expect(mockedSelectTaskWorkflow).toHaveBeenCalledWith("FN-001", null, "project-cleared"));
+    await waitFor(() => expect(screen.getByTestId("workflow-state-summary-name")).toHaveTextContent("Built-in Coding Workflow"));
+
+    fireEvent.click(screen.getByTestId("workflow-graph-toggle"));
+
+    await waitFor(() => expect(mockedFetchWorkflow).toHaveBeenCalledWith("builtin:coding", "project-cleared"));
+    expect(await screen.findByTestId("workflow-graph-preview")).toBeInTheDocument();
+  });
+
+  it("shows graph unavailable without crashing for an unknown stale workflow id", async () => {
+    mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: "WF-STALE" });
+    mockedFetchWorkflows.mockResolvedValueOnce([defaultWorkflow, selectedWorkflow]);
+    mockedFetchWorkflow.mockImplementation((workflowId) => {
+      if (workflowId === "WF-STALE") return Promise.reject(new Error("missing workflow"));
+      return Promise.resolve(workflowId === "builtin:coding" ? defaultWorkflow : selectedWorkflow);
+    });
+
+    render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} projectId="project-stale" />);
+
+    await waitFor(() => expect(screen.getByTestId("workflow-state-summary-name")).toHaveTextContent("Custom workflow"));
+    fireEvent.click(screen.getByTestId("workflow-graph-toggle"));
+
+    await waitFor(() => expect(mockedFetchWorkflow).toHaveBeenCalledWith("WF-STALE", "project-stale"));
+    expect(await screen.findByTestId("workflow-graph-unavailable")).toHaveTextContent("Workflow graph unavailable");
+    expect(screen.queryByTestId("workflow-graph-preview")).not.toBeInTheDocument();
+  });
+
+  it("shows no workflow assigned and avoids graph fetch when board workflows provide no usable effective id", async () => {
     mockedFetchWorkflows.mockResolvedValueOnce([]);
-    const { fetchTaskWorkflow } = await import("../../api");
-    vi.mocked(fetchTaskWorkflow).mockResolvedValueOnce({ workflowId: null });
+    mockedFetchBoardWorkflows.mockResolvedValueOnce({
+      flagEnabled: false,
+      defaultWorkflowId: "",
+      workflows: [],
+      taskWorkflowIds: {},
+    });
+    mockedFetchTaskWorkflow.mockResolvedValueOnce({ workflowId: null });
 
     render(<WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} />);
     fireEvent.click(screen.getByTestId("workflow-graph-toggle"));
 
     expect(await screen.findByTestId("workflow-graph-empty")).toHaveTextContent("No workflow assigned");
+    expect(mockedFetchWorkflow).not.toHaveBeenCalled();
   });
 
   it("shows edit workflow affordance only when editable and workflow selected", async () => {

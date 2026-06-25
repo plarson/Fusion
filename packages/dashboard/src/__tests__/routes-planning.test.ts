@@ -1396,6 +1396,70 @@ describe("Planning Mode Routes", () => {
         expect(finalRes.body.data.keyDeliverables).toBeInstanceOf(Array);
       });
 
+      it("FN-6977 normalizes omitted summary arrays from live AI completion", async () => {
+        const responses = [
+          JSON.stringify({
+            type: "question",
+            data: {
+              id: "q-one",
+              type: "text",
+              question: "What should be planned?",
+            },
+          }),
+          JSON.stringify({
+            type: "complete",
+            data: {
+              title: "Malformed AI summary",
+              description: "AI omitted array fields but completion is otherwise recoverable",
+              suggestedSize: "M",
+              suggestedDependencies: ["FN-100", "FN-100", 12],
+            },
+          }),
+        ];
+        let callIndex = 0;
+        __setCreateFnAgent(async () => ({
+          session: {
+            state: { messages: [] },
+            prompt: vi.fn(async function (this: { state: { messages: Array<{ role: string; content: string }> } }, message: string) {
+              this.state.messages.push({ role: "user", content: message });
+              this.state.messages.push({ role: "assistant", content: responses[callIndex++] ?? responses[responses.length - 1] });
+            }),
+            dispose: vi.fn(),
+          },
+        }));
+
+        const startRes = await REQUEST(
+          buildApp(),
+          "POST",
+          "/api/planning/start",
+          JSON.stringify({ initialPlan: "Normalize malformed AI completion" }),
+          { "Content-Type": "application/json" },
+        );
+        const sessionId = startRes.body.sessionId;
+
+        const finalRes = await REQUEST(
+          buildApp(),
+          "POST",
+          "/api/planning/respond",
+          JSON.stringify({ sessionId, responses: { "q-one": "Finish" } }),
+          { "Content-Type": "application/json" },
+        );
+
+        expect(finalRes.status).toBe(200);
+        expect(finalRes.body).toMatchObject({
+          type: "complete",
+          data: {
+            title: "Malformed AI summary",
+            suggestedDependencies: ["FN-100"],
+            keyDeliverables: [],
+          },
+        });
+        expect(planningModule.getSummary(sessionId)).toMatchObject({
+          suggestedDependencies: ["FN-100"],
+          keyDeliverables: [],
+        });
+      });
+
       it("allows refine requests from completed sessions", async () => {
         const startRes = await REQUEST(
           buildApp(),
@@ -1733,6 +1797,34 @@ describe("Planning Mode Routes", () => {
           }),
         );
       });
+
+      it("FN-6977 returns fallback subtasks when summary override omits deliverables", async () => {
+        const sessionId = await createCompletedPlanningSession("Break down malformed planning summary");
+
+        const res = await REQUEST(
+          buildApp(),
+          "POST",
+          "/api/planning/start-breakdown",
+          JSON.stringify({
+            sessionId,
+            summary: {
+              title: "Malformed breakdown summary",
+              description: "Deliverables were omitted by the AI or persisted session",
+              suggestedSize: "M",
+            },
+          }),
+          { "Content-Type": "application/json" },
+        );
+
+        expect(res.status).toBe(200);
+        expect(res.body.subtasks).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: "subtask-1", title: "Define implementation approach", dependsOn: [] }),
+            expect.objectContaining({ id: "subtask-2", title: "Implement core changes", dependsOn: ["subtask-1"] }),
+            expect.objectContaining({ id: "subtask-3", title: "Verify and polish", dependsOn: ["subtask-2"] }),
+          ]),
+        );
+      });
     });
 
     describe("POST /planning/create-task", () => {
@@ -1971,7 +2063,37 @@ describe("Planning Mode Routes", () => {
         expect(sessionRes.body).toMatchObject({
           id: sessionId,
           status: "complete",
-          result: storedSession?.result,
+        });
+        expect(JSON.parse(sessionRes.body.result)).toMatchObject(JSON.parse(storedSession?.result ?? "{}"));
+      });
+
+      it("FN-6977 returns normalized persisted planning summary rows for resume", async () => {
+        const sessionId = "session-fn-6977-persisted-resume";
+        const mockAiSessionStore = {
+          get: vi.fn((id: string) => id === sessionId ? buildPlanningRow({
+            id: sessionId,
+            status: "complete",
+            title: "Malformed persisted summary",
+            result: JSON.stringify({
+              title: "Malformed persisted summary",
+              description: "Persisted row omitted keyDeliverables and included duplicate dependencies",
+              suggestedSize: "M",
+              suggestedDependencies: ["FN-100", "FN-100", "", 7],
+            }),
+          }) : null),
+          listAll: vi.fn(() => []),
+          listActive: vi.fn(() => []),
+        };
+        const appWithAiSessionStore = express();
+        appWithAiSessionStore.use(express.json());
+        appWithAiSessionStore.use("/api", createApiRoutes(store, { aiSessionStore: mockAiSessionStore as any }));
+
+        const sessionRes = await REQUEST(appWithAiSessionStore, "GET", `/api/ai-sessions/${sessionId}`);
+
+        expect(sessionRes.status).toBe(200);
+        expect(JSON.parse(sessionRes.body.result)).toMatchObject({
+          suggestedDependencies: ["FN-100"],
+          keyDeliverables: [],
         });
       });
 

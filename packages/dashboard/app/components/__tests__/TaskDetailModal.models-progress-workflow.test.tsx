@@ -17,6 +17,7 @@ import {
   expectBaseRule,
   readDashboardStylesSource,
   setupTaskDetailModalHooks,
+  taskDetailSseSubscriptions,
 } from "./TaskDetailModal.test-helpers";
 import { TaskDetailModal, TaskDetailContent } from "../TaskDetailModal";
 
@@ -1055,6 +1056,68 @@ describe("TaskDetailModal", () => {
           "error",
         );
       });
+    });
+
+    it("updates workflow results from matching task:updated SSE events while ignoring other tasks", async () => {
+      const { fetchWorkflowResults } = await import("../../api");
+      const mockFetch = vi.mocked(fetchWorkflowResults);
+      mockFetch.mockResolvedValueOnce([
+        {
+          workflowStepId: "WS-INITIAL",
+          workflowStepName: "Initial Check",
+          status: "pending",
+          output: "Initial output",
+        },
+      ] as import("@fusion/core").WorkflowStepResult[]);
+
+      render(
+        <TaskDetailModal
+          initialTab="workflow"
+          task={makeTask({ id: "FN-099", enabledWorkflowSteps: ["WS-INITIAL"] })}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      expect(await screen.findByText("Initial Check", {}, { timeout: 15_000 })).toBeTruthy();
+      await waitFor(() => {
+        expect(taskDetailSseSubscriptions.some(({ options }) => typeof options.events?.["task:updated"] === "function")).toBe(true);
+      });
+      const workflowSubscription = taskDetailSseSubscriptions.find(({ options }) => typeof options.events?.["task:updated"] === "function");
+      const emitTaskUpdated = workflowSubscription!.options.events!["task:updated"];
+
+      await act(async () => {
+        emitTaskUpdated(new MessageEvent("task:updated", {
+          data: JSON.stringify({
+            id: "FN-OTHER",
+            workflowStepResults: [
+              { workflowStepId: "WS-OTHER", workflowStepName: "Other Task Check", status: "failed", output: "Wrong task" },
+            ],
+          }),
+        }));
+      });
+
+      expect(screen.queryByText("Other Task Check")).not.toBeInTheDocument();
+      expect(screen.getByText("Initial Check")).toBeTruthy();
+
+      await act(async () => {
+        emitTaskUpdated(new MessageEvent("task:updated", {
+          data: JSON.stringify({
+            id: "FN-099",
+            workflowStepResults: [
+              { workflowStepId: "WS-LIVE", workflowStepName: "Live QA Check", status: "passed", output: "Updated from SSE" },
+            ],
+          }),
+        }));
+      });
+
+      expect(await screen.findByText("Live QA Check")).toBeTruthy();
+      expect(screen.getByText("Updated from SSE")).toBeTruthy();
+      expect(screen.queryByText("Initial Check")).not.toBeInTheDocument();
     });
 
     it("renders configured workflow steps state when results are empty", async () => {

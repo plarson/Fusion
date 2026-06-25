@@ -226,6 +226,49 @@ describe("PlanningModeModal", () => {
   });
 
   describe("Planning flow", () => {
+    it.each(["desktop", "mobile"] as const)("FN-6977 renders malformed live summary without generic error on %s", async (viewportMode) => {
+      mockViewport(viewportMode);
+      mockStartPlanningStreaming.mockResolvedValueOnce({ sessionId: `session-fn-6977-live-${viewportMode}` });
+      mockConnectPlanningStream.mockImplementationOnce((_sessionId: string, _projectId: string | undefined, handlers: any) => {
+        setTimeout(() => {
+          handlers.onSummary?.({
+            title: "Live malformed summary",
+            description: "Live Planning Mode summary omitted deliverable arrays",
+            suggestedSize: "M",
+          });
+        }, 10);
+
+        return {
+          close: vi.fn(),
+          isConnected: vi.fn().mockReturnValue(true),
+        };
+      });
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={mockOnClose}
+          onTaskCreated={mockOnTaskCreated}
+          onTasksCreated={vi.fn()}
+          tasks={mockTasks}
+        />
+      );
+
+      fireEvent.change(screen.getByPlaceholderText(/e.g., Build a user authentication/), {
+        target: { value: "Plan from live malformed summary" },
+      });
+      fireEvent.click(screen.getByText("Start Planning"));
+
+      await waitFor(() => {
+        expect(screen.getByText("Planning Complete!")).toBeDefined();
+      });
+
+      expect(screen.getByDisplayValue("Live Planning Mode summary omitted deliverable arrays")).toBeDefined();
+      expect(screen.queryByText(/Something went wrong/i)).toBeNull();
+      expect(screen.getByRole("button", { name: "Create Single Task" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Break into Tasks" })).toBeEnabled();
+    });
+
     it("starts planning and shows question view", async () => {
       render(
         <PlanningModeModal
@@ -969,6 +1012,194 @@ describe("PlanningModeModal", () => {
       await waitFor(() => {
         expect(mockOnClose).toHaveBeenCalled();
       });
+    });
+
+    it.each(["desktop", "mobile"] as const)("FN-6977 renders malformed persisted summary without generic error on %s", async (viewportMode) => {
+      mockViewport(viewportMode);
+      const malformedSummary = {
+        title: "Malformed summary without arrays",
+        description: "Recovered summary missing deliverable and dependency arrays",
+        suggestedSize: "M",
+      };
+
+      mockFetchAiSession.mockResolvedValueOnce({
+        id: `session-fn-6977-${viewportMode}`,
+        type: "planning",
+        status: "complete",
+        title: "Malformed summary without arrays",
+        inputPayload: JSON.stringify({ initialPlan: "Recover malformed summary" }),
+        conversationHistory: "[]",
+        currentQuestion: null,
+        result: JSON.stringify(malformedSummary),
+        thinkingOutput: "",
+        error: null,
+        projectId: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={mockOnClose}
+          onTaskCreated={mockOnTaskCreated}
+          onTasksCreated={vi.fn()}
+          tasks={mockTasks}
+          resumeSessionId={`session-fn-6977-${viewportMode}`}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("Planning Complete!")).toBeDefined();
+      });
+
+      expect(screen.getByDisplayValue("Recovered summary missing deliverable and dependency arrays")).toBeDefined();
+      expect(screen.queryByText(/Something went wrong/i)).toBeNull();
+      expect(screen.getByRole("button", { name: "Create Single Task" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Break into Tasks" })).toBeEnabled();
+    });
+
+    it("FN-6977 sends normalized empty arrays when creating from a malformed summary", async () => {
+      const malformedSummary = {
+        title: "Malformed summary create task",
+        description: "Recovered summary can still create a task",
+        suggestedSize: "M",
+      };
+
+      mockFetchAiSession.mockResolvedValueOnce({
+        id: "session-fn-6977-create",
+        type: "planning",
+        status: "complete",
+        title: "Malformed summary create task",
+        inputPayload: JSON.stringify({ initialPlan: "Recover malformed summary and create" }),
+        conversationHistory: "[]",
+        currentQuestion: null,
+        result: JSON.stringify(malformedSummary),
+        thinkingOutput: "",
+        error: null,
+        projectId: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      mockCreateTaskFromPlanning.mockResolvedValueOnce({
+        id: "FN-6977",
+        title: "Created from malformed summary",
+        description: "",
+        column: "triage",
+        dependencies: [],
+        steps: [],
+        currentStep: 0,
+        log: [],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      } as Task);
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={mockOnClose}
+          onTaskCreated={mockOnTaskCreated}
+          onTasksCreated={vi.fn()}
+          tasks={mockTasks}
+          resumeSessionId="session-fn-6977-create"
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Create Single Task" })).toBeDefined();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Create Single Task" }));
+
+      await waitFor(() => {
+        expect(mockCreateTaskFromPlanning).toHaveBeenCalledWith(
+          "session-fn-6977-create",
+          expect.objectContaining({
+            suggestedDependencies: [],
+            keyDeliverables: [],
+          }),
+          undefined,
+          expect.any(Object),
+        );
+      });
+      expect(screen.queryByText(/Something went wrong/i)).toBeNull();
+    });
+
+    it("FN-6977 starts breakdown from malformed summary and normalizes missing subtask dependsOn", async () => {
+      const malformedSummary = {
+        title: "Malformed summary breakdown",
+        description: "Recovered summary can still be broken down",
+        suggestedSize: "M",
+      };
+
+      mockFetchAiSession.mockResolvedValueOnce({
+        id: "session-fn-6977-breakdown",
+        type: "planning",
+        status: "complete",
+        title: "Malformed summary breakdown",
+        inputPayload: JSON.stringify({ initialPlan: "Recover malformed summary and break down" }),
+        conversationHistory: "[]",
+        currentQuestion: null,
+        result: JSON.stringify(malformedSummary),
+        thinkingOutput: "",
+        error: null,
+        projectId: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      mockStartPlanningBreakdown.mockResolvedValueOnce({
+        sessionId: "session-fn-6977-breakdown",
+        subtasks: [
+          {
+            id: "subtask-1",
+            title: "Fallback implementation",
+            description: "Generated despite omitted deliverables",
+            suggestedSize: "M",
+          },
+        ],
+      });
+      mockCreateTasksFromPlanning.mockResolvedValueOnce({ tasks: [] });
+      const onTasksCreated = vi.fn();
+
+      render(
+        <PlanningModeModal
+          isOpen={true}
+          onClose={mockOnClose}
+          onTaskCreated={mockOnTaskCreated}
+          onTasksCreated={onTasksCreated}
+          tasks={mockTasks}
+          resumeSessionId="session-fn-6977-breakdown"
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Break into Tasks" })).toBeDefined();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Break into Tasks" }));
+
+      await waitFor(() => {
+        expect(mockStartPlanningBreakdown).toHaveBeenCalledWith(
+          "session-fn-6977-breakdown",
+          expect.objectContaining({ suggestedDependencies: [], keyDeliverables: [] }),
+          undefined,
+        );
+        expect(screen.getByDisplayValue("Fallback implementation")).toBeDefined();
+      });
+      expect(screen.getByText("First subtask cannot have dependencies.")).toBeDefined();
+
+      fireEvent.click(screen.getByRole("button", { name: "Create Tasks" }));
+
+      await waitFor(() => {
+        expect(mockCreateTasksFromPlanning).toHaveBeenCalledWith(
+          "session-fn-6977-breakdown",
+          [expect.objectContaining({ id: "subtask-1" })],
+          undefined,
+          expect.any(Object),
+        );
+        expect(onTasksCreated).toHaveBeenCalledWith([]);
+      });
+      expect(screen.queryByText(/Something went wrong/i)).toBeNull();
     });
 
     it("shows summary view when resuming a complete persisted session", async () => {

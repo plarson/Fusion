@@ -91,6 +91,10 @@ describe("goals schema", () => {
   });
 
   it("reports current schema version", () => {
+    /*
+     * FNXC:CoreSchemaVersionTests 2026-06-21-09:05:
+     * Fresh DB version expectations must follow the exported SCHEMA_VERSION constant so routine migration bumps do not leave stale test literals behind.
+     */
     expect(db.getSchemaVersion()).toBe(SCHEMA_VERSION);
   });
 });

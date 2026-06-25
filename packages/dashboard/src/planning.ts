@@ -20,7 +20,7 @@ import type {
   TaskStore,
   NtfyNotificationEvent,
 } from "@fusion/core";
-import { DEFAULT_TASK_PRIORITY, resolvePrompt, summarizeTitle, type PromptOverrideMap } from "@fusion/core";
+import { DEFAULT_TASK_PRIORITY, TASK_PRIORITIES, resolvePrompt, summarizeTitle, type PromptOverrideMap } from "@fusion/core";
 import type { SubtaskItem } from "./subtask-breakdown.js";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -392,6 +392,62 @@ const activeGenerations = new Map<string, ActivePlanningGeneration>();
 let _aiSessionStore: AiSessionStore | undefined;
 let _aiSessionDeletedListener: ((sessionId: string) => void) | undefined;
 
+function isTaskPriority(value: unknown): value is TaskPriority {
+  return typeof value === "string" && (TASK_PRIORITIES as readonly string[]).includes(value);
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+/*
+FNXC:PlanningNormalization 2026-06-25-00:00:
+AI responses and persisted planning rows are untrusted runtime data. Normalize omitted or malformed summary arrays to [] at the session boundary so #1743-style undefined `.map` crashes cannot reach live streams, resume, task creation, or breakdown generation.
+*/
+export function normalizePlanningSummaryPayload(
+  summaryInput: unknown,
+  fallback?: { title?: string; description?: string },
+): PlanningSummary {
+  const summary = summaryInput && typeof summaryInput === "object" && !Array.isArray(summaryInput)
+    ? summaryInput as Record<string, unknown>
+    : {};
+
+  const title = typeof summary.title === "string" && summary.title.trim().length > 0
+    ? summary.title.trim()
+    : fallback?.title?.trim() || "Untitled planning task";
+  const description = typeof summary.description === "string" && summary.description.trim().length > 0
+    ? summary.description.trim()
+    : fallback?.description?.trim() || title;
+
+  return {
+    title,
+    description,
+    suggestedSize: summary.suggestedSize === "S" || summary.suggestedSize === "M" || summary.suggestedSize === "L"
+      ? summary.suggestedSize
+      : "M",
+    priority: isTaskPriority(summary.priority) ? summary.priority : DEFAULT_TASK_PRIORITY,
+    suggestedDependencies: normalizeStringArray(summary.suggestedDependencies),
+    keyDeliverables: normalizeStringArray(summary.keyDeliverables),
+  };
+}
+
 function safeParseJson<T>(
   text: string | null,
   fallback: T,
@@ -540,10 +596,13 @@ function buildSessionFromRow(row: AiSessionRow): Session {
     currentQuestion,
     lastNotifiedQuestionKey: currentQuestion ? `${row.id}:${currentQuestion.id}` : undefined,
     summary: row.result
-      ? (safeParseJson<PlanningSummary | null>(row.result, null, {
-          throwOnError: true,
-          fieldName: "result",
-        }) ?? undefined)
+      ? normalizePlanningSummaryPayload(
+          safeParseJson<unknown | null>(row.result, null, {
+            throwOnError: true,
+            fieldName: "result",
+          }),
+          { title: row.title, description: row.title },
+        )
       : undefined,
     thinkingOutput: row.thinkingOutput,
     lastGeneratedThinking: row.thinkingOutput || "",
@@ -1048,7 +1107,10 @@ async function getFirstQuestionFromAgent(
   if (parsed.type === "complete") {
     // AI returned a summary instead of a question — return a minimal question
     // so the caller can present the summary
-    const summary = parsed.data;
+    const summary = normalizePlanningSummaryPayload(parsed.data, {
+      title: session.title || session.initialPlan,
+      description: session.initialPlan,
+    });
     session.summary = summary;
     persistSession(session, "complete");
     return {
@@ -1890,14 +1952,18 @@ async function continueAgentConversation(session: Session, message: string): Pro
           data: parsed.data,
         });
       } else if (parsed.type === "complete") {
-        session.summary = parsed.data;
+        const summary = normalizePlanningSummaryPayload(parsed.data, {
+          title: session.title || session.initialPlan,
+          description: session.initialPlan,
+        });
+        session.summary = summary;
         session.currentQuestion = undefined;
         session.error = undefined;
         session.updatedAt = new Date();
         persistSession(session, "complete");
         planningStreamManager.broadcast(session.id, {
           type: "summary",
-          data: parsed.data,
+          data: summary,
         });
         planningStreamManager.broadcast(session.id, { type: "complete" });
       }
@@ -2579,7 +2645,11 @@ export function generateSubtasksFromPlanning(sessionId: string): SubtaskItem[] {
   if (!session) return [];
   if (!session.summary) return [];
 
-  const { summary } = session;
+  const summary = normalizePlanningSummaryPayload(session.summary, {
+    title: session.title || session.initialPlan,
+    description: session.initialPlan,
+  });
+  session.summary = summary;
   const qaSection = formatInterviewQA(session.history);
 
   // If key deliverables exist, create one subtask per deliverable plus a final verification subtask.

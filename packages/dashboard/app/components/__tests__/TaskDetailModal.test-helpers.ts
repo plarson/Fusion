@@ -9,6 +9,20 @@ import { TaskDetailModal, TaskDetailContent } from "../TaskDetailModal";
 import type { TaskDetail, Column, MergeResult, Task } from "@fusion/core";
 import { clearAuthToken } from "../../auth";
 
+const taskDetailSseSubscriptions = vi.hoisted(() => [] as Array<{
+  url: string;
+  options: { events?: Record<string, (event: MessageEvent) => void> };
+}>);
+
+export { taskDetailSseSubscriptions };
+
+vi.mock("../../sse-bus", () => ({
+  subscribeSse: vi.fn((url: string, options: { events?: Record<string, (event: MessageEvent) => void> }) => {
+    taskDetailSseSubscriptions.push({ url, options });
+    return vi.fn();
+  }),
+}));
+
 vi.mock("../../api", async (importOriginal) => {
   const { createDashboardApiMock } = await import("../../test/mockApi");
   return createDashboardApiMock(() => importOriginal<typeof import("../../api")>(), {
@@ -32,6 +46,14 @@ vi.mock("../../api", async (importOriginal) => {
     fetchSettings: vi.fn().mockResolvedValue({ modelPresets: [], autoSelectModelPreset: false, defaultPresetBySize: {} }),
     fetchGlobalSettings: vi.fn().mockResolvedValue({}),
     fetchWorkflowSteps: vi.fn().mockResolvedValue([]),
+    fetchWorkflows: vi.fn().mockResolvedValue([]),
+    fetchTaskWorkflow: vi.fn().mockResolvedValue({ workflowId: null }),
+    fetchBoardWorkflows: vi.fn().mockResolvedValue({ flagEnabled: false, defaultWorkflowId: "", workflows: [], taskWorkflowIds: {} }),
+    fetchWorkflowOptionalSteps: vi.fn().mockResolvedValue([]),
+    fetchWorkflow: vi.fn().mockResolvedValue({ id: "builtin:coding", name: "Coding", ir: { version: 1, nodes: [], edges: [] } }),
+    selectTaskWorkflow: vi.fn().mockResolvedValue({ workflowId: null, enabledWorkflowSteps: [] }),
+    submitTaskWorkflowInput: vi.fn().mockResolvedValue({ ok: true }),
+    approveTaskWorkflowCli: vi.fn().mockResolvedValue({ approved: "ok" }),
     refineText: vi.fn(),
     getRefineErrorMessage: vi.fn((err: any) => err?.message || "Failed to refine"),
     updateGlobalSettings: vi.fn().mockResolvedValue({}),
@@ -175,6 +197,7 @@ export function setupTaskDetailModalHooks(): void {
     mockConfirmWithCheckbox.mockResolvedValue({ choice: "primary", checkboxValue: false });
     clearAuthToken();
     localStorage.removeItem("fn.authToken");
+    taskDetailSseSubscriptions.length = 0;
   });
 
   afterEach(() => {

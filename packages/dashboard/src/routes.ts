@@ -38,7 +38,7 @@ import {
 import type { ServerOptions } from "./server.js";
 import { verifyWebhookSignature } from "./github-webhooks.js";
 import { AiSessionStore, SESSION_CLEANUP_DEFAULT_MAX_AGE_MS } from "./ai-session-store.js";
-import { getSession as getPlanningSession, cleanupSession as cleanupPlanningSession } from "./planning.js";
+import { getSession as getPlanningSession, cleanupSession as cleanupPlanningSession, normalizePlanningSummaryPayload } from "./planning.js";
 import { getSubtaskSession, cleanupSubtaskSession } from "./subtask-breakdown.js";
 import { getMissionInterviewSession, cleanupMissionInterviewSession } from "./mission-interview.js";
 import { getTargetInterviewSession, cleanupTargetInterviewSession } from "./milestone-slice-interview.js";
@@ -4213,6 +4213,20 @@ export function createApiRoutes(store: TaskStore, options?: ServerOptions): Rout
     const session = aiSessionStore.get(req.params.id);
     if (!session) {
       throw notFound("Session not found");
+    }
+    if (session.type === "planning" && session.result) {
+      try {
+        res.json({
+          ...session,
+          result: JSON.stringify(normalizePlanningSummaryPayload(JSON.parse(session.result), {
+            title: session.title,
+            description: session.title,
+          })),
+        });
+        return;
+      } catch {
+        // Preserve the existing invalid-result behavior for callers that can still recover client-side.
+      }
     }
     res.json(session);
   });

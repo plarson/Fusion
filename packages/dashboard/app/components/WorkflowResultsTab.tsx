@@ -13,7 +13,7 @@ import remarkGfm from "remark-gfm";
 import { ReactFlow, ReactFlowProvider } from "@xyflow/react";
 import type { AgentLogEntry, Settings, Task, TaskDetail, WorkflowDefinition, WorkflowStep, WorkflowStepResult, ResolvedWorkflowOptionalStep } from "@fusion/core";
 import { getErrorMessage, resolveTaskExecutionModel, resolveTaskPlanningModel, resolveTaskValidatorModel } from "@fusion/core";
-import { approveTaskWorkflowCli, fetchWorkflow, fetchWorkflows, fetchWorkflowSteps, fetchTaskWorkflow, fetchWorkflowOptionalSteps, selectTaskWorkflow, submitTaskWorkflowInput } from "../api";
+import { approveTaskWorkflowCli, fetchBoardWorkflows, fetchWorkflow, fetchWorkflows, fetchWorkflowSteps, fetchTaskWorkflow, fetchWorkflowOptionalSteps, selectTaskWorkflow, submitTaskWorkflowInput } from "../api";
 import { WorkflowSelector } from "./WorkflowSelector";
 import { phaseBadge } from "./workflow-phase-badge";
 import { useAgentLogs } from "../hooks/useAgentLogs";
@@ -139,12 +139,12 @@ function getOutputPreview(output: string): string {
 // and the optional-steps dropdown). Imported above.
 
 function getWorkflowName(
-  selectedWorkflowId: string | null,
+  workflowId: string | null,
   workflows: WorkflowDefinition[],
   t: ReturnType<typeof useTranslation>["t"],
 ): string {
-  if (!selectedWorkflowId) return t("app:workflow.defaultWorkflow", "Default");
-  const match = workflows.find((workflow) => workflow.id === selectedWorkflowId);
+  if (!workflowId) return t("app:workflow.noWorkflowAssigned", "No workflow assigned");
+  const match = workflows.find((workflow) => workflow.id === workflowId);
   return match?.name || t("app:workflow.customWorkflowFallback", "Custom workflow");
 }
 
@@ -323,6 +323,7 @@ export function WorkflowResultsTab({
   const [allWorkflowSteps, setAllWorkflowSteps] = useState<WorkflowStep[]>([]);
   const [optionalWorkflowSteps, setOptionalWorkflowSteps] = useState<ResolvedWorkflowOptionalStep[]>([]);
   const [workflowDefinitions, setWorkflowDefinitions] = useState<WorkflowDefinition[]>([]);
+  const [boardWorkflowFallbackId, setBoardWorkflowFallbackId] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const [resumeError, setResumeError] = useState<string | null>(null);
@@ -387,13 +388,38 @@ export function WorkflowResultsTab({
   }, [projectId]);
 
   useEffect(() => {
-    if (!graphExpanded || !selectedWorkflowId || workflowGraphCache[selectedWorkflowId]) return;
+    let cancelled = false;
+    setBoardWorkflowFallbackId(null);
+    fetchBoardWorkflows(projectId)
+      .then((payload) => {
+        if (cancelled) return;
+        const mappedWorkflowId = payload.taskWorkflowIds?.[taskId] || null;
+        const defaultWorkflowId = payload.defaultWorkflowId || null;
+        setBoardWorkflowFallbackId(payload.flagEnabled ? (mappedWorkflowId ?? defaultWorkflowId) : null);
+      })
+      .catch(() => {
+        if (!cancelled) setBoardWorkflowFallbackId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId, projectId]);
+
+  /*
+  FNXC:TaskWorkflowDetails 2026-06-24-09:50:
+  A null per-task workflow selection means "inherit the board workflow" when board-workflows supplies a task mapping or project default. Use this effective id for read-only task-detail surfaces while keeping the explicit selection value for WorkflowSelector.
+  */
+  const effectiveWorkflowId = selectedWorkflowId ?? boardWorkflowFallbackId;
+  const graphCacheKey = effectiveWorkflowId ? `${projectId ?? ""}::${effectiveWorkflowId}` : null;
+
+  useEffect(() => {
+    if (!graphExpanded || !effectiveWorkflowId || !graphCacheKey || workflowGraphCache[graphCacheKey]) return;
     let cancelled = false;
     setWorkflowGraphLoading(true);
-    fetchWorkflow(selectedWorkflowId, projectId)
+    fetchWorkflow(effectiveWorkflowId, projectId)
       .then((definition) => {
         if (!cancelled) {
-          setWorkflowGraphCache((prev) => ({ ...prev, [selectedWorkflowId]: definition }));
+          setWorkflowGraphCache((prev) => ({ ...prev, [graphCacheKey]: definition }));
         }
       })
       .catch(() => {
@@ -405,7 +431,7 @@ export function WorkflowResultsTab({
     return () => {
       cancelled = true;
     };
-  }, [graphExpanded, selectedWorkflowId, projectId, workflowGraphCache]);
+  }, [graphExpanded, effectiveWorkflowId, graphCacheKey, projectId, workflowGraphCache]);
 
   // Check if any result has pending status
   const hasPendingStep = results.some((r) => r.status === "pending");
@@ -436,11 +462,13 @@ export function WorkflowResultsTab({
     };
   }, [projectId]);
 
-  const effectiveOptionalStepsWorkflowId = selectedWorkflowId || "builtin:coding";
-
   useEffect(() => {
+    if (!effectiveWorkflowId) {
+      setOptionalWorkflowSteps([]);
+      return;
+    }
     let cancelled = false;
-    fetchWorkflowOptionalSteps(effectiveOptionalStepsWorkflowId, projectId)
+    fetchWorkflowOptionalSteps(effectiveWorkflowId, projectId)
       .then((steps) => {
         if (!cancelled) setOptionalWorkflowSteps(steps);
       })
@@ -450,7 +478,7 @@ export function WorkflowResultsTab({
     return () => {
       cancelled = true;
     };
-  }, [effectiveOptionalStepsWorkflowId, projectId]);
+  }, [effectiveWorkflowId, projectId]);
 
   const selectedWorkflowSteps = enabledWorkflowSteps ?? [];
 
@@ -574,11 +602,11 @@ export function WorkflowResultsTab({
     });
   }, [selectedWorkflowSteps, workflowStepLookup, t]);
 
-  const workflowName = useMemo(() => getWorkflowName(selectedWorkflowId, workflowDefinitions, t), [selectedWorkflowId, workflowDefinitions, t]);
+  const workflowName = useMemo(() => getWorkflowName(effectiveWorkflowId, workflowDefinitions, t), [effectiveWorkflowId, workflowDefinitions, t]);
   const executionPhase = useMemo(() => getExecutionPhase(task, taskStatus, taskPausedReason, results, t), [task, taskStatus, taskPausedReason, results, t]);
   const aggregateResult = useMemo(() => getAggregateWorkflowResult(results, t), [results, t]);
   const completedStepCount = useMemo(() => results.filter((result) => ["passed", "skipped", "failed", "advisory_failure"].includes(result.status)).length, [results]);
-  const graphWorkflow = selectedWorkflowId ? workflowGraphCache[selectedWorkflowId] : undefined;
+  const graphWorkflow = graphCacheKey ? workflowGraphCache[graphCacheKey] : undefined;
   const graphFlow = useMemo(() => (graphWorkflow ? irToFlow(graphWorkflow) : null), [graphWorkflow]);
   const effectiveExecutor = useMemo(() => (task ? resolveTaskExecutionModel(task, settings) : undefined), [task, settings]);
   const effectiveValidator = useMemo(() => (task ? resolveTaskValidatorModel(task, settings) : undefined), [task, settings]);
@@ -1011,7 +1039,7 @@ export function WorkflowResultsTab({
         </button>
         {graphExpanded && (
           <div className="workflow-disclosure__content">
-            {!selectedWorkflowId ? (
+            {!effectiveWorkflowId ? (
               <p className="workflow-disclosure__empty" data-testid="workflow-graph-empty">
                 {t("app:workflow.noWorkflowAssigned", "No workflow assigned")}
               </p>
@@ -1050,7 +1078,7 @@ export function WorkflowResultsTab({
       <section className="card workflow-management" data-testid="workflow-management-section">
         <div className="workflow-management__header">
           <h4>{t("app:workflow.workflowName", "Workflow")}</h4>
-          {canEdit && selectedWorkflowId && onEditWorkflow && (
+          {canEdit && effectiveWorkflowId && onEditWorkflow && (
             <button
               type="button"
               className="btn btn-sm"

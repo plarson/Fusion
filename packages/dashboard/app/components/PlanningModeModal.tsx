@@ -113,10 +113,85 @@ function normalizeTaskPriority(priority?: TaskPriority): TaskPriority {
   return DEFAULT_TASK_PRIORITY;
 }
 
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const trimmed = item.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+/*
+FNXC:PlanningNormalization 2026-06-25-00:00:
+Planning Mode treats AI and persisted session payloads as untrusted runtime data. Missing summary arrays, question options, and subtask dependency arrays normalize before render/action state so #1743 cannot crash React with undefined `.map`.
+*/
 function normalizePlanningSummary(summary: PlanningSummary): PlanningSummary {
+  const raw = summary as PlanningSummary & Record<string, unknown>;
+  const title = typeof raw.title === "string" && raw.title.trim().length > 0
+    ? raw.title.trim()
+    : "Untitled planning task";
+  const description = typeof raw.description === "string" && raw.description.trim().length > 0
+    ? raw.description.trim()
+    : title;
   return {
     ...summary,
+    title,
+    description,
+    suggestedSize: raw.suggestedSize === "S" || raw.suggestedSize === "M" || raw.suggestedSize === "L" ? raw.suggestedSize : "M",
     priority: normalizeTaskPriority(summary.priority),
+    suggestedDependencies: normalizeStringArray(raw.suggestedDependencies),
+    keyDeliverables: normalizeStringArray(raw.keyDeliverables),
+  };
+}
+
+function normalizeQuestionOptions(question: PlanningQuestion): PlanningQuestion {
+  if (question.type !== "single_select" && question.type !== "multi_select") {
+    return question;
+  }
+  const options = Array.isArray(question.options)
+    ? question.options
+        .filter((option): option is { id: string; label: string; description?: string } =>
+          Boolean(
+            option &&
+            typeof option === "object" &&
+            typeof option.id === "string" &&
+            option.id.trim().length > 0 &&
+            typeof option.label === "string" &&
+            option.label.trim().length > 0 &&
+            (option.description === undefined || typeof option.description === "string"),
+          ),
+        )
+        .map((option) => ({
+          ...option,
+          id: option.id.trim(),
+          label: option.label.trim(),
+          ...(option.description ? { description: option.description.trim() } : {}),
+        }))
+    : [];
+  return { ...question, options };
+}
+
+function normalizeSubtaskItem(subtask: SubtaskItem): SubtaskItem {
+  const raw = subtask as SubtaskItem & Record<string, unknown>;
+  return {
+    ...subtask,
+    title: typeof raw.title === "string" ? raw.title : "",
+    description: typeof raw.description === "string" ? raw.description : "",
+    suggestedSize: raw.suggestedSize === "S" || raw.suggestedSize === "M" || raw.suggestedSize === "L" ? raw.suggestedSize : "M",
+    priority: normalizeTaskPriority(subtask.priority),
+    dependsOn: normalizeStringArray(raw.dependsOn),
   };
 }
 
@@ -625,6 +700,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
         },
         onQuestion: (question) => {
           if (isStaleEvent()) return;
+          const normalizedQuestion = normalizeQuestionOptions(question);
           setIsReconnecting(false);
           setIsRetrying(false);
           clearPlanningDescription(projectId);
@@ -647,7 +723,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
 
           setView({
             type: "question",
-            session: { sessionId, currentQuestion: question, summary: null },
+            session: { sessionId, currentQuestion: normalizedQuestion, summary: null },
           });
           setStreamingOutput("");
 
@@ -663,6 +739,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
         },
         onSummary: (summary) => {
           if (isStaleEvent()) return;
+          const normalizedSummary = normalizePlanningSummary(summary);
           setIsReconnecting(false);
           setIsRetrying(false);
           clearPlanningDescription(projectId);
@@ -679,10 +756,10 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
 
           setView({
             type: "summary",
-            session: { sessionId, currentQuestion: null, summary },
-            summary,
+            session: { sessionId, currentQuestion: null, summary: normalizedSummary },
+            summary: normalizedSummary,
           });
-          setEditedSummary(summary);
+          setEditedSummary(normalizedSummary);
           setStreamingOutput("");
 
           broadcastUpdate({
@@ -947,7 +1024,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
           setView({ type: "initial" });
         } else if (session.status === "awaiting_input" && session.currentQuestion) {
           clearPlanningDescription(projectId);
-          const question = JSON.parse(session.currentQuestion);
+          const question = normalizeQuestionOptions(JSON.parse(session.currentQuestion));
           setView({ type: "question", session: { sessionId, currentQuestion: question, summary: null } });
           // Transfer persisted thinking into conversation history so it's
           // visible as expandable reasoning in the question view, instead of
@@ -1712,7 +1789,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
 
     try {
       const completedSessionId = view.session.sessionId;
-      const task = await createTaskFromPlanning(completedSessionId, editedSummary ?? undefined, projectId, {
+      const normalizedSummary = editedSummary ? normalizePlanningSummary(editedSummary) : undefined;
+      const task = await createTaskFromPlanning(completedSessionId, normalizedSummary, projectId, {
         branchSelection: {
           mode: branchMode,
           ...(branchMode === "existing" || branchMode === "custom-new" ? { branchName: branchName.trim() } : {}),
@@ -1749,12 +1827,9 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
     setIsStartingBreakdown(true);
 
     try {
-      const result = await startPlanningBreakdown(view.session.sessionId, editedSummary ?? undefined, projectId);
-      const normalizedSubtasks = result.subtasks.map((subtask) => ({
-        ...subtask,
-        priority: normalizeTaskPriority(subtask.priority),
-        dependsOn: [...subtask.dependsOn],
-      }));
+      const normalizedSummary = editedSummary ? normalizePlanningSummary(editedSummary) : undefined;
+      const result = await startPlanningBreakdown(view.session.sessionId, normalizedSummary, projectId);
+      const normalizedSubtasks = (Array.isArray(result.subtasks) ? result.subtasks : []).map(normalizeSubtaskItem);
       setLockSessionId(result.sessionId);
       setView({
         type: "breakdown",
@@ -1781,11 +1856,8 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
       const result = await createTasksFromPlanning(
         completedSessionId,
         buildCompactPlanningSubtaskDrafts(
-          view.originalSubtasks,
-          view.subtasks.map((subtask) => ({
-            ...subtask,
-            priority: normalizeTaskPriority(subtask.priority),
-          })),
+          view.originalSubtasks.map(normalizeSubtaskItem),
+          view.subtasks.map(normalizeSubtaskItem),
         ),
         projectId,
         {
@@ -2294,7 +2366,7 @@ export function PlanningModeModal({ isOpen, onClose, onTaskCreated, onTasksCreat
               subtasks={view.subtasks}
               isLoading={isCreatingFromBreakdown}
               onUpdateSubtasks={(newSubtasks) =>
-                setView({ ...view, subtasks: newSubtasks, dirty: true })
+                setView({ ...view, subtasks: newSubtasks.map(normalizeSubtaskItem), dirty: true })
               }
               onCreateTasks={handleCreateTasksFromBreakdown}
               onBack={() => {
@@ -2351,8 +2423,10 @@ interface QuestionFormProps {
   onBack?: () => void;
 }
 
-function QuestionForm({ question, progress, historyEntries, onSubmit, onBack }: QuestionFormProps) {
+function QuestionForm({ question: rawQuestion, progress, historyEntries, onSubmit, onBack }: QuestionFormProps) {
   const { t } = useTranslation("app");
+  const question = normalizeQuestionOptions(rawQuestion);
+  const questionOptions = question.options ?? [];
   const [response, setResponse] = useState<QuestionResponse>({});
   const [textValue, setTextValue] = useState("");
   const [commentValue, setCommentValue] = useState("");
@@ -2456,9 +2530,9 @@ function QuestionForm({ question, progress, historyEntries, onSubmit, onBack }: 
                 />
               )}
 
-              {question.type === "single_select" && question.options && (
+              {question.type === "single_select" && (
                 <div className="planning-radio-group" role="radiogroup">
-                  {question.options.map((option) => (
+                  {questionOptions.map((option) => (
                     <label key={option.id} className="planning-option planning-option--radio">
                       <input
                         type="radio"
@@ -2478,10 +2552,10 @@ function QuestionForm({ question, progress, historyEntries, onSubmit, onBack }: 
                 </div>
               )}
 
-              {question.type === "multi_select" && question.options && (
+              {question.type === "multi_select" && (
                 <div className="planning-checkbox-group">
-                  {question.options.map((option) => {
-                    const selected = (response[question.id] as string[]) || [];
+                  {questionOptions.map((option) => {
+                    const selected = Array.isArray(response[question.id]) ? (response[question.id] as string[]) : [];
                     return (
                       <label key={option.id} className="planning-option planning-option--checkbox">
                         <input
@@ -2585,7 +2659,7 @@ interface SummaryViewProps {
 }
 
 function SummaryView({
-  summary,
+  summary: rawSummary,
   historyEntries,
   onSummaryChange,
   tasks,
@@ -2602,6 +2676,7 @@ function SummaryView({
   isStartingBreakdown,
 }: SummaryViewProps) {
   const { t } = useTranslation("app");
+  const summary = normalizePlanningSummary(rawSummary);
   const [isExpanded, setIsExpanded] = useState(false);
   const [renderMarkdown, setRenderMarkdown] = useState(false);
   const [selectedDependencies, setSelectedDependencies] = useState<string[]>(
@@ -2791,9 +2866,13 @@ function SummaryView({
           <div className="form-group">
             <label>{t("planning.keyDeliverables", "Key Deliverables")}</label>
             <ul className="planning-deliverables">
-              {summary.keyDeliverables.map((item, i) => (
-                <li key={i}>{item}</li>
-              ))}
+              {summary.keyDeliverables.length > 0 ? (
+                summary.keyDeliverables.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))
+              ) : (
+                <li className="text-muted">{t("planning.noKeyDeliverables", "No key deliverables were provided.")}</li>
+              )}
             </ul>
           </div>
         </div>

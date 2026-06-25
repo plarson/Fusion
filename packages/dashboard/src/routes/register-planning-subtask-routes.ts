@@ -6,6 +6,7 @@ import {
   type TaskPriority,
   type TaskStore,
 } from "@fusion/core";
+import { normalizePlanningSummaryPayload } from "../planning.js";
 import { ApiError, badRequest, conflict, notFound, rateLimited } from "../api-error.js";
 import { writeSSEEvent, type SessionBufferedEvent } from "../sse-buffer.js";
 import type { AiSessionStore } from "../ai-session-store.js";
@@ -1009,21 +1010,10 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
       throw badRequest("summary.description is required and must be a non-empty string");
     }
 
-    return {
+    return normalizePlanningSummaryPayload(summary, {
       title: summary.title.trim(),
       description: summary.description.trim(),
-      suggestedSize:
-        summary.suggestedSize === "S" || summary.suggestedSize === "M" || summary.suggestedSize === "L"
-          ? summary.suggestedSize
-          : "M",
-      priority: isTaskPriority(summary.priority) ? summary.priority : DEFAULT_TASK_PRIORITY,
-      suggestedDependencies: Array.isArray(summary.suggestedDependencies)
-        ? summary.suggestedDependencies.filter((dep): dep is string => typeof dep === "string" && dep.trim().length > 0)
-        : [],
-      keyDeliverables: Array.isArray(summary.keyDeliverables)
-        ? summary.keyDeliverables.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-        : [],
-    };
+    });
   };
 
   const logPlanningCreateWarning = (message: string, error: unknown, metadata?: Record<string, unknown>): void => {
@@ -1108,29 +1098,10 @@ export function registerPlanningSubtaskRoutes(ctx: ApiRoutesContext, deps: Plann
               keyDeliverables?: unknown;
             };
 
-            summary = {
-              title:
-                typeof parsedSummary.title === "string" && parsedSummary.title.trim().length > 0
-                  ? parsedSummary.title
-                  : persistedSession.title,
-              description:
-                typeof parsedSummary.description === "string" && parsedSummary.description.trim().length > 0
-                  ? parsedSummary.description
-                  : persistedSession.title,
-              suggestedSize:
-                parsedSummary.suggestedSize === "S" ||
-                parsedSummary.suggestedSize === "M" ||
-                parsedSummary.suggestedSize === "L"
-                  ? parsedSummary.suggestedSize
-                  : "M",
-              priority: isTaskPriority(parsedSummary.priority) ? parsedSummary.priority : DEFAULT_TASK_PRIORITY,
-              suggestedDependencies: Array.isArray(parsedSummary.suggestedDependencies)
-                ? parsedSummary.suggestedDependencies.filter((dep): dep is string => typeof dep === "string")
-                : [],
-              keyDeliverables: Array.isArray(parsedSummary.keyDeliverables)
-                ? parsedSummary.keyDeliverables.filter((item): item is string => typeof item === "string")
-                : [],
-            };
+            summary = normalizePlanningSummaryPayload(parsedSummary, {
+              title: persistedSession.title,
+              description: persistedSession.title,
+            });
           } catch {
             throw badRequest("Planning session result is invalid");
           }

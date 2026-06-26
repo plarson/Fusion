@@ -98,6 +98,7 @@ function WorktreeGroupComponent({
           prAuthAvailable={prAuthAvailable}
           autoMergeEnabled={autoMergeEnabled}
           nearDuplicateCanonicalInactive={resolveNearDuplicateCanonicalInactive(task)}
+          dependencyTasks={allTasks}
         />
       ))}
       {queuedTasks.map((task) => (
@@ -121,6 +122,7 @@ function WorktreeGroupComponent({
           prAuthAvailable={prAuthAvailable}
           autoMergeEnabled={autoMergeEnabled}
           nearDuplicateCanonicalInactive={resolveNearDuplicateCanonicalInactive(task)}
+          dependencyTasks={allTasks}
         />
       ))}
     </div>

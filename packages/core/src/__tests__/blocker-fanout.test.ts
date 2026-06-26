@@ -63,4 +63,21 @@ describe("computeBlockerFanoutMap escalation", () => {
     expect(entry?.isHighFanout).toBe(true);
     expect(entry?.escalation).toBeUndefined();
   });
+  it("excludes resolved done and archived dependencies from dependency fan-out", () => {
+    const tasks = [
+      createTask("FN-801", "done"),
+      createTask("FN-803", "todo"),
+      createTask("FN-819", "archived"),
+      createTask("FN-807", "in-progress"),
+      createTask("FN-823", "todo", { dependencies: ["FN-801", "FN-803", "FN-819", "FN-807", "FN-807"] }),
+    ];
+
+    const fanout = computeBlockerFanoutMap(tasks, MAX_AUTO_MERGE_RETRIES);
+
+    expect(fanout.has("FN-801")).toBe(false);
+    expect(fanout.has("FN-819")).toBe(false);
+    expect(fanout.get("FN-803")?.dependencyDependentIds).toEqual(["FN-823"]);
+    expect(fanout.get("FN-807")?.dependencyDependentIds).toEqual(["FN-823"]);
+  });
+
 });

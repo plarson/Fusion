@@ -111,6 +111,7 @@ export function useRightDockController(input: RightDockControllerInput): RightDo
       nearDuplicateCanonicalInactive={typeof task.sourceMetadata?.nearDuplicateOf === "string"
         ? isNearDuplicateCanonicalInactive(input.tasks.find((candidate) => candidate.id === task.sourceMetadata?.nearDuplicateOf))
         : undefined}
+      dependencyTasks={input.tasks}
     />
   ), [input]);
 

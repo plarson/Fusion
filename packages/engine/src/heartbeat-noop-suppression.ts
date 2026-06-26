@@ -162,7 +162,7 @@ export class HeartbeatNoopSuppressionGuard {
 
     if (candidate.source !== "timer") return { suppress: false, reason: "non-timer" };
     if (candidate.status !== "completed") return { suppress: false, reason: "non-success" };
-    if (candidate.isNoTaskRun !== true) return { suppress: false, reason: "not-no-task" };
+    if (candidate.isNoTaskRun !== true && !candidate.taskId) return { suppress: false, reason: "not-no-task" };
     const key = buildHeartbeatNoopSuppressionKey(candidate);
     if (!key) return { suppress: false, reason: "missing-target" };
     const summary = candidate.summary ?? candidate.logText;

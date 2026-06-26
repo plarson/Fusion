@@ -3654,6 +3654,166 @@ describe("executeHeartbeat", () => {
       expect(messageStore.markAllAsRead).toHaveBeenCalledWith("agent-001", "agent");
     });
 
+    it("suppresses duplicate timer task-scoped executor no-op rows while completing runs", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(Date.UTC(2026, 0, 1, 0, 0, 0)));
+      let runCounter = 0;
+      const store = createStoreWithAgentForExec({
+        id: "agent-2813c64f",
+        taskId: "FN-756",
+        role: "executor",
+        state: "active",
+      });
+      vi.mocked(store.startHeartbeatRun).mockImplementation(async (agentId: string) => {
+        runCounter += 1;
+        return {
+          id: `run-task-noop-${runCounter}`,
+          agentId,
+          startedAt: new Date().toISOString(),
+          endedAt: null,
+          status: "active",
+        } as AgentHeartbeatRun;
+      });
+
+      const appendAgentLog = vi.fn().mockResolvedValue(undefined);
+      mockTaskStore = createMockTaskStore({
+        appendAgentLog,
+        getTask: vi.fn().mockResolvedValue({
+          id: "FN-756",
+          title: "iPad keyboard-only XCUITest journeys",
+          description: "Implementation task",
+          prompt: "# Task\n\nStep 7 testing",
+          steps: [{ title: "Testing & Verification", status: "in-progress" }],
+          column: "in-progress",
+          status: "Step 7",
+          blockedBy: null,
+          overlapBlockedBy: null,
+          dependencies: [],
+          log: [],
+          attachments: [],
+          worktree: "/tmp/worktree-fn-756",
+          branch: "fusion/fn-756",
+          createdAt: "2026-06-24T00:00:00.000Z",
+          updatedAt: "2026-06-26T00:43:00.000Z",
+        } as unknown as TaskDetail),
+      });
+
+      let capturedDoneTool: any;
+      let onText: ((delta: string) => void) | undefined;
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockImplementation(async (opts: any) => {
+        capturedDoneTool = opts.customTools[opts.customTools.length - 1];
+        onText = opts.onText;
+        return { session: mockSession as any };
+      });
+      mockSession.prompt = vi.fn().mockImplementation(async () => {
+        onText?.("No coordination intervention needed; no new tasks or delegations created.\n");
+        await capturedDoneTool.execute("call-1", { summary: "No coordination intervention needed; no new tasks or delegations created." });
+      });
+
+      const monitor = new HeartbeatMonitor({ store, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      const first = await monitor.executeHeartbeat({ agentId: "agent-2813c64f", source: "timer" });
+      vi.setSystemTime(new Date(Date.UTC(2026, 0, 1, 0, 5, 0)));
+      const duplicate = await monitor.executeHeartbeat({ agentId: "agent-2813c64f", source: "timer" });
+      vi.useRealTimers();
+
+      const taskTextLogs = appendAgentLog.mock.calls
+        .filter(([, text]) => String(text).includes("No coordination intervention needed"));
+      const runTextLogs = vi.mocked(store.appendRunLog).mock.calls
+        .map(([agentId, runId, entry]) => ({ agentId, runId, entry }))
+        .filter(({ entry }) => entry.type === "text" && entry.text.includes("No coordination intervention needed"));
+
+      expect(taskTextLogs).toHaveLength(1);
+      expect(taskTextLogs[0]).toEqual([
+        "FN-756",
+        "No coordination intervention needed; no new tasks or delegations created.\n",
+        "text",
+        undefined,
+        "executor",
+      ]);
+      expect(runTextLogs).toHaveLength(1);
+      expect(runTextLogs[0]).toMatchObject({ agentId: "agent-2813c64f", runId: "run-task-noop-1" });
+      expect(first.status).toBe("completed");
+      expect(duplicate.status).toBe("completed");
+      expect(vi.mocked(store.endHeartbeatRun)).toHaveBeenCalledWith("run-task-noop-2", "completed");
+      expect(vi.mocked(store.saveRun)).toHaveBeenCalledWith(expect.objectContaining({
+        id: "run-task-noop-2",
+        status: "completed",
+        resultJson: expect.objectContaining({
+          summary: "No coordination intervention needed; no new tasks or delegations created.",
+        }),
+      }));
+    });
+
+    it("keeps task-scoped executor no-op text when a new inbox message is present", async () => {
+      const store = createStoreWithAgentForExec({ taskId: "FN-756", role: "executor", state: "active" });
+      const appendAgentLog = vi.fn().mockResolvedValue(undefined);
+      mockTaskStore = createMockTaskStore({
+        appendAgentLog,
+        getTask: vi.fn().mockResolvedValue({
+          id: "FN-756",
+          title: "iPad keyboard-only XCUITest journeys",
+          description: "Implementation task",
+          prompt: "# Task\n\nStep 7 testing",
+          steps: [],
+          column: "in-progress",
+          dependencies: [],
+          log: [],
+          attachments: [],
+          worktree: "/tmp/worktree-fn-756",
+          branch: "fusion/fn-756",
+          createdAt: "2026-06-24T00:00:00.000Z",
+          updatedAt: "2026-06-26T00:43:00.000Z",
+        } as unknown as TaskDetail),
+      });
+      const messageStore = {
+        getInbox: vi.fn().mockReturnValue([createMessage({ id: "msg-fn-756", toId: "agent-001", content: "Please check the task." })]),
+        markAllAsRead: vi.fn(),
+      } as unknown as MessageStore;
+
+      let runCounter = 0;
+      vi.mocked(store.startHeartbeatRun).mockImplementation(async () => {
+        runCounter += 1;
+        return {
+          id: `run-task-message-${runCounter}`,
+          agentId: "agent-001",
+          startedAt: new Date(Date.UTC(2026, 0, 1, 1, runCounter, 0)).toISOString(),
+          endedAt: null,
+          status: "active",
+        } as AgentHeartbeatRun;
+      });
+
+      let capturedDoneTool: any;
+      let onText: ((delta: string) => void) | undefined;
+      const mockSession = createMockAgentSession();
+      mockedCreateFnAgent.mockImplementation(async (opts: any) => {
+        capturedDoneTool = opts.customTools[opts.customTools.length - 1];
+        onText = opts.onText;
+        return { session: mockSession as any };
+      });
+      mockSession.prompt = vi.fn().mockImplementation(async () => {
+        onText?.("No coordination intervention needed; no new tasks or delegations created.\n");
+        await capturedDoneTool.execute("call-1", { summary: "No coordination intervention needed; no new tasks or delegations created." });
+      });
+
+      const monitor = new HeartbeatMonitor({ store, messageStore, taskStore: mockTaskStore, rootDir: "/tmp" });
+
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+      await monitor.executeHeartbeat({ agentId: "agent-001", source: "timer" });
+
+      const taskTextLogs = appendAgentLog.mock.calls
+        .filter(([, text]) => String(text).includes("No coordination intervention needed"));
+      const runTextLogs = vi.mocked(store.appendRunLog).mock.calls
+        .map(([agentId, runId, entry]) => ({ agentId, runId, entry }))
+        .filter(({ entry }) => entry.type === "text" && entry.text.includes("No coordination intervention needed"));
+
+      expect(taskTextLogs).toHaveLength(2);
+      expect(runTextLogs).toHaveLength(2);
+      expect(runTextLogs.map((row) => row.runId)).toEqual(["run-task-message-1", "run-task-message-2"]);
+      expect(messageStore.markAllAsRead).toHaveBeenCalledWith("agent-001", "agent");
+    });
+
     it("records agent logs, context taskId, and stdoutExcerpt for successful runs", async () => {
       const store = createStoreWithAgentForExec();
       const appendAgentLog = vi.fn().mockResolvedValue(undefined);

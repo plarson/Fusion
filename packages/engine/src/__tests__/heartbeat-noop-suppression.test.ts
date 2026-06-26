@@ -35,7 +35,10 @@ describe("heartbeat no-op suppression", () => {
     expect(guard.evaluate({ ...baseCandidate, boardInput: { ...baseCandidate.boardInput, runId: "run-1" }, nowMs: 0 }).suppress).toBe(false);
     expect(guard.evaluate({ ...baseCandidate, boardInput: { ...baseCandidate.boardInput, runId: "run-2" }, nowMs: 100 })).toMatchObject({ suppress: true });
     expect(guard.evaluate({ ...baseCandidate, agentId: "agent-2", nowMs: 200 }).suppress).toBe(false);
-    expect(guard.evaluate({ ...baseCandidate, stream: "task", taskId: "FN-1", isNoTaskRun: false, nowMs: 300 })).toMatchObject({ suppress: false, reason: "not-no-task" });
+
+    expect(guard.evaluate({ ...baseCandidate, stream: "task", taskId: "FN-1", isNoTaskRun: false, nowMs: 300 })).toMatchObject({ suppress: false, reason: "first-observation" });
+    expect(guard.evaluate({ ...baseCandidate, stream: "task", taskId: "FN-1", isNoTaskRun: false, nowMs: 400 })).toMatchObject({ suppress: true, reason: "duplicate" });
+    expect(guard.evaluate({ ...baseCandidate, stream: "task", taskId: "FN-2", isNoTaskRun: false, nowMs: 500 })).toMatchObject({ suppress: false, reason: "first-observation" });
   });
 
   it("fingerprints stable board/input fields and ignores volatile timestamps", () => {
@@ -55,6 +58,28 @@ describe("heartbeat no-op suppression", () => {
     expect(guard.evaluate({ ...baseCandidate, actionContext: { toolCallCount: 1 }, nowMs: 100 })).toMatchObject({ suppress: false, reason: "meaningful-action" });
     expect(guard.evaluate({ ...baseCandidate, actionContext: { warningCount: 1 }, nowMs: 100 })).toMatchObject({ suppress: false, reason: "meaningful-action" });
     expect(guard.evaluate({ ...baseCandidate, nowMs: 200 })).toMatchObject({ suppress: false, reason: "first-observation" });
+  });
+
+
+  it("fails open for task-scoped timer no-ops with meaningful executor deltas", () => {
+    const guard = new HeartbeatNoopSuppressionGuard({ windowMs: 1_000 });
+    const taskCandidate = {
+      ...baseCandidate,
+      stream: "task" as const,
+      taskId: "FN-756",
+      isNoTaskRun: false,
+      boardInput: {
+        task: { id: "FN-756", column: "in-progress", status: "Step 7", blockedBy: null },
+        inbox: [],
+        triggeringCommentIds: [],
+      },
+    };
+
+    expect(guard.evaluate({ ...taskCandidate, nowMs: 0 })).toMatchObject({ suppress: false, reason: "first-observation" });
+    expect(guard.evaluate({ ...taskCandidate, actionContext: { triggeringCommentCount: 1 }, nowMs: 100 })).toMatchObject({ suppress: false, reason: "meaningful-action" });
+    expect(guard.evaluate({ ...taskCandidate, actionContext: { mutationCount: 1 }, nowMs: 200 })).toMatchObject({ suppress: false, reason: "meaningful-action" });
+    expect(guard.evaluate({ ...taskCandidate, actionContext: { partialSnapshot: true }, nowMs: 300 })).toMatchObject({ suppress: false, reason: "unsafe-context" });
+    expect(guard.evaluate({ ...taskCandidate, nowMs: 400 })).toMatchObject({ suppress: false, reason: "first-observation" });
   });
 
   it("does not suppress different summaries or changed board/input fingerprints", () => {

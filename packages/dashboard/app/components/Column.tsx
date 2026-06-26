@@ -947,6 +947,7 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, showWorktree
                   autoMergeEnabled={Boolean(autoMerge)}
                   mergeStrategy={mergeStrategy}
                   nearDuplicateCanonicalInactive={resolveNearDuplicateCanonicalInactive(task)}
+                  dependencyTasks={allTasks}
                 />
               ))}
               {shouldPaginate && hiddenTaskCount > 0 && (

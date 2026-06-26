@@ -2376,12 +2376,33 @@ describe("ListView", () => {
         id: "FN-001",
         dependencies: ["FN-002", "FN-003"],
       }),
+      createMockTask({ id: "FN-002", column: "todo" }),
+      createMockTask({ id: "FN-003", column: "in-progress" }),
     ];
 
     showAllColumnsByDefault();
     renderListView({ tasks });
 
-    expect(screen.getByText("2")).toBeDefined();
+    const row = screen.getByText("FN-001").closest("tr")!;
+    expect(row.querySelector(".list-dep-badge")?.textContent).toContain("2/2");
+  });
+
+  it("labels mixed dependency status in desktop dependency tooltip", () => {
+    const tasks = [
+      createMockTask({ id: "FN-801", column: "done" }),
+      createMockTask({ id: "FN-803", column: "todo" }),
+      createMockTask({ id: "FN-819", column: "archived" }),
+      createMockTask({ id: "FN-807", column: "in-progress" }),
+      createMockTask({ id: "FN-823", title: "Mixed dependent", column: "todo", dependencies: ["FN-801", "FN-803", "FN-819", "FN-807"] }),
+    ];
+
+    showAllColumnsByDefault();
+    renderListView({ tasks });
+
+    const row = screen.getByText("FN-823").closest("tr")!;
+    const depBadge = row.querySelector(".list-dep-badge") as HTMLElement;
+    expect(depBadge?.textContent).toContain("2/4");
+    expect(depBadge?.getAttribute("title")).toBe("active deps: FN-803, FN-807; resolved deps: FN-801 (done/resolved), FN-819 (archived/resolved)");
   });
 
   it("shows - for tasks with no dependencies", () => {
@@ -5243,6 +5264,25 @@ describe("ListView - Bulk Selection", () => {
       const depBadge = card.querySelector(".list-dep-badge");
       expect(depBadge).toBeInTheDocument();
       expect(depBadge?.textContent).toContain("1");
+    });
+
+    it("labels mixed dependency status in mobile card tooltip", () => {
+      mockMobileViewport();
+
+      const { container } = renderListView({
+        tasks: [
+          createMockTask({ id: "FN-801", column: "done" }),
+          createMockTask({ id: "FN-803", column: "todo" }),
+          createMockTask({ id: "FN-819", column: "archived" }),
+          createMockTask({ id: "FN-807", column: "in-progress" }),
+          createMockTask({ id: "FN-823", title: "Mixed dependent", column: "todo", dependencies: ["FN-801", "FN-803", "FN-819", "FN-807"] }),
+        ],
+      });
+
+      const card = container.querySelector('.list-card[data-id="FN-823"]') as HTMLElement;
+      const depBadge = card.querySelector(".list-dep-badge");
+      expect(depBadge?.textContent).toContain("2/4");
+      expect(depBadge?.getAttribute("title")).toBe("active deps: FN-803, FN-807; resolved deps: FN-801 (done/resolved), FN-819 (archived/resolved)");
     });
 
     it("opens task detail when a mobile card is clicked", async () => {

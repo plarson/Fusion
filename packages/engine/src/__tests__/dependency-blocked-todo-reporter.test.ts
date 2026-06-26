@@ -108,6 +108,25 @@ describe("DependencyBlockedTodoReporter", () => {
     expect(content.groups[0]).toMatchObject({ blockerId: "FN-5090", blockedTodoCount: 3, blockerTitle: "Blocker" });
   });
 
+  it("reports only live blockers for mixed done archived and live dependencies", async () => {
+    const tasks = [
+      createTask({ id: "FN-801", column: "done" }),
+      createTask({ id: "FN-803", column: "todo", columnMovedAt: "2026-05-18T05:00:00.000Z" }),
+      createTask({ id: "FN-819", column: "archived" }),
+      createTask({ id: "FN-807", column: "in-progress", columnMovedAt: "2026-05-18T05:00:00.000Z" }),
+      createTask({ id: "FN-823", column: "todo", dependencies: ["FN-801", "FN-803", "FN-819", "FN-807"] }),
+    ];
+    const insightStore = { upsertInsight: vi.fn(), listInsights: vi.fn().mockReturnValue([]) };
+    const store = createStore({ tasks, insightStore });
+    const reporter = new DependencyBlockedTodoReporter({ store, projectId: "/tmp/project", logger, now: () => now });
+
+    await expect(reporter.report()).resolves.toEqual({ alerted: true, groupCount: 2 });
+    const content = JSON.parse(insightStore.upsertInsight.mock.calls[0][1].content);
+    expect(content.groups.map((group: { blockerId: string }) => group.blockerId)).toEqual(["FN-803", "FN-807"]);
+    expect(JSON.stringify(content.groups)).not.toContain("FN-801");
+    expect(JSON.stringify(content.groups)).not.toContain("FN-819");
+  });
+
   it("suppresses under cooldown", async () => {
     const tasks = [
       createTask({ id: "FN-5090", column: "in-progress", columnMovedAt: "2026-05-18T05:00:00.000Z" }),

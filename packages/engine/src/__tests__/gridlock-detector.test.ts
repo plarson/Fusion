@@ -116,6 +116,22 @@ describe("GridlockDetector", () => {
     expect(event).toBeNull();
   });
 
+  it("ignores done and archived dependencies when deciding dependency gridlock", async () => {
+    tasks = [
+      createTask("FN-801", { column: "done" }),
+      createTask("FN-803", { column: "todo", paused: true }),
+      createTask("FN-819", { column: "archived" }),
+      createTask("FN-807", { column: "in-progress" }),
+      createTask("FN-823", { column: "todo", dependencies: ["FN-801", "FN-803", "FN-819", "FN-807"] }),
+    ];
+
+    const event = await detector.detectGridlock();
+
+    expect(event).not.toBeNull();
+    expect(event?.blockedTaskIds).toEqual(["FN-823"]);
+    expect(event?.blockingTaskIds).toEqual(["FN-803", "FN-807"]);
+  });
+
   it("deduplicates same blocked task set", async () => {
     tasks = [
       createTask("FN-1", { column: "todo", dependencies: ["FN-10"] }),

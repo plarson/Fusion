@@ -96,7 +96,7 @@ export function computeBlockerFanoutMap(
     const active = ACTIVE_COLUMNS.has(task.column);
     const isTodo = task.column === "todo";
 
-    for (const depId of task.dependencies ?? []) {
+    for (const depId of new Set(task.dependencies ?? [])) {
       if (!depId) continue;
       const dependency = taskById.get(depId);
       if (isDependencySchedulingSatisfied(dependency)) continue;

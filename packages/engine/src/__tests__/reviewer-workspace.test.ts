@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { promisify } from "node:util";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReviewResult } from "../reviewer.js";
@@ -277,7 +277,7 @@ describe("FN-803 — validated external Fusion checkout review routing", () => {
   beforeEach(async () => {
     canonicalFusionCheckoutTemp = await mkdtemp(join(tmpdir(), "fn-803-canonical-git-"));
     await execFileAsync("git", ["init"], { cwd: canonicalFusionCheckoutTemp });
-    CANONICAL_FUSION_CHECKOUT = canonicalFusionCheckoutTemp;
+    CANONICAL_FUSION_CHECKOUT = await realpath(canonicalFusionCheckoutTemp);
   });
 
   afterEach(async () => {

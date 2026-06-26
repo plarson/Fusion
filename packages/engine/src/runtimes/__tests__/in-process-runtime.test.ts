@@ -933,32 +933,47 @@ describe("InProcessRuntime", () => {
     }, 30000);
 
     it("does not wake executeHeartbeat for runtime ownership sync of durable assigned agents", async () => {
-      await runtime.start();
+      /*
+      FNXC:TestInfrastructure 2026-06-26-21:52:
+      This negative-assertion test must verify executeHeartbeat is NOT woken by runtime ownership sync.
+      Previously it paid a real `await new Promise(r => setTimeout(r, 25))` wall-clock sleep to let any
+      erroneously-scheduled executeHeartbeat fire before asserting it did not — pure dead time on every run.
+      Per FN-5048 (prefer fake timers over real polling/time waits) we run under fake timers and advance the
+      window deterministically with advanceTimersByTimeAsync. The inflated 30000ms per-test timeout is removed
+      now that no real wait remains. vi.waitFor already coexists with fake timers elsewhere in this suite.
+      */
+      vi.useFakeTimers();
+      try {
+        await runtime.start();
 
-      const monitor = runtime.getHeartbeatMonitor();
-      expect(monitor).toBeDefined();
-      const heartbeatMonitor = monitor!;
-      const executeResult = { id: "run-task-worker" } as Awaited<ReturnType<typeof heartbeatMonitor.executeHeartbeat>>;
-      const executeSpy = vi
-        .spyOn(heartbeatMonitor, "executeHeartbeat")
-        .mockResolvedValue(executeResult);
+        const monitor = runtime.getHeartbeatMonitor();
+        expect(monitor).toBeDefined();
+        const heartbeatMonitor = monitor!;
+        const executeResult = { id: "run-task-worker" } as Awaited<ReturnType<typeof heartbeatMonitor.executeHeartbeat>>;
+        const executeSpy = vi
+          .spyOn(heartbeatMonitor, "executeHeartbeat")
+          .mockResolvedValue(executeResult);
 
-      const store = getAgentStore(runtime);
-      const durable = await store.createAgent({ name: "Owned Exec", role: "executor" });
+        const store = getAgentStore(runtime);
+        const durable = await store.createAgent({ name: "Owned Exec", role: "executor" });
 
-      const executorOptions = mockExecutorCtor.mock.calls.at(-1)?.[0] as {
-        onStart?: (task: Task, worktreePath: string) => void;
-      };
-      executorOptions.onStart?.({ id: "FN-2001", assignedAgentId: durable.id } as Task, join(testDir, "worktree-FN-2001"));
+        const executorOptions = mockExecutorCtor.mock.calls.at(-1)?.[0] as {
+          onStart?: (task: Task, worktreePath: string) => void;
+        };
+        executorOptions.onStart?.({ id: "FN-2001", assignedAgentId: durable.id } as Task, join(testDir, "worktree-FN-2001"));
 
-      await vi.waitFor(async () => {
-        const updated = await store.getAgent(durable.id);
-        expect(updated?.taskId).toBe("FN-2001");
-      });
+        await vi.waitFor(async () => {
+          const updated = await store.getAgent(durable.id);
+          expect(updated?.taskId).toBe("FN-2001");
+        });
 
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      expect(executeSpy).not.toHaveBeenCalled();
-    }, 30000);
+        // Drive the negative-assertion window deterministically instead of sleeping 25ms of real time.
+        await vi.advanceTimersByTimeAsync(25);
+        expect(executeSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
 
     it("cleans up durable execution owner on completion without deleting agent", async () => {
       vi.useFakeTimers();

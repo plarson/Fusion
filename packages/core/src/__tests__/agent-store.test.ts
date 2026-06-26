@@ -1897,12 +1897,27 @@ describe("AgentStore", () => {
     });
 
     it("checkoutTask is idempotent for same agent/node/epoch and renews lease timestamp", async () => {
-      const first = await store.checkoutTask(holderId, taskId, { nodeId: "node-a", runId: "run-1", leaseEpoch: 0 });
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      /*
+      FNXC:CheckoutLeasing 2026-06-25-21:49:
+      Lease-renewal ordering is asserted via the store's injectable `renewedAt` clock seam
+      (CheckoutClaimContext.renewedAt → AgentStore.checkoutTask), not a real setTimeout sleep.
+      Previously a real 5ms wait forced a distinct heartbeat timestamp between the two checkouts;
+      that wasted wall-clock time and added flake surface (FN-5048: do not add slow tests).
+      Two explicit, ordered ISO timestamps make the renewal assertion deterministic with zero waiting.
+      */
+      const firstRenewedAt = "2026-01-01T00:00:00.000Z";
+      const secondRenewedAt = "2026-01-01T00:00:00.005Z";
+      const first = await store.checkoutTask(holderId, taskId, {
+        nodeId: "node-a",
+        runId: "run-1",
+        leaseEpoch: 0,
+        renewedAt: firstRenewedAt,
+      });
       const second = await store.checkoutTask(holderId, taskId, {
         nodeId: "node-a",
         runId: "run-2",
         leaseEpoch: first.checkoutLeaseEpoch ?? 0,
+        renewedAt: secondRenewedAt,
       });
 
       expect(second.checkedOutBy).toBe(holderId);
@@ -1910,6 +1925,8 @@ describe("AgentStore", () => {
       expect(second.checkoutNodeId).toBe("node-a");
       expect(second.checkoutRunId).toBe("run-2");
       expect(second.checkoutLeaseEpoch).toBe(first.checkoutLeaseEpoch);
+      expect(first.checkoutLeaseRenewedAt).toBe(firstRenewedAt);
+      expect(second.checkoutLeaseRenewedAt).toBe(secondRenewedAt);
       expect(second.checkoutLeaseRenewedAt).not.toBe(first.checkoutLeaseRenewedAt);
     });
 

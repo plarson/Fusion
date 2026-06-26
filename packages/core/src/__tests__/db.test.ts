@@ -120,15 +120,39 @@ afterAll(() => {
   cleanupTmpDirsSync();
 });
 
+/*
+FNXC:CoreDB-LockTest 2026-06-25-21:55:
+The write-lock contention helper spawns a real child process that takes a real
+SQLite EXCLUSIVE/RESERVED lock — that real OS lock IS the thing under test, so it
+must NOT be mocked. The child releases the lock ONLY on an explicit `RELEASE`
+stdin message (signal release); there is no fixed wall-clock hold.
+
+History: a `releaseMode: "timer"` variant fired `setTimeout(release, holdMs)` in
+the child to drop the lock after a FIXED real duration (150ms per test). Two
+recovery tests used it to release the lock mid-retry, paying ~150ms of dead
+wall-clock wait each. That timer was removed: the recovery path retries via
+synchronous `sleepSync` (Atomics.wait) on the main thread, so the test cannot
+release the lock from its own event loop while blocked. Instead the test sends
+`signalRelease()` (a bare stdin write, no await) in the SAME synchronous tick
+immediately before `transactionImmediate(...)`. The parent reaches its first
+`BEGIN IMMEDIATE` before the child can schedule + read the pipe + COMMIT (a
+cross-process IPC+WAL round trip), so attempt 0 deterministically contends with
+the still-held lock; the child then commits during the parent's first
+`sleepSync` window and the retry recovers. Lock held only as long as needed,
+released deterministically, zero fixed sleeps.
+*/
 async function holdWriteLock(
   dbPath: string,
-  options?: { holdMs?: number; releaseMode?: "manual" | "timer" },
+  options?: { releaseMode?: "manual" },
 ): Promise<{
   child: ChildProcessWithoutNullStreams;
+  // Fire-and-forget: tell the child to drop the lock WITHOUT awaiting its exit.
+  // Used to release mid-`transactionImmediate` retry, where the main thread is
+  // synchronously blocked in `sleepSync` and cannot await the child's exit.
+  signalRelease: () => void;
   release: () => Promise<void>;
 }> {
-  const releaseMode = options?.releaseMode ?? "manual";
-  const holdMs = options?.holdMs ?? 0;
+  void options;
   const script = `
     const { DatabaseSync } = require("node:sqlite");
     const db = new DatabaseSync(${JSON.stringify(dbPath)});
@@ -141,14 +165,10 @@ async function holdWriteLock(
       try { db.close(); } catch {}
       process.exit(0);
     };
-    if (${JSON.stringify(releaseMode)} === "timer") {
-      setTimeout(release, ${holdMs});
-    } else {
-      process.stdin.setEncoding("utf8");
-      process.stdin.on("data", (chunk) => {
-        if (chunk.includes("RELEASE")) release();
-      });
-    }
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      if (chunk.includes("RELEASE")) release();
+    });
   `;
 
   const child = spawn(process.execPath, ["-e", script], {
@@ -158,6 +178,14 @@ async function holdWriteLock(
   child.once("exit", () => {
     activeLockChildren.delete(child);
   });
+  // FNXC:CoreDB-LockTest 2026-06-25-21:55: A RELEASE write inherently races the
+  // child's exit — once the child reads RELEASE it COMMITs and exits, closing its
+  // stdin, so a write that lands just after exit hits a closed pipe (EPIPE).
+  // That EPIPE is benign: it only means the lock was already released, which is
+  // the success condition. Swallow it so it never surfaces as an uncaught
+  // exception. This does NOT weaken the lock test — assertions run before any
+  // release and are untouched.
+  child.stdin.on("error", () => {});
 
   const ready = new Promise<void>((resolve, reject) => {
     let stderr = "";
@@ -179,17 +207,28 @@ async function holdWriteLock(
 
   await ready;
 
+  // Track whether RELEASE was already sent so `release()` (the cleanup path)
+  // does not redundantly re-write to a child that `signalRelease()` already told
+  // to exit — the redundant write is the EPIPE source removed above.
+  let released = false;
+
   return {
     child,
+    signalRelease: () => {
+      if (released || child.exitCode !== null || child.killed) {
+        return;
+      }
+      released = true;
+      child.stdin.write("RELEASE\n");
+    },
     release: async () => {
       if (child.exitCode !== null || child.killed) {
         return;
       }
-      if (releaseMode === "timer") {
-        await once(child, "exit");
-        return;
+      if (!released) {
+        released = true;
+        child.stdin.write("RELEASE\n");
       }
-      child.stdin.write("RELEASE\n");
       await once(child, "exit");
     },
   };
@@ -1012,10 +1051,14 @@ describe("Database", () => {
     it("recovers outermost immediate transactions after a transient writer lock", async () => {
       const dbPath = db.getPath();
       db.exec("PRAGMA busy_timeout = 0");
-      const lock = await holdWriteLock(dbPath, { releaseMode: "timer", holdMs: 150 });
+      const lock = await holdWriteLock(dbPath, { releaseMode: "manual" });
       let callbackCalls = 0;
 
       try {
+        // FNXC:CoreDB-LockTest 2026-06-25-21:55: signal release in the SAME tick as
+        // transactionImmediate so attempt 0 contends with the still-held lock and the
+        // child commits during the first sleepSync retry window (no fixed wall-clock hold).
+        lock.signalRelease();
         db.transactionImmediate(() => {
           callbackCalls += 1;
           db.prepare(
@@ -1036,10 +1079,14 @@ describe("Database", () => {
     it("preserves nested savepoint rollback semantics after recovering the outer immediate writer lock", async () => {
       const dbPath = db.getPath();
       db.exec("PRAGMA busy_timeout = 0");
-      const lock = await holdWriteLock(dbPath, { releaseMode: "timer", holdMs: 150 });
+      const lock = await holdWriteLock(dbPath, { releaseMode: "manual" });
       let callbackCalls = 0;
 
       try {
+        // FNXC:CoreDB-LockTest 2026-06-25-21:55: same signal-release-then-recover pattern as
+        // the recovery test above; verifies nested savepoint rollback survives the outer
+        // immediate-lock recovery without paying a fixed 150ms hold.
+        lock.signalRelease();
         db.transactionImmediate(() => {
           callbackCalls += 1;
           db.prepare(

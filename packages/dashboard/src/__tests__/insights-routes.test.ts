@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 import express from "express";
 import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -72,6 +72,20 @@ vi.mock("../project-store-resolver.js", async () => {
 /*
 FNXC:DashboardTests 2026-06-14-09:58:
 FN-6444 rescues this route/API suite from the curated skip-list; awaited store closure and retrying temp cleanup prevent singleton/resource leakage from turning backfill coverage into a flaky orphan.
+
+FNXC:DashboardTests 2026-06-25-10:30 (FN-5048 — slowest dashboard file):
+This suite previously paid a full TaskStore.init()/migrate + createServer() (the entire
+2.4k-line Express app wiring) on EVERY test via beforeEach, and recreated a temp dir per
+test with retry-prone cleanup — ~26.5s under full-suite pressure. The HTTP layer here is
+synthetic (test-request.js calls app(req,res) directly; no real port), so the per-test
+server boot bought nothing but cost.
+Harness seam: boot storeA + the createServer() app ONCE in beforeAll, reuse across all
+tests, tear down once in afterAll. Isolation is preserved by truncating the three insight
+tables between tests (resetInsightTables) instead of rebuilding the store — assertions are
+untouched, order-independence is real, not papered over.
+Timer seam: any interval/sweep-driven path is driven with FAKE timers + advanceTimersByTimeAsync
+(see "runs periodic sweep" below) so we never wait the real 5-minute DEFAULT_SWEEP_INTERVAL_MS;
+afterEach restores real timers so non-timer tests are unaffected.
 */
 describe("Insights routes", () => {
   let rootA: string;
@@ -82,9 +96,9 @@ describe("Insights routes", () => {
   /*
   FNXC:DashboardTests 2026-06-25-09:55:
   Only the projectId-scoped resolution test touches the project-b store. Lazily
-  init storeB on first use instead of in beforeEach so the other 23 tests skip a
-  second full TaskStore.init()/migrate per test (FN-5048: avoid redundant per-test
-  setup, prefer narrow seams).
+  init storeB on first use instead of up front so the other 23 tests skip a
+  second full TaskStore.init()/migrate (FN-5048: avoid redundant setup, prefer
+  narrow seams). Created once for the suite; tables are truncated between tests.
   */
   let rootB: string | null = null;
   let storeB: TaskStore | null = null;
@@ -113,16 +127,26 @@ describe("Insights routes", () => {
     return app;
   }
 
-  beforeEach(async () => {
-    vi.clearAllMocks();
+  /*
+  FNXC:DashboardTests 2026-06-25-10:30:
+  State-isolation seam for the shared beforeAll store. Truncates the three insight tables
+  (events first to satisfy the run FK) so each test sees a clean slate without paying a
+  fresh TaskStore.init(). This is the correctness contract that lets the server be booted once.
+  */
+  function resetInsightTables(store: TaskStore) {
+    const db = store.getDatabase();
+    db.prepare("DELETE FROM project_insight_run_events").run();
+    db.prepare("DELETE FROM project_insight_runs").run();
+    db.prepare("DELETE FROM project_insights").run();
+  }
 
+  beforeAll(async () => {
     rootA = mkdtempSync(join(tmpdir(), "kb-insights-routes-a-"));
-    rootB = null;
-    storeB = null;
-
     storeA = new TaskStoreClass(rootA, join(rootA, ".fusion-global-settings"), { inMemoryDb: true });
     await storeA.init();
 
+    // Resolver impl survives vi.clearAllMocks() (which only clears call history), so set
+    // it once. storeB is lazily created on first project-b request.
     resolverMocks.getOrCreateProjectStore.mockImplementation(async (projectId: string) => {
       if (projectId === "project-b") {
         return getStoreB();
@@ -131,7 +155,19 @@ describe("Insights routes", () => {
     });
 
     app = createServer(storeA);
+  });
 
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    // Reset shared store state between tests for order-independence.
+    resetInsightTables(storeA);
+    if (storeB) {
+      resetInsightTables(storeB);
+    }
+
+    // Re-establish default mock behavior each test (clearAllMocks keeps impls, but
+    // individual tests override these — e.g. mockRejectedValue — so re-set the baseline).
     readWorkingMemorySpy.mockResolvedValue("memory notes");
     readInsightsMemorySpy.mockResolvedValue(null);
     writeInsightsMemorySpy.mockResolvedValue(undefined);
@@ -151,11 +187,14 @@ describe("Insights routes", () => {
     piMocks.promptWithFallback.mockResolvedValue(undefined);
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     vi.useRealTimers();
     while (disposableRouters.length > 0) {
       disposableRouters.pop()?.__disposeSweeper?.();
     }
+  });
+
+  afterAll(async () => {
     try {
       await storeA.close();
     } catch {
@@ -299,6 +338,9 @@ describe("Insights routes", () => {
   });
 
   it("runs periodic sweep and recover later stale rows", async () => {
+    // FNXC:DashboardTests 2026-06-25-10:30 (FN-5048): drive the 5-minute sweep interval with
+    // fake timers + advanceTimersByTimeAsync so the periodic recovery is observed instantly
+    // rather than waiting real time.
     vi.useFakeTimers();
 
     const insightsApp = createInsightsOnlyApp(storeA);
@@ -308,7 +350,7 @@ describe("Insights routes", () => {
       first.id,
     );
 
-    vi.advanceTimersByTime(DEFAULT_SWEEP_INTERVAL_MS + 100);
+    await vi.advanceTimersByTimeAsync(DEFAULT_SWEEP_INTERVAL_MS + 100);
 
     expect(storeA.getInsightStore().getRun(first.id)?.status).toBe("failed");
 
@@ -318,7 +360,7 @@ describe("Insights routes", () => {
       second.id,
     );
 
-    vi.advanceTimersByTime(DEFAULT_SWEEP_INTERVAL_MS + 100);
+    await vi.advanceTimersByTimeAsync(DEFAULT_SWEEP_INTERVAL_MS + 100);
 
     expect(storeA.getInsightStore().getRun(second.id)?.status).toBe("failed");
     const events = storeA.getInsightStore().listRunEvents(second.id);

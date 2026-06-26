@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { MissionStore, deriveMilestoneAcceptanceCriteriaFromFeatures } from "../mission-store.js";
 import { installInMemoryDbSnapshot, clearInMemoryDbSnapshot } from "./store-test-helpers.js";
 import { GoalStore } from "../goal-store.js";
@@ -134,19 +134,33 @@ describe("MissionStore", () => {
       expect(result).toBeUndefined();
     });
 
-    it("lists missions ordered by createdAt desc", async () => {
-      const m1 = store.createMission({ title: "Mission 1" });
-      await new Promise((r) => setTimeout(r, 10)); // Ensure different timestamps
-      const m2 = store.createMission({ title: "Mission 2" });
-      await new Promise((r) => setTimeout(r, 10));
-      const m3 = store.createMission({ title: "Mission 3" });
+    // FNXC:CoreTests 2026-06-25-21:50: MissionStore stamps createdAt/updatedAt
+    // via new Date().toISOString() with no injectable clock seam, and ordering
+    // queries (ORDER BY createdAt DESC) have no tiebreak. Tests previously slept
+    // real wall-clock (setTimeout 5-10ms) just to force distinct timestamps —
+    // pure dead time (FN-5048). Drive the system clock with fake timers +
+    // setSystemTime instead: zero real waiting, deterministic ordering. Scoped
+    // per-test (useRealTimers in finally) so the file's real-async paths and the
+    // async afterEach db.close() keep real timers.
+    it("lists missions ordered by createdAt desc", () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-06-25T00:00:00.000Z"));
+        const m1 = store.createMission({ title: "Mission 1" });
+        vi.setSystemTime(new Date("2026-06-25T00:00:00.010Z"));
+        const m2 = store.createMission({ title: "Mission 2" });
+        vi.setSystemTime(new Date("2026-06-25T00:00:00.020Z"));
+        const m3 = store.createMission({ title: "Mission 3" });
 
-      const list = store.listMissions();
+        const list = store.listMissions();
 
-      expect(list).toHaveLength(3);
-      expect(list[0].id).toBe(m3.id); // Newest first
-      expect(list[1].id).toBe(m2.id);
-      expect(list[2].id).toBe(m1.id);
+        expect(list).toHaveLength(3);
+        expect(list[0].id).toBe(m3.id); // Newest first
+        expect(list[1].id).toBe(m2.id);
+        expect(list[2].id).toBe(m1.id);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("round-trips mission branchStrategy on create", () => {
@@ -178,21 +192,29 @@ describe("MissionStore", () => {
       expect(store.getMission(mission.id)?.branchStrategy).toBeUndefined();
     });
 
-    it("updates a mission", async () => {
-      const mission = store.createMission({ title: "Original" });
-      await new Promise((r) => setTimeout(r, 5)); // Ensure timestamp difference
-      const updated = store.updateMission(mission.id, {
-        title: "Updated",
-        status: "active",
-      });
+    // FNXC:CoreTests 2026-06-25-21:50: real-sleep removed (FN-5048); advance the
+    // fake clock between create and update so updatedAt > createdAt deterministically.
+    it("updates a mission", () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-06-25T00:00:00.000Z"));
+        const mission = store.createMission({ title: "Original" });
+        vi.setSystemTime(new Date("2026-06-25T00:00:00.005Z"));
+        const updated = store.updateMission(mission.id, {
+          title: "Updated",
+          status: "active",
+        });
 
-      expect(updated.title).toBe("Updated");
-      expect(updated.status).toBe("active");
-      expect(updated.id).toBe(mission.id);
-      expect(updated.createdAt).toBe(mission.createdAt);
-      expect(new Date(updated.updatedAt).getTime()).toBeGreaterThan(
-        new Date(mission.updatedAt).getTime()
-      );
+        expect(updated.title).toBe("Updated");
+        expect(updated.status).toBe("active");
+        expect(updated.id).toBe(mission.id);
+        expect(updated.createdAt).toBe(mission.createdAt);
+        expect(new Date(updated.updatedAt).getTime()).toBeGreaterThan(
+          new Date(mission.updatedAt).getTime()
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("throws when updating non-existent mission", () => {
@@ -540,7 +562,12 @@ describe("MissionStore", () => {
       });
     });
 
-    it("computes correct health for multiple missions with varying states", async () => {
+    // FNXC:CoreTests 2026-06-25-21:50: real-sleep removed (FN-5048); fake clock
+    // advanced between the two missions to keep their createdAt distinct/ordered.
+    it("computes correct health for multiple missions with varying states", () => {
+      vi.useFakeTimers();
+      try {
+      vi.setSystemTime(new Date("2026-06-25T00:00:00.000Z"));
       // Mission 1: 1 milestone (active), 1 slice (active), 4 features (1 done, 2 in-flight, 1 failed)
       const m1 = store.createMission({ title: "Mission 1" });
       store.updateMission(m1.id, { status: "active" });
@@ -562,7 +589,7 @@ describe("MissionStore", () => {
       const f1Failed = store.addFeature(sl1.id, { title: "F1-failed" });
       store.linkFeatureToTask(f1Failed.id, "FN-FAILED-1");
 
-      await new Promise((r) => setTimeout(r, 10));
+      vi.setSystemTime(new Date("2026-06-25T00:00:00.010Z"));
 
       // Mission 2: 2 milestones (1 complete, 1 active), 0 features
       const m2 = store.createMission({ title: "Mission 2" });
@@ -617,6 +644,9 @@ describe("MissionStore", () => {
         autopilotEnabled: false,
         lastActivityAt: undefined,
       });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("counts failed tasks across missions correctly", () => {
@@ -4520,6 +4550,3 @@ describe("MissionStore", () => {
     });
   });
 });
-
-// vi import for vitest mocking
-import { vi } from "vitest";

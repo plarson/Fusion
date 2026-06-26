@@ -3,6 +3,7 @@ import { parseWorkflowIr } from "./workflow-ir.js";
 import { BUILTIN_WORKFLOW_SETTINGS } from "./builtin-workflow-settings.js";
 import { builtinPromptConfig } from "./builtin-workflow-prompts.js";
 import { browserVerificationOptionalGroupNode } from "./builtin-browser-verification-group.js";
+import { codeReviewOptionalGroupNode } from "./builtin-code-review-group.js";
 
 /**
  * The built-in default workflow as a v2 IR. Its six columns have ids that are
@@ -75,6 +76,12 @@ const RAW_BUILTIN_CODING_WORKFLOW_IR: WorkflowIr = {
     },
     // Pre-merge optional browser-verification (optional-group, default OFF).
     browserVerificationOptionalGroupNode("in-progress"),
+    // FNXC:CodeReviewStep 2026-06-25-15:00:
+    // Pre-merge Code Review as a DEFAULT-ON optional-group (advisory), on the success path
+    // between browser-verification and review (execute → browser-verification →
+    // code-review → review). Runs for every coding task by default (defaultOn:true) but is
+    // toggleable off per task; disabled → byte-inert pass-through.
+    codeReviewOptionalGroupNode("in-progress"),
     { id: "review", kind: "prompt", column: "in-review", config: builtinPromptConfig("review", "Review") },
     { id: "merge-gate", kind: "merge-gate", column: "in-review", config: { gate: "auto-merge" } },
     { id: "merge-retry", kind: "retry-backoff", column: "in-review", config: { policy: "merge", maxAttempts: 3 } },
@@ -101,7 +108,10 @@ const RAW_BUILTIN_CODING_WORKFLOW_IR: WorkflowIr = {
     // execute → browser-verification (optional-group) → review. When the group is
     // disabled it passes through with outcome=success and routes straight to review.
     { from: "execute", to: "browser-verification", condition: "success" },
-    { from: "browser-verification", to: "review", condition: "success" },
+    // browser-verification → code-review → review. Each optional-group passes through with
+    // outcome=success when disabled, so a task with both off routes straight to review.
+    { from: "browser-verification", to: "code-review", condition: "success" },
+    { from: "code-review", to: "review", condition: "success" },
     { from: "review", to: "merge-gate", condition: "success" },
     { from: "merge-gate", to: "branch-group-member-integration", condition: "outcome:auto-on" },
     { from: "merge-gate", to: "merge-manual-hold", condition: "outcome:auto-off" },
@@ -118,6 +128,7 @@ const RAW_BUILTIN_CODING_WORKFLOW_IR: WorkflowIr = {
     { from: "planning", to: "end", condition: "failure" },
     { from: "execute", to: "end", condition: "failure" },
     { from: "browser-verification", to: "end", condition: "failure" },
+    { from: "code-review", to: "end", condition: "failure" },
     { from: "review", to: "end", condition: "failure" },
     { from: "merge-attempt", to: "end", condition: "failure" },
   ],

@@ -108,10 +108,10 @@ describe("resolveWorkflowOptionalSteps (optional-group nodes)", () => {
     ]);
   });
 
-  it("resolves the built-in coding/stepwise browser-verification optional-group (U6)", () => {
-    // U6 migrated both built-ins: `browser-verification` is now an optional-group
-    // node (default OFF), so the resolver advertises exactly one toggle entry per
-    // built-in, keyed by the group node id `browser-verification`.
+  it("resolves the built-in coding/stepwise browser-verification (off) + code-review (on) optional-groups", () => {
+    // Both built-ins carry two optional-group toggles on the pre-merge path, in node order:
+    // `browser-verification` (default OFF) then `code-review` (default ON — runs by default
+    // but is toggleable off per task).
     const expected = [
       {
         templateId: "browser-verification",
@@ -120,9 +120,23 @@ describe("resolveWorkflowOptionalSteps (optional-group nodes)", () => {
         phase: "pre-merge" as const,
         defaultOn: false,
       },
+      {
+        templateId: "code-review",
+        name: "Code Review",
+        description: "",
+        phase: "pre-merge" as const,
+        defaultOn: true,
+      },
     ];
     expect(resolveWorkflowOptionalSteps(BUILTIN_CODING_WORKFLOW_IR)).toEqual(expected);
     expect(resolveWorkflowOptionalSteps(BUILTIN_STEPWISE_CODING_WORKFLOW_IR)).toEqual(expected);
+  });
+
+  it("seeds code-review (default ON) but not browser-verification (default OFF) for the built-ins", () => {
+    // resolveDefaultOnOptionalGroupIds drives which groups a new task gets enabled by
+    // default: code-review is on, browser-verification is off.
+    expect(resolveDefaultOnOptionalGroupIds(BUILTIN_CODING_WORKFLOW_IR)).toEqual(["code-review"]);
+    expect(resolveDefaultOnOptionalGroupIds(BUILTIN_STEPWISE_CODING_WORKFLOW_IR)).toEqual(["code-review"]);
   });
 });
 

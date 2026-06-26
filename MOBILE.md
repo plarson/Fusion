@@ -111,7 +111,7 @@ Mobile CI is defined in `.github/workflows/mobile.yml`.
   - `build-ios` (sync/build iOS when `packages/mobile/ios/` exists)
   - `build-android` (sync/build Android when `packages/mobile/android/` exists)
 
-Artifacts are retained for 30 days.
+Artifacts from the Mobile Builds workflow are retained for 30 days. Tagged binary releases also run the Android build leg in `.github/workflows/release.yml` and publish `fusion-android.apk` plus `fusion-android.apk.sha256` as GitHub Release assets; `.github/workflows/test-release.yml` mirrors that path in its tag-less rehearsal artifact.
 
 ## Replacing PWA Icons
 

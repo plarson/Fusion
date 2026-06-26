@@ -240,10 +240,11 @@ describe("SetupWizardModal", () => {
     fireEvent.click(screen.getByText("Register Project"));
 
     await waitFor(() => {
-      // FNXC:Onboarding 2026-06-25-13:20:
-      // Existing-directory payload now carries `workspaceMode` (FNXC:Workspace) and
-      // auto-derived `taskPrefix` (FNXC:TaskPrefix). A non-workspace dir stays
-      // workspaceMode:false; prefix derives from name "project" -> "PROJ".
+      /*
+      FNXC:SetupWizard 2026-06-25-16:55:
+      Project registration now always sends the operator-visible workspace and task prefix fields, even when the existing-directory path is a single repo.
+      Keep this stale-expectation test pinned to the current create-project contract instead of asserting the pre-workspace payload shape.
+      */
       expect(mockRegisterProject).toHaveBeenCalledWith({
         name: "project",
         path: "/existing/project",
@@ -303,9 +304,10 @@ describe("SetupWizardModal", () => {
     fireEvent.click(screen.getByText("Register Project"));
 
     await waitFor(() => {
-      // FNXC:Onboarding 2026-06-25-13:20:
-      // Clone payload also carries workspaceMode:false (clone always creates a single
-      // fresh repo) and taskPrefix derived from name "fusion" -> "FUSI".
+      /*
+      FNXC:SetupWizard 2026-06-25-16:55:
+      Clone registration uses the same explicit workspace/task-prefix contract as existing-directory registration so downstream project setup receives one complete shape.
+      */
       expect(mockRegisterProject).toHaveBeenCalledWith({
         name: "fusion",
         path: "/tmp/fusion",

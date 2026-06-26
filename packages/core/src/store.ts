@@ -16283,7 +16283,20 @@ ${stepsSection}`;
     try {
       inputs = compileWorkflowToSteps(def.ir);
     } catch (err) {
-      if (isBuiltinWorkflowId(workflowId) && isInterpreterDeferredWorkflowCompileError(err)) return undefined;
+      // FNXC:CodeReviewStep 2026-06-25-15:00:
+      // Interpreter-deferred built-ins (e.g. builtin:coding/stepwise, which carry
+      // optional-group nodes) cannot lower to legacy WorkflowStep rows, but they may
+      // still carry DEFAULT-ON optional groups (e.g. `code-review`) that must be seeded
+      // into the new task's `enabledWorkflowSteps` for default-on to actually take
+      // effect — the executor enables a group strictly via
+      // `enabledWorkflowSteps.includes(node.id)` with no defaultOn fallback. Mirror the
+      // explicit-workflow path (`materializeExplicitWorkflowSteps`) by recording a
+      // selection seeded with the default-on group ids instead of bailing to `undefined`
+      // (which dropped the seeding and silently disabled default-on groups under a
+      // project-default workflow).
+      if (isBuiltinWorkflowId(workflowId) && isInterpreterDeferredWorkflowCompileError(err)) {
+        return { workflowId, stepIds: resolveDefaultOnOptionalGroupIds(def.ir) };
+      }
       throw err;
     }
     // FNXC:WorkflowOptionalGroup 2026-06-21-14:20: seed `enabledWorkflowSteps`

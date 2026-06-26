@@ -345,10 +345,91 @@ jobs:
             packages/desktop/dist-electron/Fusion-*-linux-*.tar.gz.asc
             packages/desktop/dist-electron/latest-linux.yml
 
+
+  # ── Build Android APK artifact ───────────────────────────────────────
+  # FNXC:Release 2026-06-25-12:00:
+  # Keep the tag-less rehearsal workflow in parity with release.yml so APK
+  # generation, checksum output, and artifact collection are validated before a
+  # version tag tries to publish the Android asset publicly.
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node and install dependencies
+        uses: ./.github/actions/setup-node-pnpm
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache Android Gradle caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('pnpm-lock.yaml', 'packages/mobile/capacitor.config.ts') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build dashboard client
+        run: pnpm --filter @fusion/dashboard build
+
+      - name: Create and sync Capacitor Android project
+        run: |
+          # FNXC:Release 2026-06-25-12:00:
+          # The Capacitor Android platform directory is gitignored and absent in
+          # clean release checkouts, so initialize it from pinned package metadata
+          # before syncing web assets instead of silently skipping the APK leg.
+          if [ ! -d packages/mobile/android ]; then
+            pnpm --filter @fusion/mobile cap add android
+          fi
+          pnpm --filter @fusion/mobile cap sync android
+
+      - name: Build Android APK
+        run: |
+          cd packages/mobile/android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Normalize Android APK asset
+        run: |
+          # FNXC:Release 2026-06-25-12:00:
+          # Ship the secret-free debug APK because this repo has no Android
+          # signing keystore configured; signed release APK/AAB distribution is a
+          # separate product task, not a binary-release plumbing prerequisite.
+          APK="packages/mobile/android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$APK" ]; then
+            echo "::error::Expected Android APK missing at $APK" >&2
+            exit 1
+          fi
+          mkdir -p packages/mobile/dist
+          cp "$APK" packages/mobile/dist/fusion-android.apk
+
+      - name: Generate Android APK checksum
+        run: |
+          cd packages/mobile/dist
+          sha256sum fusion-android.apk > fusion-android.apk.sha256
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fusion-android-apk
+          path: |
+            packages/mobile/dist/fusion-android.apk
+            packages/mobile/dist/fusion-android.apk.sha256
+
   # ── Collect all artifacts ─────────────────────────────────────────────
   collect:
     name: Collect Artifacts
-    needs: [build-binaries, build-desktop-windows, build-desktop-macos, build-desktop-linux]
+    needs: [build-binaries, build-desktop-windows, build-desktop-macos, build-desktop-linux, build-android]
     runs-on: ubuntu-latest
 
     steps:
@@ -360,7 +441,7 @@ jobs:
       - name: Combine artifacts
         run: |
           mkdir combined
-          find artifacts -type f \( -name "fn-*" -o -name "*.sha256" -o -name "*.asc" -o -name "*.exe" -o -name "*.exe.sha256" -o -name "*.blockmap" -o -name "*.dmg" -o -name "*.dmg.sha256" -o -name "*.zip" -o -name "*.zip.sha256" -o -name "*.AppImage" -o -name "*.AppImage.sha256" -o -name "*.deb" -o -name "*.deb.sha256" -o -name "*.tar.gz" -o -name "*.tar.gz.sha256" -o -name "latest*.yml" \) -exec cp {} combined/ \;
+          find artifacts -type f \( -name "fn-*" -o -name "*.sha256" -o -name "*.asc" -o -name "*.exe" -o -name "*.exe.sha256" -o -name "*.blockmap" -o -name "*.dmg" -o -name "*.dmg.sha256" -o -name "*.zip" -o -name "*.zip.sha256" -o -name "*.apk" -o -name "*.AppImage" -o -name "*.AppImage.sha256" -o -name "*.deb" -o -name "*.deb.sha256" -o -name "*.tar.gz" -o -name "*.tar.gz.sha256" -o -name "latest*.yml" \) -exec cp {} combined/ \;
           ls -la combined/
 
       - name: Upload combined archive

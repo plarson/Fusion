@@ -414,8 +414,9 @@ describe("Binary release workflow (.github/workflows/release.yml)", () => {
     expect(workflow.permissions.contents).toBe("write");
   });
 
-  it("has github-release job that depends on build-binaries", () => {
+  it("has github-release job that depends on binary and Android builds", () => {
     expect(workflow.jobs["github-release"].needs).toContain("build-binaries");
+    expect(workflow.jobs["github-release"].needs).toContain("build-android");
   });
 });
 
@@ -478,9 +479,10 @@ describe("Test-release workflow (.github/workflows/test-release.yml)", () => {
     expect(content).toContain("actions/upload-artifact");
   });
 
-  it("has a collect job that combines artifacts", () => {
+  it("has a collect job that combines binary and Android artifacts", () => {
     expect(workflow.jobs.collect).toBeDefined();
     expect(workflow.jobs.collect.needs).toContain("build-binaries");
+    expect(workflow.jobs.collect.needs).toContain("build-android");
     expect(content).toContain("all-binaries");
   });
 });

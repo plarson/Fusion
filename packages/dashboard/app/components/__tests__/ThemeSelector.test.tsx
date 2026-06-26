@@ -89,11 +89,12 @@ describe("ThemeSelector", () => {
       expect(screen.getByLabelText(`${theme.label} theme`)).toBeDefined();
     }
     expect(THEME_OPTIONS.map((theme) => theme.value)).toEqual([...COLOR_THEMES]);
-    // FNXC:Theme 2026-06-25-13:15: The "default" color-theme value is labeled "Fusion Legacy"
-    // (brand rename); its accessible option label is therefore "Fusion Legacy theme". Resolve
-    // the active option by the value's current label so this stays robust to relabels.
-    const defaultLabel = THEME_OPTIONS.find((theme) => theme.value === "default")?.label ?? "Fusion Legacy";
-    expect(screen.getByLabelText(`${defaultLabel} theme`).getAttribute("aria-pressed")).toBe("true");
+    /*
+    FNXC:Theme 2026-06-25-16:55:
+    The default color theme can be renamed for users without changing its persisted value; assert the selected default option through shared theme metadata so tests do not go stale on label-only copy changes.
+    */
+    const defaultTheme = THEME_OPTIONS.find((theme) => theme.value === "default")!;
+    expect(screen.getByLabelText(`${defaultTheme.label} theme`).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("renders every shared swatch class from themeOptions", () => {

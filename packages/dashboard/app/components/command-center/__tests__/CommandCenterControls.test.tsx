@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { CommandCenterControls } from "../CommandCenterControls";
+import { COLOR_THEMES } from "../../themeOptions";
 
 const commandCenterControlsCss = readFileSync(
   join(process.cwd(), "app/components/command-center/CommandCenterControls.css"),
@@ -273,11 +274,12 @@ describe("CommandCenterControls", () => {
     );
 
     await flushPromises();
-    // FNXC:Theme 2026-06-25-13:40:
-    // The historical "default" colorTheme id is now surfaced as "Fusion Legacy"
-    // (Ocean is the new default label, see themeOptions). The trigger button name
-    // therefore reads "Fusion Legacy" for colorTheme="default".
-    fireEvent.click(screen.getByRole("button", { name: /fusion legacy/i }));
+    /*
+    FNXC:Theme 2026-06-25-16:55:
+    Command Center embeds the shared theme dropdown, whose trigger label follows the current theme copy; look up the default label from theme metadata instead of assuming user-facing text contains "Default".
+    */
+    const defaultTheme = COLOR_THEMES.find((theme) => theme.value === "default")!;
+    fireEvent.click(screen.getByRole("button", { name: defaultTheme.label }));
     fireEvent.click(screen.getAllByRole("option").find((element) => element.textContent?.trim() === "Forest")!);
 
     expect(onColorThemeChange).toHaveBeenCalledWith("forest");

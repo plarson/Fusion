@@ -8,6 +8,7 @@ const TARGET_IDS = [
   "performance-review",
   "accessibility-check",
   "browser-verification",
+  "code-review",
   "frontend-ux-design",
 ] as const;
 

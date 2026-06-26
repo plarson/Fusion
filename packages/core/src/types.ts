@@ -1104,6 +1104,51 @@ Use these agent-browser commands for verification:
 Note: Refs (@e1, @e2) are invalidated after page navigation. Re-snapshot after clicking links or form submissions.`,
   },
   {
+    /*
+    FNXC:CodeReviewStep 2026-06-25-12:00:
+    Built-in "Code Review" catalog template: a configurable pre-merge prompt-gate that
+    diff-reviews the task's changes for the correctness value automated tests miss
+    (logic bugs, broken edge cases, intent-vs-implementation drift, regressions in
+    touched paths, error handling, contract/signature breaks). This is the WORKFLOW-layer
+    code review — it reuses the shared prompt-gate verdict machinery, NOT engine
+    verification code. gateMode defaults to "advisory" (non-blocking) exactly like
+    browser-verification, so it is opt-in/non-blocking until an operator promotes it to a
+    blocking gate. phase "pre-merge" places it before merge. toolMode "readonly": review
+    reads the diff/files, it does not mutate the worktree.
+    */
+    id: "code-review",
+    name: "Code Review",
+    description: "Diff-review the task's changes for correctness bugs, regressions, and intent mismatches that tests miss",
+    category: "Quality",
+    icon: "git-pull-request",
+    toolMode: "readonly",
+    gateMode: "advisory",
+    phase: "pre-merge",
+    prompt: `You are a senior code reviewer. Review the task's diff for the correctness value automated tests do NOT catch.
+
+## Step 1: Read the change
+1. Read the full diff against the base branch: \`git diff <base>...HEAD\` (or \`git diff <base>\`). Determine the base from the task context / merge target.
+2. Read the changed files in full where the diff is non-trivial, so you see the surrounding code paths the change touches — not just the hunks.
+
+## Step 2: Review focus (the value tests miss)
+1. **Correctness / logic bugs** — wrong conditions, inverted boolean/comparison logic, off-by-one, incorrect operator precedence, mishandled return values.
+2. **Broken edge cases** — empty/undefined/null inputs, zero/duplicate/boundary values, concurrency and ordering assumptions.
+3. **Intent vs implementation** — does the code actually do what the task/PROMPT.md describes? Flag silent scope drift or partial implementations.
+4. **Regressions in touched code paths** — does the change break or weaken an existing behavior in the files it edits or their callers?
+5. **Error handling** — swallowed errors, unhandled rejections/exceptions, missing validation at trust boundaries, misleading error messages.
+6. **Contract / signature changes** — changed function/exported-type signatures, API request/response shapes, or serialization that breaks existing callers.
+
+Be specific: cite \`file:line\` for every finding and explain the concrete failure it causes.
+
+## Output Requirements
+- Fast-bail: if the diff is trivial, generated, or out-of-scope for code review (e.g. pure docs/config/formatting with no logic), output {"verdict":"APPROVE","notes":"out of scope: code review"} immediately and stop.
+- APPROVE: no correctness concerns; use empty or brief notes.
+- APPROVE_WITH_NOTES: shippable, but include non-blocking advisories (with file:line) in notes.
+- REVISE: a correctness bug, regression, or contract break requires changes; include file:line and the concrete failure plus remediation in notes.
+- Final output: output exactly one trailing JSON object on the final line (no markdown fences, no surrounding prose):
+{"verdict":"APPROVE|APPROVE_WITH_NOTES|REVISE","notes":"..."}`,
+  },
+  {
     id: "frontend-ux-design",
     name: "Frontend UX Design",
     description: "Verify visual polish and consistency with existing UI patterns and design tokens",

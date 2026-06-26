@@ -38,12 +38,6 @@ import {
   createEngineScopedAffectedEnv,
   buildAffectedRunCommandArgs,
   normalizeForwardedArgs,
-  CLI_SCOPED_AFFECTED_PACKAGE,
-  CORE_SCOPED_AFFECTED_PACKAGE,
-  DESKTOP_SCOPED_AFFECTED_PACKAGE,
-  COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE,
-  INTEGRATION_SCOPED_AFFECTED_HEAP_MB,
-  INTEGRATION_SCOPED_AFFECTED_WORKERS,
   DASHBOARD_SCOPED_AFFECTED_HEAP_MB,
   DASHBOARD_SCOPED_AFFECTED_PACKAGE,
   DASHBOARD_SCOPED_AFFECTED_WORKERS,
@@ -51,6 +45,10 @@ import {
   ENGINE_SCOPED_AFFECTED_PACKAGE,
   ENGINE_SCOPED_AFFECTED_WORKERS,
   partitionScopedAffectedPackages,
+  isTestFilePath,
+  changedSourceFilesAffectingPackage,
+  deriveScopedAffectedBudgetMs,
+  SCOPED_AFFECTED_BUDGET_CEILING_MS,
 } from "../test-changed.mjs";
 
 import { deriveBudgetMs } from "../lib/run-vitest-watchdog.mjs";
@@ -293,45 +291,6 @@ function assertScopedAffectedEnv(env, { heapMb, workers }) {
   assert.equal(env.HOME, "/tmp/fusion-home");
 }
 
-test("partitionScopedAffectedPackages: isolates reported Node 25 affected packages into bounded lanes", () => {
-  assert.deepEqual(
-    summarizeScopedAffectedGroups([
-      CLI_SCOPED_AFFECTED_PACKAGE,
-      CORE_SCOPED_AFFECTED_PACKAGE,
-      DESKTOP_SCOPED_AFFECTED_PACKAGE,
-      COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE,
-      ENGINE_SCOPED_AFFECTED_PACKAGE,
-    ]),
-    [
-      {
-        packages: [CLI_SCOPED_AFFECTED_PACKAGE],
-        engineMemoryEnvelope: false,
-        memoryEnvelopePackage: CLI_SCOPED_AFFECTED_PACKAGE,
-      },
-      {
-        packages: [CORE_SCOPED_AFFECTED_PACKAGE],
-        engineMemoryEnvelope: false,
-        memoryEnvelopePackage: CORE_SCOPED_AFFECTED_PACKAGE,
-      },
-      {
-        packages: [DESKTOP_SCOPED_AFFECTED_PACKAGE],
-        engineMemoryEnvelope: false,
-        memoryEnvelopePackage: DESKTOP_SCOPED_AFFECTED_PACKAGE,
-      },
-      {
-        packages: [COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE],
-        engineMemoryEnvelope: false,
-        memoryEnvelopePackage: COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE,
-      },
-      {
-        packages: [ENGINE_SCOPED_AFFECTED_PACKAGE],
-        engineMemoryEnvelope: true,
-        memoryEnvelopePackage: ENGINE_SCOPED_AFFECTED_PACKAGE,
-      },
-    ],
-  );
-});
-
 test("partitionScopedAffectedPackages: isolates dashboard and engine into separate envelope groups", () => {
   assert.deepEqual(summarizeScopedAffectedGroups([DASHBOARD_SCOPED_AFFECTED_PACKAGE]), [
     {
@@ -341,12 +300,8 @@ test("partitionScopedAffectedPackages: isolates dashboard and engine into separa
     },
   ]);
 
-  assert.deepEqual(summarizeScopedAffectedGroups([CORE_SCOPED_AFFECTED_PACKAGE, DASHBOARD_SCOPED_AFFECTED_PACKAGE]), [
-    {
-      packages: [CORE_SCOPED_AFFECTED_PACKAGE],
-      engineMemoryEnvelope: false,
-      memoryEnvelopePackage: CORE_SCOPED_AFFECTED_PACKAGE,
-    },
+  assert.deepEqual(summarizeScopedAffectedGroups(["@fusion/core", DASHBOARD_SCOPED_AFFECTED_PACKAGE]), [
+    { packages: ["@fusion/core"], engineMemoryEnvelope: false, memoryEnvelopePackage: null },
     {
       packages: [DASHBOARD_SCOPED_AFFECTED_PACKAGE],
       engineMemoryEnvelope: false,
@@ -355,13 +310,9 @@ test("partitionScopedAffectedPackages: isolates dashboard and engine into separa
   ]);
 
   assert.deepEqual(
-    summarizeScopedAffectedGroups([CORE_SCOPED_AFFECTED_PACKAGE, DASHBOARD_SCOPED_AFFECTED_PACKAGE, ENGINE_SCOPED_AFFECTED_PACKAGE]),
+    summarizeScopedAffectedGroups(["@fusion/core", DASHBOARD_SCOPED_AFFECTED_PACKAGE, ENGINE_SCOPED_AFFECTED_PACKAGE]),
     [
-      {
-      packages: [CORE_SCOPED_AFFECTED_PACKAGE],
-      engineMemoryEnvelope: false,
-      memoryEnvelopePackage: CORE_SCOPED_AFFECTED_PACKAGE,
-    },
+      { packages: ["@fusion/core"], engineMemoryEnvelope: false, memoryEnvelopePackage: null },
       {
         packages: [ENGINE_SCOPED_AFFECTED_PACKAGE],
         engineMemoryEnvelope: true,
@@ -375,29 +326,9 @@ test("partitionScopedAffectedPackages: isolates dashboard and engine into separa
     ],
   );
 
-  assert.deepEqual(summarizeScopedAffectedGroups([CORE_SCOPED_AFFECTED_PACKAGE, CLI_SCOPED_AFFECTED_PACKAGE]), [
-    { packages: [CLI_SCOPED_AFFECTED_PACKAGE], engineMemoryEnvelope: false, memoryEnvelopePackage: CLI_SCOPED_AFFECTED_PACKAGE },
-    {
-      packages: [CORE_SCOPED_AFFECTED_PACKAGE],
-      engineMemoryEnvelope: false,
-      memoryEnvelopePackage: CORE_SCOPED_AFFECTED_PACKAGE,
-    },
+  assert.deepEqual(summarizeScopedAffectedGroups(["@fusion/core", "@runfusion/fusion"]), [
+    { packages: ["@fusion/core", "@runfusion/fusion"], engineMemoryEnvelope: false, memoryEnvelopePackage: null },
   ]);
-});
-
-test("partitionScopedAffectedPackages: integration-heavy lanes use bounded single-worker envelopes", () => {
-  for (const packageName of [
-    CLI_SCOPED_AFFECTED_PACKAGE,
-    CORE_SCOPED_AFFECTED_PACKAGE,
-    DESKTOP_SCOPED_AFFECTED_PACKAGE,
-    COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE,
-  ]) {
-    const [group] = partitionScopedAffectedPackages([packageName]);
-    assert.equal(group.packages.length, 1);
-    assert.equal(group.memoryEnvelopePackage, packageName);
-    assert.equal(group.memoryEnvelope.heapMb, INTEGRATION_SCOPED_AFFECTED_HEAP_MB);
-    assert.equal(group.memoryEnvelope.workers, INTEGRATION_SCOPED_AFFECTED_WORKERS);
-  }
 });
 
 test("createDashboardScopedAffectedEnv: caps heap, preserves env, lowers workers, and leaves watchdog finite", () => {
@@ -455,14 +386,14 @@ test("createEngineScopedAffectedEnv: preserves existing engine envelope contract
 
 test("buildAffectedRunCommandArgs: scoped affected command keeps --changed and does not force timeout flags", () => {
   const args = buildAffectedRunCommandArgs({
-    packages: [CORE_SCOPED_AFFECTED_PACKAGE],
+    packages: ["@fusion/core"],
     mode: "scoped",
     comparisonBase: "abc123",
     workspaceConcurrency: "1",
     forwardedArgs: [],
   });
 
-  assert.deepEqual(args.slice(0, 2), ["--filter", CORE_SCOPED_AFFECTED_PACKAGE]);
+  assert.deepEqual(args.slice(0, 2), ["--filter", "@fusion/core"]);
   assert.ok(args.includes("exec"));
   assert.ok(args.includes("vitest"));
   assert.ok(args.includes("--changed"));
@@ -486,6 +417,18 @@ test("buildAffectedRunCommandArgs: caller diagnostic args are forwarded but not 
 
   assert.equal(args.filter((arg) => arg === "--testTimeout=30000").length, 1);
   assert.equal(args.includes("--silent"), false);
+});
+
+test("deriveScopedAffectedBudgetMs: scoped affected lanes fail before workspace verification timeout", () => {
+  const workspaceVerificationTimeoutMs = 900_000;
+
+  assert.equal(deriveBudgetMs({ klass: "changed" }), 1_200_000);
+  assert.equal(deriveScopedAffectedBudgetMs(), SCOPED_AFFECTED_BUDGET_CEILING_MS);
+  assert.equal(deriveScopedAffectedBudgetMs() < workspaceVerificationTimeoutMs, true);
+  assert.equal(deriveScopedAffectedBudgetMs() < deriveBudgetMs({ klass: "changed" }), true);
+
+  const freshTightBudget = deriveScopedAffectedBudgetMs({ expectedDurationMs: 10_000, timingsFresh: true });
+  assert.equal(freshTightBudget, deriveBudgetMs({ klass: "changed", expectedDurationMs: 10_000, timingsFresh: true }));
 });
 
 // ---------------------------------------------------------------------------
@@ -582,6 +525,40 @@ test("decideExecutionPlan: only package files changed → changed mode", () => {
   });
   assert.equal(plan.mode, "changed");
   assert.deepEqual(plan.packages, ["@fusion/engine"]);
+});
+
+test("decideExecutionPlan: dashboard test-only diff does not select engine scoped lane", () => {
+  const packageNameByDir = pkgMap([
+    ["packages/dashboard", "@fusion/dashboard"],
+    ["packages/engine", "@fusion/engine"],
+    ["packages/cli", "@runfusion/fusion"],
+    ["packages/desktop", "@fusion/desktop"],
+    ["plugins/reports", "@fusion-plugin-examples/reports"],
+  ]);
+  const reverseDependencyMap = new Map([
+    ["@fusion/dashboard", ["@runfusion/fusion", "@fusion/desktop", "@fusion-plugin-examples/reports"]],
+    ["@runfusion/fusion", []],
+    ["@fusion/desktop", []],
+    ["@fusion-plugin-examples/reports", []],
+    ["@fusion/engine", []],
+  ]);
+
+  const plan = decideExecutionPlan({
+    forceFullSuite: false,
+    comparisonBase: "abc123",
+    changedFiles: ["packages/dashboard/app/components/__tests__/SettingsModal.test.tsx"],
+    packageNameByDir,
+    reverseDependencyMap,
+  });
+
+  assert.equal(plan.mode, "changed");
+  assert.deepEqual(plan.packages, [
+    "@fusion/dashboard",
+    "@runfusion/fusion",
+    "@fusion/desktop",
+    "@fusion-plugin-examples/reports",
+  ]);
+  assert.equal(plan.packages.includes("@fusion/engine"), false);
 });
 
 test("decideExecutionPlan: expands changed packages with reverse dependents", () => {
@@ -1907,4 +1884,71 @@ test("pruneFusionTestWorkers: only targets the fusion-test-workers- prefix", () 
     rmSync(ours, { recursive: true, force: true });
     rmSync(foreign, { recursive: true, force: true });
   }
+});
+
+// FNXC:TestInfrastructure 2026-06-25-14:30: wide `vitest --changed` fan-out guard.
+// A changed non-test source file in a heavy package's module graph (own dir or a
+// transitive workspace dep) must be detected so the affected lane runs only the
+// directly-changed test files and delegates the rest to the merge gate, instead
+// of fanning out to ~the full suite at workers=1 past the 15-min verification kill.
+const __fanoutOpts = {
+  packageDirByName: new Map([
+    ["@fusion/engine", "packages/engine"],
+    ["@fusion/core", "packages/core"],
+    ["@fusion/dashboard", "packages/dashboard"],
+  ]),
+  forwardDependencyMap: new Map([
+    ["@fusion/engine", ["@fusion/core"]],
+    ["@fusion/core", []],
+    ["@fusion/dashboard", ["@fusion/core"]],
+  ]),
+};
+
+test("isTestFilePath: recognizes test/spec files but not plain source", () => {
+  assert.equal(isTestFilePath("packages/engine/src/__tests__/a.test.ts"), true);
+  assert.equal(isTestFilePath("packages/dashboard/src/App.spec.tsx"), true);
+  assert.equal(isTestFilePath("packages/engine/src/self-healing.ts"), false);
+});
+
+test("changedSourceFilesAffectingPackage: test-only diff is narrow (empty)", () => {
+  assert.deepEqual(
+    changedSourceFilesAffectingPackage("@fusion/engine", ["packages/engine/src/__tests__/a.test.ts"], __fanoutOpts),
+    [],
+  );
+});
+
+test("changedSourceFilesAffectingPackage: own hub source flags wide fan-out", () => {
+  assert.deepEqual(
+    changedSourceFilesAffectingPackage("@fusion/engine", ["packages/engine/src/self-healing.ts"], __fanoutOpts),
+    ["packages/engine/src/self-healing.ts"],
+  );
+});
+
+test("changedSourceFilesAffectingPackage: transitive dependency source flags wide fan-out", () => {
+  assert.deepEqual(
+    changedSourceFilesAffectingPackage("@fusion/engine", ["packages/core/src/index.ts"], __fanoutOpts),
+    ["packages/core/src/index.ts"],
+  );
+});
+
+test("changedSourceFilesAffectingPackage: shared __test-utils__ tree flags wide fan-out", () => {
+  assert.deepEqual(
+    changedSourceFilesAffectingPackage(
+      "@fusion/engine",
+      ["packages/core/src/__test-utils__/vitest-setup.ts"],
+      __fanoutOpts,
+    ),
+    ["packages/core/src/__test-utils__/vitest-setup.ts"],
+  );
+});
+
+test("changedSourceFilesAffectingPackage: out-of-graph and irrelevant paths stay narrow", () => {
+  assert.deepEqual(
+    changedSourceFilesAffectingPackage(
+      "@fusion/engine",
+      ["packages/dashboard/src/App.tsx", "docs/testing.md", "README", ".changeset/x.md"],
+      __fanoutOpts,
+    ),
+    [],
+  );
 });

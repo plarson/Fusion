@@ -57,16 +57,17 @@ When you merge the Version Packages PR:
 - It creates a git tag `v{version}` based on the `kb` CLI package version
 - The tag push triggers `release.yml`, which:
   - Builds platform-specific binaries for Linux x64, macOS x64, macOS arm64, and Windows x64
+  - Builds the Android APK as `fusion-android.apk`
   - Signs macOS binaries (codesign + notarization) and Windows binaries (Authenticode)
-  - Generates SHA256 checksums for all binaries
-  - Creates a **GitHub Release** with all binaries and checksums attached
+  - Generates SHA256 checksums for all binaries and the Android APK
+  - Creates a **GitHub Release** with all binaries, the Android APK, and checksums attached
 
 ## Release channels
 
 | Channel | Workflow | Trigger | Output |
 |---------|----------|---------|--------|
 | npm | `version.yml` | Push to `main` | npm packages with provenance |
-| GitHub Release | `release.yml` | Version tag (`v*`) | Signed platform binaries + checksums |
+| GitHub Release | `release.yml` | Version tag (`v*`) | Signed platform binaries, Android APK + checksums |
 
 ## Platform binaries
 
@@ -75,6 +76,7 @@ When you merge the Version Packages PR:
 | Linux x64 | `fusion-linux-x64` | — |
 | macOS arm64 | `fusion-darwin-arm64` | ✓ (codesign + notarization) |
 | Windows x64 | `fusion-windows-x64.exe` | ✓ (Authenticode) |
+| Android | `fusion-android.apk` | — (debug/unsigned APK) |
 
 > macOS Intel (`darwin-x64`) is intentionally not shipped: the CLI is Apple-Silicon-only because `macos-13` GitHub runners are too scarce to build reliably. The desktop macOS DMG/ZIP remains universal.
 
@@ -83,7 +85,7 @@ When you merge the Version Packages PR:
 Use the **Test Release** workflow (`test-release.yml`) to manually test binary builds without creating a real release:
 
 1. Go to **Actions** → **Test Release** → **Run workflow**
-2. The workflow builds all 4 platform binaries, runs smoke tests, and uploads artifacts
+2. The workflow builds all 4 platform binaries plus the Android APK, runs smoke tests, and uploads artifacts
 3. Download the `all-binaries` artifact to inspect the output
 
 ## Manual release (fallback)

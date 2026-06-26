@@ -600,12 +600,28 @@ describe("built-in workflows", () => {
       }
     });
 
-    it("create-time branching built-in workflowId records selection without throwing", async () => {
+    it("create-time branching built-in workflowId records selection and seeds the default-on code-review group", async () => {
       const task = await store.createTask({ description: "explicit builtin coding", workflowId: "builtin:coding" });
 
       const detail = await store.getTask(task.id);
-      expect(detail.enabledWorkflowSteps ?? []).toEqual([]);
-      expect(store.getTaskWorkflowSelection(task.id)).toEqual({ workflowId: "builtin:coding", stepIds: [] });
+      // FNXC:CodeReviewStep — builtin:coding carries the DEFAULT-ON `code-review`
+      // optional-group, so the explicit-workflow create path seeds it into the task's
+      // enabledWorkflowSteps (and records it in the selection).
+      expect(detail.enabledWorkflowSteps ?? []).toEqual(["code-review"]);
+      expect(store.getTaskWorkflowSelection(task.id)).toEqual({ workflowId: "builtin:coding", stepIds: ["code-review"] });
+    });
+
+    it("a task can disable code-review by creating with explicit enabledWorkflowSteps excluding it", async () => {
+      // Default-on but TOGGLEABLE: an explicit (non-empty) enabledWorkflowSteps wins over
+      // the workflow's default-on seeding, so omitting `code-review` disables it.
+      const task = await store.createTask({
+        description: "coding without code review",
+        workflowId: "builtin:coding",
+        enabledWorkflowSteps: ["browser-verification"],
+      });
+      const detail = await store.getTask(task.id);
+      expect(detail.enabledWorkflowSteps ?? []).not.toContain("code-review");
+      expect(detail.enabledWorkflowSteps ?? []).toEqual(["browser-verification"]);
     });
 
     it("branching built-in project defaults do not throw", async () => {
@@ -613,34 +629,35 @@ describe("built-in workflows", () => {
         description: "implicit builtin default",
       });
 
-      // U6: builtin:coding now carries the `browser-verification` optional-group
-      // (an interpreter-deferred construct), so its DEFAULT-workflow materialization
-      // falls back to no legacy WorkflowStep rows and records no selection row —
-      // identical to the stepwise built-in below. The group is defaultOn:false, so
-      // enabledWorkflowSteps stays empty.
+      // FNXC:CodeReviewStep — builtin:coding/stepwise are interpreter-deferred (they
+      // carry optional-group nodes), so DEFAULT-workflow materialization records no legacy
+      // WorkflowStep rows. They DO carry the DEFAULT-ON `code-review` optional-group, so
+      // the project-default create path now seeds `code-review` into enabledWorkflowSteps
+      // and records a selection (mirroring the explicit-workflow path) — that is how
+      // default-on actually takes effect. browser-verification stays off (defaultOn:false).
       await store.setDefaultWorkflowId("builtin:coding");
       const codingTask = await store.createTask({ description: "default builtin coding" });
-      expect((await store.getTask(codingTask.id)).enabledWorkflowSteps ?? []).toEqual([]);
-      expect(store.getTaskWorkflowSelection(codingTask.id)).toBeUndefined();
+      expect((await store.getTask(codingTask.id)).enabledWorkflowSteps ?? []).toEqual(["code-review"]);
+      expect(store.getTaskWorkflowSelection(codingTask.id)).toEqual({ workflowId: "builtin:coding", stepIds: ["code-review"] });
 
       const reservedCodingTask = await store.createTaskWithReservedId(
         { description: "reserved default builtin coding" },
         { taskId: "reserved-default-builtin-coding" },
       );
-      expect((await store.getTask(reservedCodingTask.id)).enabledWorkflowSteps ?? []).toEqual([]);
-      expect(store.getTaskWorkflowSelection(reservedCodingTask.id)).toBeUndefined();
+      expect((await store.getTask(reservedCodingTask.id)).enabledWorkflowSteps ?? []).toEqual(["code-review"]);
+      expect(store.getTaskWorkflowSelection(reservedCodingTask.id)).toEqual({ workflowId: "builtin:coding", stepIds: ["code-review"] });
 
       await store.setDefaultWorkflowId("builtin:stepwise-coding");
       const stepwiseTask = await store.createTask({ description: "default builtin stepwise" });
-      expect((await store.getTask(stepwiseTask.id)).enabledWorkflowSteps ?? []).toEqual([]);
-      expect(store.getTaskWorkflowSelection(stepwiseTask.id)).toBeUndefined();
+      expect((await store.getTask(stepwiseTask.id)).enabledWorkflowSteps ?? []).toEqual(["code-review"]);
+      expect(store.getTaskWorkflowSelection(stepwiseTask.id)).toEqual({ workflowId: "builtin:stepwise-coding", stepIds: ["code-review"] });
 
       const reservedStepwiseTask = await store.createTaskWithReservedId(
         { description: "reserved default builtin stepwise" },
         { taskId: "reserved-default-builtin-stepwise" },
       );
-      expect((await store.getTask(reservedStepwiseTask.id)).enabledWorkflowSteps ?? []).toEqual([]);
-      expect(store.getTaskWorkflowSelection(reservedStepwiseTask.id)).toBeUndefined();
+      expect((await store.getTask(reservedStepwiseTask.id)).enabledWorkflowSteps ?? []).toEqual(["code-review"]);
+      expect(store.getTaskWorkflowSelection(reservedStepwiseTask.id)).toEqual({ workflowId: "builtin:stepwise-coding", stepIds: ["code-review"] });
     });
 
     it("rejects selecting the PR lifecycle fragment for a task", async () => {

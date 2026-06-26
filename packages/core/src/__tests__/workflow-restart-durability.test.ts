@@ -238,7 +238,9 @@ describe("workflow restart durability for explicit selections", () => {
     const customSelectionBefore = store().getTaskWorkflowSelection(customTask.id);
     expect(customSelectionBefore?.workflowId).toBe(workflow.id);
     expect(customSelectionBefore?.stepIds).toHaveLength(2);
-    expect(store().getTaskWorkflowSelection(builtinTask.id)).toEqual({ workflowId: "builtin:coding", stepIds: [] });
+    // FNXC:CodeReviewStep — builtin:coding carries the DEFAULT-ON `code-review`
+    // optional-group, so the create-time workflowId path seeds it into the selection.
+    expect(store().getTaskWorkflowSelection(builtinTask.id)).toEqual({ workflowId: "builtin:coding", stepIds: ["code-review"] });
 
     await reopenAsDiskBackedStore();
 
@@ -249,9 +251,9 @@ describe("workflow restart durability for explicit selections", () => {
     for (const stepId of customSelection?.stepIds ?? []) {
       expect(await store().getWorkflowStep(stepId)).toBeDefined();
     }
-    expect(store().getTaskWorkflowSelection(builtinTask.id)).toEqual({ workflowId: "builtin:coding", stepIds: [] });
-    expect((await store().getTask(builtinTask.id)).enabledWorkflowSteps ?? []).toEqual([]);
-    expect((await taskJsonEnabledWorkflowSteps(builtinTask.id)) ?? []).toEqual([]);
+    expect(store().getTaskWorkflowSelection(builtinTask.id)).toEqual({ workflowId: "builtin:coding", stepIds: ["code-review"] });
+    expect((await store().getTask(builtinTask.id)).enabledWorkflowSteps ?? []).toEqual(["code-review"]);
+    expect((await taskJsonEnabledWorkflowSteps(builtinTask.id)) ?? []).toEqual(["code-review"]);
   });
 
   it("fails closed when a selected custom workflow definition is missing without corrupting the dangling selection", async () => {

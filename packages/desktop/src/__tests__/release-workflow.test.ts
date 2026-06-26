@@ -46,7 +46,7 @@ describe("desktop release workflow wiring", () => {
     const release = await readRepoFile(".github/workflows/release.yml");
 
     expect(release).toContain(
-      "needs: [build-binaries, build-desktop-windows, build-desktop-macos, build-desktop-linux]",
+      "needs: [build-binaries, build-desktop-windows, build-desktop-macos, build-desktop-linux, build-android]",
     );
     expect(release).toContain('find artifacts -type f \\(');
     expect(release).toContain('-name "*.exe"');
@@ -64,9 +64,29 @@ describe("desktop release workflow wiring", () => {
     const testRelease = await readRepoFile(".github/workflows/test-release.yml");
 
     expect(testRelease).toContain(
-      "needs: [build-binaries, build-desktop-windows, build-desktop-macos, build-desktop-linux]",
+      "needs: [build-binaries, build-desktop-windows, build-desktop-macos, build-desktop-linux, build-android]",
     );
     expect(testRelease).toContain('-name "latest*.yml"');
+  });
+
+  it("adds Android APK build and aggregation wiring to release workflows", async () => {
+    const release = await readRepoFile(".github/workflows/release.yml");
+    const testRelease = await readRepoFile(".github/workflows/test-release.yml");
+
+    for (const workflow of [release, testRelease]) {
+      expect(workflow).toContain("build-android:");
+      expect(workflow).toContain("runs-on: ubuntu-latest");
+      expect(workflow).toContain("actions/setup-java@v4");
+      expect(workflow).toContain('java-version: "17"');
+      expect(workflow).toContain("pnpm --filter @fusion/mobile cap add android");
+      expect(workflow).toContain("pnpm --filter @fusion/mobile cap sync android");
+      expect(workflow).toContain("./gradlew assembleDebug");
+      expect(workflow).toContain("packages/mobile/android/app/build/outputs/apk/debug/app-debug.apk");
+      expect(workflow).toContain("packages/mobile/dist/fusion-android.apk");
+      expect(workflow).toContain("sha256sum fusion-android.apk > fusion-android.apk.sha256");
+      expect(workflow).toContain("name: fusion-android-apk");
+      expect(workflow).toContain('-name "*.apk"');
+    }
   });
 });
 

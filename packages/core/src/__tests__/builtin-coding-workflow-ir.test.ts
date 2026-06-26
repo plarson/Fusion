@@ -53,11 +53,13 @@ describe("builtin coding workflow ir", () => {
     expect(group?.kind).toBe("optional-group");
     expect(group?.config?.name).toBe("Browser Verification");
     expect(group?.config?.defaultOn).toBe(false);
-    // execute → browser-verification → review on the success path; failure → end.
+    // execute → browser-verification → code-review → review on the success path; the
+    // pre-merge code-review optional-group sits next to browser-verification. failure → end.
     expect(BUILTIN_CODING_WORKFLOW_IR.edges).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ from: "execute", to: "browser-verification", condition: "success" }),
-        expect.objectContaining({ from: "browser-verification", to: "review", condition: "success" }),
+        expect.objectContaining({ from: "browser-verification", to: "code-review", condition: "success" }),
+        expect.objectContaining({ from: "code-review", to: "review", condition: "success" }),
         expect.objectContaining({ from: "browser-verification", to: "end", condition: "failure" }),
       ]),
     );

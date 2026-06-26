@@ -15,6 +15,16 @@ import { deriveBudgetMs, runWithWatchdog } from "./lib/run-vitest-watchdog.mjs";
 /** Generous local full-suite budget (60min): far above a real full run, far below an infinite hang. */
 const FULL_SUITE_BUDGET_MS = 60 * 60 * 1000;
 
+/*
+FNXC:TestInfrastructure 2026-06-25-18:58:
+Scoped affected memory-envelope lanes run inside Fusion's root `pnpm test` verification command, whose workspace default timeout is 15min. Keep their own watchdog below that outer timeout so a broad `vitest --changed` engine/dashboard lane fails with script diagnostics instead of being killed by the executor and restarted from the beginning.
+*/
+export const SCOPED_AFFECTED_BUDGET_CEILING_MS = 14 * 60 * 1000;
+
+export function deriveScopedAffectedBudgetMs(options = {}) {
+  return Math.min(deriveBudgetMs({ klass: "changed", ...options }), SCOPED_AFFECTED_BUDGET_CEILING_MS);
+}
+
 const currentFilePath = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(currentFilePath);
 const checkIsolationScript = path.join(scriptDir, "check-test-isolation.mjs");
@@ -1317,12 +1327,6 @@ export function packageHasVitestConfig(pkgDir, projectRoot = rootDir) {
   return VITEST_CONFIG_BASENAMES.some((name) => existsSync(path.join(projectRoot, pkgDir, name)));
 }
 
-export const CLI_SCOPED_AFFECTED_PACKAGE = "@runfusion/fusion";
-export const CORE_SCOPED_AFFECTED_PACKAGE = "@fusion/core";
-export const DESKTOP_SCOPED_AFFECTED_PACKAGE = "@fusion/desktop";
-export const COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE = "@fusion-plugin-examples/compound-engineering";
-export const INTEGRATION_SCOPED_AFFECTED_HEAP_MB = "4096";
-export const INTEGRATION_SCOPED_AFFECTED_WORKERS = "1";
 export const ENGINE_SCOPED_AFFECTED_PACKAGE = "@fusion/engine";
 export const ENGINE_SCOPED_AFFECTED_HEAP_MB = "6144";
 export const ENGINE_SCOPED_AFFECTED_WORKERS = "1";
@@ -1331,26 +1335,6 @@ export const DASHBOARD_SCOPED_AFFECTED_HEAP_MB = "6144";
 export const DASHBOARD_SCOPED_AFFECTED_WORKERS = "1";
 
 export const SCOPED_AFFECTED_MEMORY_ENVELOPES = Object.freeze({
-  [CLI_SCOPED_AFFECTED_PACKAGE]: Object.freeze({
-    packageName: CLI_SCOPED_AFFECTED_PACKAGE,
-    heapMb: INTEGRATION_SCOPED_AFFECTED_HEAP_MB,
-    workers: INTEGRATION_SCOPED_AFFECTED_WORKERS,
-  }),
-  [CORE_SCOPED_AFFECTED_PACKAGE]: Object.freeze({
-    packageName: CORE_SCOPED_AFFECTED_PACKAGE,
-    heapMb: INTEGRATION_SCOPED_AFFECTED_HEAP_MB,
-    workers: INTEGRATION_SCOPED_AFFECTED_WORKERS,
-  }),
-  [DESKTOP_SCOPED_AFFECTED_PACKAGE]: Object.freeze({
-    packageName: DESKTOP_SCOPED_AFFECTED_PACKAGE,
-    heapMb: INTEGRATION_SCOPED_AFFECTED_HEAP_MB,
-    workers: INTEGRATION_SCOPED_AFFECTED_WORKERS,
-  }),
-  [COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE]: Object.freeze({
-    packageName: COMPOUND_ENGINEERING_SCOPED_AFFECTED_PACKAGE,
-    heapMb: INTEGRATION_SCOPED_AFFECTED_HEAP_MB,
-    workers: INTEGRATION_SCOPED_AFFECTED_WORKERS,
-  }),
   [ENGINE_SCOPED_AFFECTED_PACKAGE]: Object.freeze({
     packageName: ENGINE_SCOPED_AFFECTED_PACKAGE,
     heapMb: ENGINE_SCOPED_AFFECTED_HEAP_MB,
@@ -1376,9 +1360,6 @@ export function createScopedAffectedMemoryEnvelopeEnv(packageName, env = process
 
   FNXC:TestInfrastructure 2026-06-21-16:28:
   FN-6874 showed the dashboard changed-mode affected lane can OOM/SIGKILL even with `FUSION_TEST_CONCURRENCY=1 FUSION_TEST_WORKSPACE_CONCURRENCY=1`, so worker fan-out alone is not the failure mode. Give each heavy scoped package its own bounded heap envelope while preserving caller env and keeping the finite changed-class watchdog outside this env so hangs still fail instead of being masked.
-
-  FNXC:TestInfrastructure 2026-06-25-14:20:
-  Node 25.6 changed-mode runs can couple CLI/core/desktop/compound-engineering startup into one recursive pnpm/vitest lane. Keep those integration-heavy packages as individual scoped affected lanes with single-worker envelopes instead of hiding their package-level timeouts behind global `--testTimeout` appeasement.
   */
   return {
     ...env,
@@ -1418,6 +1399,69 @@ export function partitionScopedAffectedPackages(packages) {
   return groups;
 }
 
+/**
+ * Fraction of a heavy package's affected-lane work that, once a non-test source
+ * file in its module graph changes, is delegated to the merge gate instead of
+ * run via the unbounded `vitest --changed` graph expansion. See the FNXC note on
+ * `changedSourceFilesAffectingPackage`.
+ */
+export function isTestFilePath(file) {
+  return /\.(test|spec)\.[cm]?[jt]sx?$/.test(file);
+}
+
+/*
+FNXC:TestInfrastructure 2026-06-25-14:30:
+Why this guard exists (root cause of "pnpm test takes >15min and gets killed"):
+A heavy memory-envelope package (@fusion/engine, @fusion/dashboard) runs its
+affected lane at workers=1 for OOM safety (FN-6854/FN-6874). `vitest --changed
+<base>` does UNBOUNDED transitive module-graph expansion: a single hub source
+edit (measured: a `packages/engine/src/self-healing.ts` change selected 8393
+matched test entries, and merely *listing* them took ~79s / 341s CPU). Running
+that near-full suite at one worker blows past the engine's per-task verification
+budget (VERIFICATION_TIMEOUT_WORKSPACE_MS = 900_000 ms / 15 min in
+packages/engine/src/verification-utils.ts). The engine then SIGKILLs `pnpm test`
+mid-run and RESTARTS the whole task, which re-runs the same lane -> stacked
+15-min timeouts (~9 observed in one task, ~2.8h wasted). The script's own 20-min
+`changed`-class watchdog ceiling is looser than that 15-min kill, so it never
+engages: the "bounded/changed-only" contract is silently violated.
+
+The fan-out only happens when a NON-test SOURCE file in the package's module
+graph (its own dir OR any transitive workspace-dependency dir, e.g. @fusion/core
+for engine) changes; a test-file-only diff never expands. So for heavy
+envelope packages we return the list of changed non-test source files affecting
+the package; when non-empty, the caller runs only the directly-changed test
+files (bounded to the diff) and delegates cross-cutting coverage to the
+merge-gate suite that already ran first in changed mode -- the same "delegate to
+the gate" philosophy as the reverse-dependent blast cap. `pnpm test:full`
+remains the explicit full sweep. This keeps the bounded path actually bounded
+without widening any timeout, adding retries, or raising worker/concurrency.
+*/
+export function changedSourceFilesAffectingPackage(
+  packageName,
+  changedFiles,
+  { packageDirByName, forwardDependencyMap },
+) {
+  const graphDirs = new Set();
+  const ownDir = packageDirByName?.get(packageName);
+  if (ownDir) graphDirs.add(ownDir);
+  for (const depName of collectTransitiveDependencies(packageName, forwardDependencyMap ?? new Map())) {
+    const depDir = packageDirByName?.get(depName);
+    if (depDir) graphDirs.add(depDir);
+  }
+  // The shared __test-utils__ tree is imported by virtually every package's
+  // vitest config; a change there also fans out wide, so treat it as in-graph.
+  graphDirs.add("packages/core/src/__test-utils__");
+
+  return (changedFiles ?? []).filter((file) => {
+    if (isTestFilePath(file)) return false;
+    if (isTestIrrelevantRootPath(file)) return false;
+    for (const dir of graphDirs) {
+      if (file === dir || file.startsWith(`${dir}/`)) return true;
+    }
+    return false;
+  });
+}
+
 export function normalizeForwardedArgs(argv) {
   const normalized = [];
 
@@ -1430,7 +1474,14 @@ export function normalizeForwardedArgs(argv) {
   return normalized;
 }
 
-export function buildAffectedRunCommandArgs({ packages, mode, comparisonBase, workspaceConcurrency, forwardedArgs = [] }) {
+export function buildAffectedRunCommandArgs({
+  packages,
+  mode,
+  comparisonBase,
+  workspaceConcurrency,
+  forwardedArgs = [],
+  scopeSelectorArgs = null,
+}) {
   const filterArgs = packages.flatMap((pkg) => ["--filter", pkg]);
   if (mode === "scoped") {
     return [
@@ -1439,8 +1490,7 @@ export function buildAffectedRunCommandArgs({ packages, mode, comparisonBase, wo
       "exec",
       "vitest",
       "run",
-      "--changed",
-      comparisonBase,
+      ...(scopeSelectorArgs ?? ["--changed", comparisonBase]),
       "--passWithNoTests",
       "--silent=passed-only",
       "--reporter=dot",
@@ -1651,22 +1701,71 @@ export async function main(argv = process.argv.slice(2)) {
     : [];
   const fallbackPkgs = activePackages.filter((pkg) => !scopable.includes(pkg));
 
+  // FNXC:TestInfrastructure 2026-06-25-14:30: heavy-package lanes that hit the
+  // wide-fan-out guard (below) are NOT fully tested — they run only their
+  // directly-changed test files or delegate entirely to the gate. Exclude them
+  // from the pass-cache so a later run re-evaluates instead of trusting a
+  // partial pass as a full one.
+  const notFullyTestedPackages = new Set();
+
   for (const { packages, mode, memoryEnvelopePackage = null } of [
     ...partitionScopedAffectedPackages(scopable).map((group) => ({ ...group, mode: "scoped" })),
     { packages: fallbackPkgs, mode: "full" },
   ]) {
     if (packages.length === 0) continue;
+
+    // Wide-fan-out guard: for a heavy memory-envelope package (engine/dashboard,
+    // always its own single-package group), a changed non-test source file in its
+    // module graph would make `vitest --changed` expand to ~the full suite and run
+    // it at workers=1 past the engine's 15-min verification timeout. Run only the
+    // directly-changed test files instead and delegate the rest to the merge gate.
+    let explicitChangedTestFiles = null;
+    if (mode === "scoped" && memoryEnvelopePackage) {
+      const pkg = packages[0];
+      const wideSource = changedSourceFilesAffectingPackage(pkg, changedFiles, {
+        packageDirByName,
+        forwardDependencyMap,
+      });
+      if (wideSource.length > 0) {
+        const pkgDir = packageDirByName.get(pkg) ?? `packages/${pkg.replace(/^@[^/]+\//, "")}`;
+        explicitChangedTestFiles = (changedFiles ?? []).filter(
+          (file) => isTestFilePath(file) && (file === pkgDir || file.startsWith(`${pkgDir}/`)),
+        );
+        notFullyTestedPackages.add(pkg);
+        if (explicitChangedTestFiles.length === 0) {
+          console.log(
+            `[test-changed] ${pkg}: a changed non-test source file (${wideSource[0]}${wideSource.length > 1 ? `, +${wideSource.length - 1} more` : ""}) ` +
+              "would fan `vitest --changed` out to ~the full suite at this heavy 1-worker lane; " +
+              "delegating cross-cutting coverage to the merge-gate suite (ran above). Run `pnpm test:full` for the full sweep.",
+          );
+          continue;
+        }
+        console.log(
+          `[test-changed] ${pkg}: changed non-test source detected; running ONLY the ${explicitChangedTestFiles.length} directly-changed test file(s) ` +
+            "and delegating wider `vitest --changed` coverage to the merge-gate suite (ran above).",
+        );
+      }
+    }
+
+    const pkgDirForScope = memoryEnvelopePackage
+      ? packageDirByName.get(packages[0]) ?? `packages/${packages[0].replace(/^@[^/]+\//, "")}`
+      : null;
+    const scopeSelectorArgs =
+      explicitChangedTestFiles && explicitChangedTestFiles.length > 0
+        ? explicitChangedTestFiles.map((file) => path.relative(pkgDirForScope, file))
+        : ["--changed", comparisonBase];
     const commandArgs = buildAffectedRunCommandArgs({
       packages,
       mode,
       comparisonBase,
       workspaceConcurrency,
       forwardedArgs,
+      scopeSelectorArgs,
     });
     const memoryEnvelopeLabel = memoryEnvelopePackage ? ` (${memoryEnvelopePackage} memory envelope)` : "";
     console.log(
       mode === "scoped"
-        ? `[test-changed] scoped (vitest --changed) run for: ${packages.join(", ")}${memoryEnvelopeLabel}`
+        ? `[test-changed] scoped (${explicitChangedTestFiles?.length ? "changed-files" : "vitest --changed"}) run for: ${packages.join(", ")}${memoryEnvelopeLabel}`
         : `[test-changed] full package-suite run for: ${packages.join(", ")} (no vitest config / no base)`,
     );
     await runMaybeIsolated("pnpm", commandArgs, {
@@ -1674,16 +1773,19 @@ export async function main(argv = process.argv.slice(2)) {
         ? createScopedAffectedMemoryEnvelopeEnv(memoryEnvelopePackage, isolatedHomeEnv)
         : isolatedHomeEnv,
       onBeforeAfterCheck: cleanupIsolatedHome,
-      // Scoped runs are proportional to the diff, so the tight "changed" ceiling
-      // applies; a hang fails fast instead of blocking the 60-min full backstop.
-      // Full fallback runs keep the generous backstop.
-      budgetMs: mode === "scoped" ? deriveBudgetMs({ klass: "changed" }) : FULL_SUITE_BUDGET_MS,
+      // Scoped runs are proportional to the diff, so the scoped affected ceiling
+      // stays below the executor's default workspace verification timeout. Full
+      // fallback runs keep the generous backstop.
+      budgetMs: mode === "scoped" ? deriveScopedAffectedBudgetMs() : FULL_SUITE_BUDGET_MS,
       label: `affected (${mode}): ${packages.join(", ")}`,
     });
   }
 
   // Tests passed — record in cache (never cache failures; process.exit on failure above).
-  recordCachePass(activePackages, packageDirByName, {
+  // Skip partially-tested/delegated heavy packages so a partial pass is never
+  // cached as a full one (FNXC:TestInfrastructure 2026-06-25-14:30).
+  const recordablePackages = activePackages.filter((pkg) => !notFullyTestedPackages.has(pkg));
+  recordCachePass(recordablePackages, packageDirByName, {
     noCache,
     forwardDependencyMap,
     memo: hashMemo,

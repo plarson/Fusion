@@ -109,6 +109,39 @@ Hidden until a file is selected; when selected it overlays the tree as the singl
   min-height: 0;
 }
 
+/*
+FNXC:RightDockFiles 2026-06-25-00:00:
+The dock Files viewer shares FileBrowserModal's native preview classes but needs dock-scoped flex sizing so image/video/audio/PDF previews fit both the compact single-panel stack and the two-pane pop-out without overflowing or showing the CodeMirror shell.
+*/
+.dock-files-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  overflow: auto;
+}
+
+.dock-files-preview__media {
+  min-width: 0;
+}
+
+.dock-files-preview .file-browser-preview-media--image,
+.dock-files-preview .file-browser-preview-media--video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.dock-files-preview .file-browser-preview-media--audio {
+  width: min(100%, calc(var(--space-xl) * 18));
+}
+
+.dock-files-preview .file-browser-preview-media--pdf {
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
 .dock-files-viewer__status {
   padding: var(--space-md);
   font-size: var(--font-size-xs);
@@ -202,4 +235,16 @@ DETERMINISTIC two-pane layout for the RightDockExpandModal pop-out. Driven by th
 /* BACK is meaningless when the tree is always visible in the two-pane split. */
 .dock-files-view--two-pane .dock-files-view__viewer .dock-files-viewer__back {
   display: none;
+}
+
+@media (max-width: 768px) {
+  .dock-files-preview {
+    padding: var(--space-md);
+  }
+
+  .dock-files-preview .file-browser-preview-media--image,
+  .dock-files-preview .file-browser-preview-media--video,
+  .dock-files-preview .file-browser-preview-media--pdf {
+    width: 100%;
+  }
 }

@@ -1,7 +1,7 @@
 // ScheduledTasksModal renders schedule/routine cards using .scheduling-*, .routine-*,
 // .schedule-form classes that live in ScriptsModal.css. Both modals share that file.
 import "./ScriptsModal.css";
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, Zap, Globe, Folder, X } from "lucide-react";
 import type { Routine, RoutineCreateInput } from "@fusion/core";
@@ -16,9 +16,8 @@ import {
 import { RoutineCard } from "./RoutineCard";
 import { RoutineEditor } from "./RoutineEditor";
 import type { ToastType } from "../hooks/useToast";
-import { useModalResizePersist } from "../hooks/useModalResizePersist";
-import { useOverlayDismiss } from "../hooks/useOverlayDismiss";
 import { useEmbeddedPresentation, type ModalPresentation } from "../hooks/useEmbeddedPresentation";
+import { FloatingWindow } from "./FloatingWindow";
 
 /** Polling interval for auto-refreshing the schedule/routine list (30 seconds). */
 const POLL_INTERVAL_MS = 30_000;
@@ -28,11 +27,11 @@ export type SchedulingScope = "global" | "project";
 
 /**
  * FNXC:AutomationsEmbedded 2026-06-22-00:00:
- * Automations can render either as a fixed modal overlay ("modal", the default and historical path) or inline
+ * Automations can render either as a draggable/resizable floating modal ("modal", the default path) or inline
  * as a main-content-area view ("embedded"). The embedded presentation fills the main panel like Command Center:
  * no overlay, no card/shadow/border chrome, a plain `.cc-header`-style title row, and a responsive two-pane
- * body (list + detail) that collapses to a single column below ~900px. The modal path is kept byte-identical;
- * modal-only behaviors (scroll lock via resize-persist, escape-to-close, overlay dismiss) are disabled when embedded.
+ * body (list + detail) that collapses to a single column below ~900px. Floating chrome and Escape-to-close are
+ * modal-only behaviors; the embedded presentation bypasses FloatingWindow entirely.
  */
 interface ScheduledTasksModalProps {
   onClose: () => void;
@@ -45,7 +44,7 @@ interface ScheduledTasksModalProps {
 
 export function ScheduledTasksModal({ onClose, addToast, projectId, presentation = "modal" }: ScheduledTasksModalProps) {
   const { t } = useTranslation("app");
-  const { isEmbedded, resizePersistEnabled, escapeEnabled } = useEmbeddedPresentation(presentation);
+  const { isEmbedded, escapeEnabled } = useEmbeddedPresentation(presentation);
   // Scope state: defaults to "project" when projectId exists, else "global"
   const [activeScope, setActiveScope] = useState<SchedulingScope>(() => projectId ? "project" : "global");
 
@@ -57,10 +56,6 @@ export function ScheduledTasksModal({ onClose, addToast, projectId, presentation
   const [lastRunOutput, setLastRunOutput] = useState<Record<string, { output: string; error?: string; success: boolean }>>({});
   // FNXC:AutomationsEmbedded 2026-06-22-00:00: Two-pane embedded layout tracks the routine selected in the left list to render its detail on the right.
   const [selectedRoutineId, setSelectedRoutineId] = useState<string | null>(null);
-
-  const modalRef = useRef<HTMLDivElement>(null);
-  // Resize-persist is a modal-only affordance; the embedded view fills its host and never resizes.
-  useModalResizePersist(modalRef, resizePersistEnabled, "fusion:automation-modal-size");
 
   // Build scope options for API calls
   const scopeOptions = useMemo(() => ({
@@ -123,8 +118,6 @@ export function ScheduledTasksModal({ onClose, addToast, projectId, presentation
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
   }, [onClose, routineView, escapeEnabled]);
-
-  const overlayDismissProps = useOverlayDismiss(onClose);
 
   // ── Routine CRUD handlers ───────────────────────────────────────────────
 
@@ -440,11 +433,25 @@ export function ScheduledTasksModal({ onClose, addToast, projectId, presentation
     );
   }
 
-  // ── Modal (fixed overlay) presentation ──────────────────────────────────
+  // ── Modal (floating window) presentation ────────────────────────────────
   return (
-    <div className="modal-overlay open" {...overlayDismissProps}>
-      <div ref={modalRef} className="modal modal-lg automation-modal" role="dialog" aria-modal="true" aria-labelledby="schedules-modal-title">
-        <div className="modal-header">
+    <FloatingWindow
+      windowKey="automation"
+      title={t("schedule.title", "Automations")}
+      onClose={onClose}
+      hideHeader
+      dragHandleSelector=".automation-modal__drag-handle"
+      className="floating-window--automation"
+      defaultSize={{ width: 720, height: 640 }}
+      minSize={{ width: 420, height: 360 }}
+      persistGeometryKey="floating-window:automation"
+    >
+      {/**
+       * FNXC:Automations 2026-06-26-00:00:
+       * FN-7036 moves the desktop Automations popup into the shared FloatingWindow shell so it matches Plan Mission and Workflow editor drag, resize, stack, clamp, and geometry-persistence behavior. Mobile remains full-screen through the ScriptsModal.css floating-window contract, while the embedded main-content presentation above bypasses all FloatingWindow chrome.
+       */}
+      <div className="modal modal-lg automation-modal" role="dialog" aria-modal="true" aria-labelledby="schedules-modal-title">
+        <div className="modal-header automation-modal__drag-handle">
           <div className="detail-title-row">
             <Zap size={20} className="icon-triage" />
             <h3 id="schedules-modal-title">{t("schedule.title", "Automations")}</h3>
@@ -460,6 +467,6 @@ export function ScheduledTasksModal({ onClose, addToast, projectId, presentation
           {renderContent()}
         </div>
       </div>
-    </div>
+    </FloatingWindow>
   );
 }

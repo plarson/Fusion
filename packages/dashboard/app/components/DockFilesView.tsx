@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowLeft, Maximize2, Save } from "lucide-react";
 import type { PluginDashboardViewContext } from "../plugins/types";
+import { downloadFileUrl } from "../api";
 import { useWorkspaceFileBrowser } from "../hooks/useWorkspaceFileBrowser";
 import { useWorkspaceFileEditor } from "../hooks/useWorkspaceFileEditor";
 import { getScopedItem, removeScopedItem, scopedKey, setScopedItem } from "../utils/projectStorage";
+import { getFilePreviewKind, IMAGE_PREVIEW_EXTENSIONS, VIDEO_PREVIEW_EXTENSIONS, AUDIO_PREVIEW_EXTENSIONS, PDF_PREVIEW_EXTENSIONS } from "../utils/file-preview-kind";
 import { FileBrowser } from "./FileBrowser";
 import { FileEditor } from "./FileEditor";
 import "./DockFilesView.css";
@@ -27,6 +29,30 @@ The compact dock Files view and the popped-out (expand) Files view are SEPARATE 
 Share the current-file path through scoped localStorage (`kb-dashboard-dock-files-current`, keyed per project via projectStorage). Selecting/clearing a file writes the key; on mount each instance reads it so the expand opens the SAME file the dock was showing. A `storage` listener keeps both instances live-synced when the other tab/instance changes selection.
 */
 export const DOCK_FILES_CURRENT_KEY = "kb-dashboard-dock-files-current";
+
+const BINARY_EXTENSIONS = new Set([
+  ...IMAGE_PREVIEW_EXTENSIONS,
+  ...VIDEO_PREVIEW_EXTENSIONS,
+  ...AUDIO_PREVIEW_EXTENSIONS,
+  ...PDF_PREVIEW_EXTENSIONS,
+  ".exe", ".dll", ".so", ".dylib",
+  ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+  ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".avi", ".mkv", ".flv",
+  ".woff", ".woff2", ".ttf", ".otf", ".eot",
+  ".wasm", ".bin",
+]);
+
+function isBinaryFile(filename?: string | null): boolean {
+  if (!filename) {
+    return false;
+  }
+  const dotIndex = filename.lastIndexOf(".");
+  if (dotIndex < 0) {
+    return false;
+  }
+  return BINARY_EXTENSIONS.has(filename.slice(dotIndex).toLowerCase());
+}
 
 /*
 FNXC:RightDockFiles 2026-06-22-00:00:
@@ -78,9 +104,22 @@ export function DockFilesView({ projectId, openFile, layout = "auto" }: DockFile
     return () => window.removeEventListener("storage", onStorage);
   }, [projectId]);
 
+  const selectedPreviewKind = useMemo(() => getFilePreviewKind(selectedFile), [selectedFile]);
+  const isPreviewOnlyFile = selectedPreviewKind !== null;
+  const isReadOnlyBinaryFile = Boolean(selectedFile && !isPreviewOnlyFile && isBinaryFile(selectedFile));
+  const previewUrl = useMemo(() => {
+    if (!selectedFile || !selectedPreviewKind) {
+      return null;
+    }
+    return downloadFileUrl("project", selectedFile, projectId);
+  }, [projectId, selectedFile, selectedPreviewKind]);
+
   /*
   FNXC:RightDockFiles 2026-06-22-16:28:
   The right-sidebar file viewer must be the same editor surface as the modal/mobile file browser: real workspace editor state, visible toolbar options, Preview/Edit for markdown, Line #, and Wrap. Use the shared editor hook instead of the old read-only content fetch so edits can be saved and the toolbar is not a reduced sidebar-only variant.
+
+  FNXC:RightDockFiles 2026-06-25-00:00:
+  Known image/video/audio/PDF selections render through browser-native previews loaded from the workspace-safe download route. Keep those preview-only files out of CodeMirror so binary bytes are never fetched as editor text; editable text keeps the existing FileEditor + Save path, while known non-preview binary extensions stay read-only without loading bytes as editor content.
   */
   const {
     content,
@@ -90,7 +129,7 @@ export function DockFilesView({ projectId, openFile, layout = "auto" }: DockFile
     error: contentError,
     save,
     hasChanges,
-  } = useWorkspaceFileEditor("project", selectedFile, Boolean(selectedFile), projectId);
+  } = useWorkspaceFileEditor("project", selectedFile, Boolean(selectedFile) && !isPreviewOnlyFile && !isReadOnlyBinaryFile, projectId);
 
   const handleBack = useCallback(() => selectFile(null), [selectFile]);
   const handlePopOut = useCallback(() => {
@@ -99,6 +138,9 @@ export function DockFilesView({ projectId, openFile, layout = "auto" }: DockFile
   const handleToggleLineNumbers = useCallback(() => setShowLineNumbers((current) => !current), []);
 
   const fileName = selectedFile ? selectedFile.split("/").pop() || selectedFile : "";
+  const selectedPreviewTitle = selectedFile
+    ? t("fileBrowser.previewTitle", "Preview for {{file}}", { file: selectedFile })
+    : "";
 
   // FNXC:Files 2026-06-22-00:00:
   // `data-selected` on the root lets the container query distinguish "no file selected" (narrow: viewer pane hidden so only the tree shows) from "file selected" (narrow: viewer pane covers the stack). When wide both panes are always visible regardless of this flag.
@@ -155,7 +197,7 @@ export function DockFilesView({ projectId, openFile, layout = "auto" }: DockFile
           >
             <Maximize2 size={14} />
           </button>
-          {selectedFile ? (
+          {selectedFile && !isPreviewOnlyFile && !isReadOnlyBinaryFile ? (
             <button
               type="button"
               className="btn btn-sm btn-primary dock-files-viewer__save"
@@ -172,6 +214,43 @@ export function DockFilesView({ projectId, openFile, layout = "auto" }: DockFile
           {!selectedFile ? (
             <div className="dock-files-viewer__status dock-files-viewer__empty" data-testid="right-dock-files-empty">
               {t("fileViewer.selectAFile", "Select a file")}
+            </div>
+          ) : previewUrl && selectedPreviewKind ? (
+            <div className={`file-browser-preview file-browser-preview--${selectedPreviewKind} dock-files-preview`}>
+              {selectedPreviewKind === "image" ? (
+                <img
+                  src={previewUrl}
+                  alt={selectedFile}
+                  className="file-browser-preview-media file-browser-preview-media--image dock-files-preview__media"
+                />
+              ) : null}
+              {selectedPreviewKind === "video" ? (
+                <video
+                  src={previewUrl}
+                  controls
+                  aria-label={selectedPreviewTitle}
+                  className="file-browser-preview-media file-browser-preview-media--video dock-files-preview__media"
+                />
+              ) : null}
+              {selectedPreviewKind === "audio" ? (
+                <audio
+                  src={previewUrl}
+                  controls
+                  aria-label={selectedPreviewTitle}
+                  className="file-browser-preview-media file-browser-preview-media--audio dock-files-preview__media"
+                />
+              ) : null}
+              {selectedPreviewKind === "pdf" ? (
+                <iframe
+                  src={previewUrl}
+                  title={selectedPreviewTitle}
+                  className="file-browser-preview-media file-browser-preview-media--pdf dock-files-preview__media"
+                />
+              ) : null}
+            </div>
+          ) : isReadOnlyBinaryFile ? (
+            <div className="dock-files-viewer__status" data-testid="right-dock-files-binary-read-only">
+              {t("fileBrowser.binaryReadOnly", "Binary file — read only")}
             </div>
           ) : contentLoading ? (
             <div className="dock-files-viewer__status">{t("common.loading", "Loading...")}</div>

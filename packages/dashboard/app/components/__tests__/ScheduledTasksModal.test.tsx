@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ScheduledTasksModal } from "../ScheduledTasksModal";
@@ -86,6 +86,16 @@ vi.mock("../CustomModelDropdown", () => ({
   ),
 }));
 
+function setViewport(width: number, height: number) {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+}
+
+function stubPointerCapture(element: HTMLElement) {
+  Object.defineProperty(element, "setPointerCapture", { configurable: true, value: vi.fn() });
+  Object.defineProperty(element, "releasePointerCapture", { configurable: true, value: vi.fn() });
+}
+
 function makeRoutine(overrides: Partial<Routine> = {}): Routine {
   return {
     id: "routine-001",
@@ -114,13 +124,17 @@ describe("ScheduledTasksModal", () => {
     mockConfirm.mockResolvedValue(true);
     mockFetchAutomations.mockResolvedValue([]);
     mockFetchRoutines.mockResolvedValue([]);
+    localStorage.removeItem("floating-window:automation");
+    localStorage.removeItem("fusion:automation-modal-size");
+    setViewport(1200, 900);
   });
 
   it("renders the unified automations modal", async () => {
     render(<ScheduledTasksModal onClose={onClose} addToast={addToast} />);
 
     expect(screen.getByText("Automations")).toBeDefined();
-    expect(screen.getByRole("dialog").getAttribute("aria-labelledby")).toBe("schedules-modal-title");
+    const dialogs = screen.getAllByRole("dialog");
+    expect(dialogs.some((dialog) => dialog.getAttribute("aria-labelledby") === "schedules-modal-title")).toBe(true);
     expect(screen.getByRole("button", { name: "Close" })).toBeDefined();
     await waitFor(() => {
       expect(screen.getByText("No automations yet")).toBeDefined();
@@ -128,6 +142,76 @@ describe("ScheduledTasksModal", () => {
     expect(screen.getByText("Create your first automation")).toBeDefined();
     expect(screen.getByText("0 automations")).toBeDefined();
     expect(mockFetchAutomations).not.toHaveBeenCalled();
+  });
+
+  it("renders Automations inside a headerless floating window with default geometry", async () => {
+    render(<ScheduledTasksModal onClose={onClose} addToast={addToast} />);
+
+    const panel = screen.getByTestId("floating-window-automation");
+    expect(panel).toHaveClass("floating-window--automation");
+    expect(panel).toHaveClass("floating-window--headerless");
+    expect(panel.style.width).toBe("720px");
+    expect(panel.style.height).toBe("640px");
+    expect(screen.queryByTestId("floating-window-drag-handle-automation")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Close" })).toHaveLength(1);
+
+    const title = screen.getByText("Automations");
+    expect(title.closest(".automation-modal__drag-handle")).toBeTruthy();
+
+    await waitFor(() => {
+      expect(screen.getByText("No automations yet")).toBeDefined();
+    });
+  });
+
+  it("drags and resizes the desktop Automations floating window", async () => {
+    render(<ScheduledTasksModal onClose={onClose} addToast={addToast} />);
+
+    const panel = screen.getByTestId("floating-window-automation");
+    const header = screen.getByText("Automations").closest(".automation-modal__drag-handle") as HTMLElement;
+    stubPointerCapture(panel);
+
+    const initialLeft = Number.parseFloat(panel.style.left);
+    const initialTop = Number.parseFloat(panel.style.top);
+
+    act(() => {
+      fireEvent.pointerDown(header, { pointerId: 11, clientX: 120, clientY: 80 });
+      fireEvent.pointerMove(panel, { pointerId: 11, clientX: 220, clientY: 140 });
+      fireEvent.pointerUp(panel, { pointerId: 11, clientX: 220, clientY: 140 });
+    });
+
+    await waitFor(() => {
+      expect(Number.parseFloat(panel.style.left)).toBeGreaterThan(initialLeft);
+      expect(Number.parseFloat(panel.style.top)).toBeGreaterThan(initialTop);
+    });
+
+    const resizeHandle = screen.getByTestId("floating-window-resize-se") as HTMLElement;
+    stubPointerCapture(resizeHandle);
+    const widthAfterDrag = Number.parseFloat(panel.style.width);
+    const heightAfterDrag = Number.parseFloat(panel.style.height);
+
+    act(() => {
+      fireEvent.pointerDown(resizeHandle, { pointerId: 12, clientX: 700, clientY: 600 });
+      fireEvent.pointerMove(resizeHandle, { pointerId: 12, clientX: 760, clientY: 650 });
+      fireEvent.pointerUp(resizeHandle, { pointerId: 12, clientX: 760, clientY: 650 });
+    });
+
+    await waitFor(() => {
+      expect(Number.parseFloat(panel.style.width)).toBeGreaterThan(widthAfterDrag);
+      expect(Number.parseFloat(panel.style.height)).toBeGreaterThan(heightAfterDrag);
+    });
+  });
+
+  it("keeps mobile Automations full-screen and hides resize handles by CSS contract", () => {
+    const source = readFileSync(resolve(__dirname, "../ScriptsModal.css"), "utf8");
+    const mobileBlock = source
+      .match(/@media \(max-width: 768px\)\s*\{[\s\S]*?\n\}/g)
+      ?.find((block) => block.includes(".floating-window--automation")) ?? "";
+
+    expect(mobileBlock).toContain(".floating-window--automation");
+    expect(mobileBlock).toContain("width: 100vw !important;");
+    expect(mobileBlock).toContain("height: 100dvh !important;");
+    expect(mobileBlock).toContain(".floating-window--automation .floating-window__resize-handle");
+    expect(mobileBlock).toContain("display: none;");
   });
 
   it("shows routine cards and the new automation button when routines exist", async () => {
@@ -146,17 +230,17 @@ describe("ScheduledTasksModal", () => {
 
   it("renders scope controls in the toolbar below the modal header", async () => {
     mockFetchRoutines.mockResolvedValue([makeRoutine({ name: "Scoped Routine" })]);
-    const { container } = render(<ScheduledTasksModal onClose={onClose} addToast={addToast} />);
+    render(<ScheduledTasksModal onClose={onClose} addToast={addToast} />);
 
     await waitFor(() => {
       expect(screen.getByText("Scoped Routine")).toBeDefined();
     });
 
-    const header = container.querySelector(".modal-header");
-    const toolbar = container.querySelector(".scheduling-toolbar");
-    const toolbarLeft = container.querySelector(".scheduling-toolbar-left");
-    const toolbarRight = container.querySelector(".scheduling-toolbar-right");
-    const scopeSelector = container.querySelector(".scheduling-scope-selector");
+    const header = document.querySelector(".modal-header");
+    const toolbar = document.querySelector(".scheduling-toolbar");
+    const toolbarLeft = document.querySelector(".scheduling-toolbar-left");
+    const toolbarRight = document.querySelector(".scheduling-toolbar-right");
+    const scopeSelector = document.querySelector(".scheduling-scope-selector");
     const newAutomationButton = screen.getByRole("button", { name: /new automation/i });
 
     expect(header).toBeTruthy();
@@ -386,7 +470,8 @@ describe("ScheduledTasksModal", () => {
       });
       expect(screen.getByText("Automations")).toBeDefined();
       expect(container.querySelector(".automations-embedded")).not.toBeNull();
-      // No fixed overlay backdrop, no dialog role, no modal close button in embedded mode.
+      // No floating window, fixed overlay backdrop, dialog role, or modal close button in embedded mode.
+      expect(screen.queryByTestId("floating-window-automation")).toBeNull();
       expect(container.querySelector(".modal-overlay")).toBeNull();
       expect(screen.queryByRole("dialog")).toBeNull();
       expect(screen.queryByRole("button", { name: "Close" })).toBeNull();

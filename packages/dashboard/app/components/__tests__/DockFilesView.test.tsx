@@ -12,11 +12,24 @@ Proves the current-file path is shared between the dock instance and the popped-
 */
 
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (_key: string, fallback?: string) => fallback ?? _key }),
+  useTranslation: () => ({
+    t: (_key: string, fallback?: string, options?: Record<string, string>) => {
+      const value = fallback ?? _key;
+      return options?.file ? value.replace("{{file}}", options.file) : value;
+    },
+  }),
 }));
 
-const entries: FileNode[] = [
+let entries: FileNode[] = [];
+
+const defaultEntries: FileNode[] = [
   { name: "readme.md", type: "file", size: 10, mtime: "2026-01-15T10:30:00Z" },
+  { name: "changed.txt", type: "file", size: 12, mtime: "2026-01-15T10:30:00Z" },
+  { name: "assets/Logo.PNG", type: "file", size: 1024, mtime: "2026-01-15T10:30:00Z" },
+  { name: "media/demo.mp4", type: "file", size: 2048, mtime: "2026-01-15T10:30:00Z" },
+  { name: "sounds/theme.MP3", type: "file", size: 2048, mtime: "2026-01-15T10:30:00Z" },
+  { name: "docs/manual.PDF", type: "file", size: 4096, mtime: "2026-01-15T10:30:00Z" },
+  { name: "build/output.bin", type: "file", size: 8192, mtime: "2026-01-15T10:30:00Z" },
 ];
 
 const dockFilesCss = readFileSync(resolve(__dirname, "../DockFilesView.css"), "utf8");
@@ -34,9 +47,42 @@ vi.mock("../../hooks/useWorkspaceFileBrowser", () => ({
 
 const mockFetchContent = vi.fn(() => Promise.resolve({ content: "# hi" }));
 const mockSaveContent = vi.fn(() => Promise.resolve({ mtime: "2026-01-15T10:31:00Z" }));
+const mockDownloadFileUrl = vi.fn((workspace: string, filePath: string, projectId?: string) => {
+  const params = new URLSearchParams({ workspace });
+  if (projectId) params.set("projectId", projectId);
+  return `/api/files/${encodeURIComponent(filePath)}?${params.toString()}`;
+});
 vi.mock("../../api", () => ({
   fetchWorkspaceFileContent: (...args: unknown[]) => mockFetchContent(...(args as [])),
   saveWorkspaceFileContent: (...args: unknown[]) => mockSaveContent(...(args as [])),
+  downloadFileUrl: (...args: unknown[]) => mockDownloadFileUrl(...(args as [string, string, string | undefined])),
+}));
+
+const capturedEditorHookCalls: Array<{
+  workspace: string;
+  filePath: string | null;
+  enabled: boolean;
+  projectId?: string;
+}> = [];
+const mockSetContent = vi.fn();
+const mockSave = vi.fn(() => Promise.resolve());
+
+vi.mock("../../hooks/useWorkspaceFileEditor", () => ({
+  useWorkspaceFileEditor: (workspace: string, filePath: string | null, enabled: boolean, projectId?: string) => {
+    capturedEditorHookCalls.push({ workspace, filePath, enabled, projectId });
+    const hasChanges = filePath === "changed.txt";
+    return {
+      content: filePath ? `content for ${filePath}` : "",
+      setContent: mockSetContent,
+      originalContent: hasChanges ? "original" : filePath ? `content for ${filePath}` : "",
+      loading: false,
+      saving: false,
+      error: null,
+      save: mockSave,
+      hasChanges,
+      mtime: null,
+    };
+  },
 }));
 
 const capturedFileEditorProps: Array<{
@@ -82,9 +128,14 @@ const KEY = scopedKey("kb-dashboard-dock-files-current", PROJECT_ID);
 describe("DockFilesView shared current-file state", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    entries = [...defaultEntries];
     mockFetchContent.mockClear();
     mockSaveContent.mockClear();
+    mockDownloadFileUrl.mockClear();
+    mockSetContent.mockClear();
+    mockSave.mockClear();
     capturedFileEditorProps.length = 0;
+    capturedEditorHookCalls.length = 0;
   });
   afterEach(() => cleanup());
 
@@ -164,5 +215,120 @@ describe("DockFilesView shared current-file state", () => {
     expect(latest?.readOnly).toBeFalsy();
     expect(latest?.onToggleLineNumbers).toEqual(expect.any(Function));
     expect(screen.getByTestId("right-dock-files-save")).toBeDisabled();
+  });
+
+  it.each([
+    {
+      layout: "auto" as const,
+      file: "assets/Logo.PNG",
+      selector: "img.file-browser-preview-media--image",
+      attr: "src",
+      expectedEnabled: false,
+    },
+    {
+      layout: "auto" as const,
+      file: "media/demo.mp4",
+      selector: "video.file-browser-preview-media--video",
+      attr: "src",
+      expectedEnabled: false,
+    },
+    {
+      layout: "auto" as const,
+      file: "sounds/theme.MP3",
+      selector: "audio.file-browser-preview-media--audio",
+      attr: "src",
+      expectedEnabled: false,
+    },
+    {
+      layout: "auto" as const,
+      file: "docs/manual.PDF",
+      selector: "iframe.file-browser-preview-media--pdf",
+      attr: "src",
+      expectedEnabled: false,
+    },
+    {
+      layout: "two-pane" as const,
+      file: "assets/Logo.PNG",
+      selector: "img.file-browser-preview-media--image",
+      attr: "src",
+      expectedEnabled: false,
+    },
+    {
+      layout: "two-pane" as const,
+      file: "media/demo.mp4",
+      selector: "video.file-browser-preview-media--video",
+      attr: "src",
+      expectedEnabled: false,
+    },
+    {
+      layout: "two-pane" as const,
+      file: "sounds/theme.MP3",
+      selector: "audio.file-browser-preview-media--audio",
+      attr: "src",
+      expectedEnabled: false,
+    },
+    {
+      layout: "two-pane" as const,
+      file: "docs/manual.PDF",
+      selector: "iframe.file-browser-preview-media--pdf",
+      attr: "src",
+      expectedEnabled: false,
+    },
+  ])("renders $file as a native preview in $layout layout without loading the editor", async ({ layout, file, selector, attr }) => {
+    /*
+    FNXC:RightDockFiles 2026-06-25-00:00:
+    Symptom verification: browser-previewable files in both compact and pop-out dock layouts must use native preview elements backed by downloadFileUrl, not the FileEditor/CodeMirror binary-text path.
+    */
+    render(<DockFilesView projectId={PROJECT_ID} layout={layout} />);
+    fireEvent.click(screen.getByText(file));
+
+    await waitFor(() => expect(document.querySelector(selector)).toBeInTheDocument());
+    const preview = document.querySelector(selector);
+    expect(preview).toHaveAttribute(attr, `/api/files/${encodeURIComponent(file)}?workspace=project&projectId=${PROJECT_ID}`);
+    if (selector.startsWith("video") || selector.startsWith("audio")) {
+      expect(preview).toHaveAttribute("controls");
+      expect(preview).toHaveAttribute("aria-label", `Preview for ${file}`);
+    }
+    if (selector.startsWith("iframe")) {
+      expect(preview).toHaveAttribute("title", `Preview for ${file}`);
+    }
+    expect(screen.queryByTestId("mock-file-editor")).toBeNull();
+    expect(screen.queryByTestId("right-dock-files-save")).toBeNull();
+    expect(capturedEditorHookCalls.at(-1)).toMatchObject({ workspace: "project", filePath: file, enabled: false, projectId: PROJECT_ID });
+    expect(mockDownloadFileUrl).toHaveBeenLastCalledWith("project", file, PROJECT_ID);
+  });
+
+  it("keeps text files editable with Save when changes exist", async () => {
+    render(<DockFilesView projectId={PROJECT_ID} layout="auto" />);
+    fireEvent.click(screen.getByText("changed.txt"));
+
+    await waitFor(() => expect(screen.getByTestId("mock-file-editor")).toHaveAttribute("data-file-path", "changed.txt"));
+    expect(screen.getByTestId("right-dock-files-save")).toBeEnabled();
+    expect(document.querySelector(".file-browser-preview")).not.toBeInTheDocument();
+    expect(capturedEditorHookCalls.at(-1)).toMatchObject({ workspace: "project", filePath: "changed.txt", enabled: true, projectId: PROJECT_ID });
+  });
+
+  it("keeps known non-preview binary files read-only without rendering garbage editor content", () => {
+    render(<DockFilesView projectId={PROJECT_ID} layout="two-pane" />);
+    fireEvent.click(screen.getByText("build/output.bin"));
+
+    expect(screen.getByTestId("right-dock-files-binary-read-only")).toHaveTextContent("Binary file — read only");
+    expect(screen.queryByTestId("mock-file-editor")).toBeNull();
+    expect(screen.queryByTestId("right-dock-files-save")).toBeNull();
+    expect(document.querySelector(".file-browser-preview")).not.toBeInTheDocument();
+    expect(capturedEditorHookCalls.at(-1)).toMatchObject({ workspace: "project", filePath: "build/output.bin", enabled: false, projectId: PROJECT_ID });
+  });
+
+  it("clears stale preview state when switching from a preview file back to text", async () => {
+    render(<DockFilesView projectId={PROJECT_ID} layout="auto" />);
+    fireEvent.click(screen.getByText("assets/Logo.PNG"));
+    await waitFor(() => expect(document.querySelector("img.file-browser-preview-media--image")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText("readme.md"));
+    await waitFor(() => expect(screen.getByTestId("mock-file-editor")).toHaveAttribute("data-file-path", "readme.md"));
+
+    expect(document.querySelector("img.file-browser-preview-media--image")).not.toBeInTheDocument();
+    expect(screen.getByTestId("right-dock-files-save")).toBeDisabled();
+    expect(capturedEditorHookCalls.at(-1)).toMatchObject({ workspace: "project", filePath: "readme.md", enabled: true, projectId: PROJECT_ID });
   });
 });

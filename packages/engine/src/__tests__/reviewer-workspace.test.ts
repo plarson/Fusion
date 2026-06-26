@@ -336,7 +336,7 @@ describe("FN-803 — validated external Fusion checkout review routing", () => {
     });
   });
 
-  it("rejects prompt-only, missing, non-git, and non-canonical outside checkouts", async () => {
+  it("rejects prompt-only, malformed, missing, non-git, and non-canonical outside checkouts", async () => {
     const promptOnly = makeTask({
       worktree: ATLAS_TASK_WORKTREE,
       prompt: "Expected implementation checkout: /Users/plarson/src/Fusion-local-runtime",
@@ -345,6 +345,27 @@ describe("FN-803 — validated external Fusion checkout review routing", () => {
       ok: true,
       cwd: ATLAS_TASK_WORKTREE,
       source: "task-worktree",
+    });
+
+    await expect(resolveReviewCheckoutForTask(externalCheckoutTask({
+      sourceMetadata: { externalReviewCheckout: CANONICAL_FUSION_CHECKOUT },
+    }), ATLAS_TASK_WORKTREE, { canonicalFusionRuntimeCheckout: CANONICAL_FUSION_CHECKOUT })).resolves.toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("must be structured"),
+    });
+
+    await expect(resolveReviewCheckoutForTask(externalCheckoutTask({
+      sourceMetadata: { externalReviewCheckout: { kind: "other-runtime", path: CANONICAL_FUSION_CHECKOUT } },
+    }), ATLAS_TASK_WORKTREE, { canonicalFusionRuntimeCheckout: CANONICAL_FUSION_CHECKOUT })).resolves.toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("not supported"),
+    });
+
+    await expect(resolveReviewCheckoutForTask(externalCheckoutTask({
+      sourceMetadata: { externalReviewCheckout: { kind: "canonical-fusion-runtime" } },
+    }), ATLAS_TASK_WORKTREE, { canonicalFusionRuntimeCheckout: CANONICAL_FUSION_CHECKOUT })).resolves.toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("path is missing"),
     });
 
     await expect(resolveReviewCheckoutForTask(externalCheckoutTask({

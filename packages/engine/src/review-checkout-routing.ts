@@ -31,8 +31,9 @@ function normalizeMetadataEntries(raw: unknown): ExternalReviewCheckoutMetadata[
   if (raw == null) return undefined;
   const values = Array.isArray(raw) ? raw : [raw];
   return values.map((value) => {
-    if (typeof value === "string") return { kind: "canonical-fusion-runtime", path: value };
-    if (value && typeof value === "object") return value as ExternalReviewCheckoutMetadata;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return value as ExternalReviewCheckoutMetadata;
+    }
     return { kind: undefined, path: undefined };
   });
 }
@@ -88,6 +89,9 @@ export async function resolveReviewCheckoutForTask(
 
   const resolved = new Set<string>();
   for (const entry of entries) {
+    if (entry.kind === undefined && entry.path === undefined) {
+      return { ok: false, reason: "external review checkout metadata must be structured with kind and path" };
+    }
     if (entry.kind !== "canonical-fusion-runtime") {
       return { ok: false, reason: "external review checkout metadata kind is not supported" };
     }

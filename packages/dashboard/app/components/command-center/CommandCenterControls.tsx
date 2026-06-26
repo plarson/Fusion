@@ -4,6 +4,8 @@ import { Power } from "lucide-react";
 import { DEFAULT_PROJECT_SETTINGS, type ColorTheme, type ThemeMode } from "@fusion/core";
 import { fetchConfig, fetchSettings, updateSettings } from "../../api/legacy";
 import { useAppSettings } from "../../hooks/useAppSettings";
+// FNXC:GlobalConcurrencyControls 2026-06-25-22:45: Concurrency card adopts the shared global-concurrency hook so it and the footer EngineControlMenu read/write ONE source of truth (no more duplicated fetch/debounce/clobber logic).
+import { useGlobalConcurrency } from "../../hooks/useGlobalConcurrency";
 import { ThemeDropdown } from "../ThemeDropdown";
 import type { TaskView } from "../../hooks/useViewState";
 import "./CommandCenterControls.css";
@@ -79,6 +81,8 @@ export function CommandCenterControls({ projectId, colorTheme, themeMode, shadcn
   const [concurrencyState, setConcurrencyState] = useState<AsyncState<ConcurrencyValues>>({ status: "loading", data: null, error: null });
   const [concurrencyDirty, setConcurrencyDirty] = useState(false);
   const [concurrencySaveState, setConcurrencySaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  // FNXC:GlobalConcurrencyControls 2026-06-25-22:45: No activeWhen — the card is mounted only while visible, so it fetches on mount and flushes pending writes on unmount via the shared hook.
+  const gc = useGlobalConcurrency();
 
   useEffect(() => {
     let cancelled = false;
@@ -145,6 +149,19 @@ export function CommandCenterControls({ projectId, colorTheme, themeMode, shadcn
 
   const effectiveGlobalPaused = globalPaused;
   const concurrencyValues = concurrencyState.data ?? DEFAULT_CONCURRENCY_VALUES;
+  // FNXC:GlobalConcurrencyControls 2026-06-25-22:45: Mirror the per-project slider save-state labels for the shared global cap.
+  // FNXC:GlobalConcurrencyControls 2026-06-26-06:05: Explicit load-error branch — a failed initial load leaves saveState "idle", so the label otherwise fell through to "Ready" while the slider was disabled and an error alert shown.
+  const globalSaveLabel = gc.status === "loading" || gc.status === "idle"
+    ? t("commandCenter.controls.status.loading", "Loading…")
+    : gc.status === "error"
+    ? t("commandCenter.controls.status.loadError", "Load failed")
+    : gc.saveState === "saving"
+      ? t("commandCenter.controls.status.saving", "Saving…")
+      : gc.saveState === "saved"
+        ? t("commandCenter.controls.status.saved", "Saved")
+        : gc.saveState === "error"
+          ? t("commandCenter.controls.status.saveError", "Save failed")
+          : t("commandCenter.controls.status.ready", "Ready");
 
   /*
   FNXC:CommandCenter 2026-06-20-00:20:
@@ -239,6 +256,32 @@ export function CommandCenterControls({ projectId, colorTheme, themeMode, shadcn
             </span>
           </div>
           <div className="cc-controls-sliders">
+            {/*
+            FNXC:GlobalConcurrencyControls 2026-06-25-14:10:
+            Operators need to adjust the global cross-project concurrency cap from the footer engine menu and the dashboard Concurrency card, not just the Settings modal; global cap is distinct from per-project maxConcurrent and persists via the central /api/global-concurrency endpoint.
+            */}
+            <label className="cc-controls-slider cc-controls-slider--global" htmlFor="cc-global-max-concurrent">
+              <span className="cc-controls-slider-label">
+                {t("settings.scheduling.globalMaxConcurrent", "Global Max Concurrent")}
+                <strong>{gc.value}</strong>
+              </span>
+              <small className="cc-controls-slider-caption">{t("settings.scheduling.maximumConcurrentAgentsAcrossAllProjects", "Maximum concurrent agents across all projects")}</small>
+              <input
+                id="cc-global-max-concurrent"
+                className="cc-controls-touch-slider"
+                type="range"
+                min={gc.min}
+                max={gc.sliderMax}
+                value={gc.value}
+                disabled={!gc.interactive}
+                onChange={(event) => gc.setValue(event.target.value)}
+              />
+              {/* FNXC:GlobalConcurrencyControls 2026-06-25-22:45: Surface the shared cap's save-state (and a fetch-error message that the card previously lacked) so operators see Saving…/Saved/Save failed and know when the slider is non-interactive due to a load failure. */}
+              <span className={`cc-controls-save-state cc-controls-save-state--${gc.saveState}`} aria-live="polite">
+                {globalSaveLabel}
+              </span>
+              {gc.status === "error" ? <small className="cc-controls-error" role="alert">{t("commandCenter.controls.concurrency.error", "Unable to load concurrency settings")}</small> : null}
+            </label>
             <label className="cc-controls-slider" htmlFor="cc-max-concurrent">
               <span className="cc-controls-slider-label">
                 {t("commandCenter.controls.concurrency.maxConcurrent", "Max concurrent tasks")}

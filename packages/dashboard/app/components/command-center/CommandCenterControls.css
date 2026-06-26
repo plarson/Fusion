@@ -90,6 +90,18 @@
   font-size: 0.8125rem;
 }
 
+/* FNXC:GlobalConcurrencyControls 2026-06-25-14:10: The global cap is a cross-project setting; span it full-width at the top of the Concurrency card and separate it from the per-project sliders with a divider plus an "Across all projects" caption. */
+.cc-controls-slider--global {
+  grid-column: 1 / -1;
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--border);
+}
+
+.cc-controls-slider-caption {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
 .cc-controls-slider-label {
   display: flex;
   align-items: center;

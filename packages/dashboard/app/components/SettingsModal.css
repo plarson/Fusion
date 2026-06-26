@@ -1778,6 +1778,55 @@ Settings section headings should preserve hierarchy through spacing and type onl
   color: var(--text-muted);
 }
 
+/*
+FNXC:SettingsScopeGrouping 2026-06-25-10:42:
+Mobile settings must make clear which controls are global (all projects) vs project-scoped; group scheduling fields under labeled Global/This-project subheadings with a scope badge so operators don't mistake the global concurrency cap for a per-project setting.
+The header row wraps so the badge drops below the heading on narrow widths instead of overflowing.
+*/
+.settings-scope-group {
+  margin-top: var(--space-md);
+}
+
+.settings-scope-group-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.settings-scope-group-header .settings-section-heading {
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+
+.settings-scope-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.settings-scope-badge--global {
+  background-color: color-mix(in srgb, var(--accent, #4a90e2) 18%, transparent);
+  color: var(--accent, #4a90e2);
+}
+
+.settings-scope-badge--project {
+  background-color: color-mix(in srgb, var(--text-muted) 15%, transparent);
+  color: var(--text-muted);
+}
+
+.settings-scope-caption {
+  display: block;
+  margin: var(--space-xs) 0 var(--space-md);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .settings-description {
   font-size: 13px;
   color: var(--text-dim);

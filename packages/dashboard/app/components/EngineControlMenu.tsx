@@ -5,6 +5,8 @@ import { DEFAULT_PROJECT_SETTINGS } from "@fusion/core";
 import { Pause, Play, SlidersHorizontal, Square } from "lucide-react";
 import { fetchConfig, fetchSettings, updateSettings } from "../api/legacy";
 import { useAppSettings } from "../hooks/useAppSettings";
+// FNXC:GlobalConcurrencyControls 2026-06-25-22:45: Footer menu adopts the shared global-concurrency hook so it and the Command Center card read/write ONE source of truth (no more duplicated fetch/debounce/clobber logic).
+import { useGlobalConcurrency } from "../hooks/useGlobalConcurrency";
 
 export interface EngineControlMenuHandle {
   open: () => void;
@@ -70,6 +72,8 @@ export const EngineControlMenu = forwardRef<EngineControlMenuHandle, EngineContr
   const [concurrencyState, setConcurrencyState] = useState<AsyncState<ConcurrencyValues>>({ status: "idle", data: null, error: null });
   const [concurrencyDirty, setConcurrencyDirty] = useState(false);
   const [concurrencySaveState, setConcurrencySaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  // FNXC:GlobalConcurrencyControls 2026-06-25-22:45: Fetch is gated on the menu being open; the hook flushes any pending debounced write when `open` flips false.
+  const gc = useGlobalConcurrency({ activeWhen: open });
 
   const closeMenu = useCallback(() => setOpen(false), []);
   const openMenu = useCallback(() => setOpen(true), []);
@@ -167,6 +171,19 @@ export const EngineControlMenu = forwardRef<EngineControlMenuHandle, EngineContr
   };
 
   const concurrencyValues = concurrencyState.data ?? DEFAULT_CONCURRENCY_VALUES;
+  // FNXC:GlobalConcurrencyControls 2026-06-25-22:45: Mirror the per-project slider save-state labels for the shared global cap (Loading…/Load failed/Saving…/Saved/Save failed/Ready).
+  // FNXC:GlobalConcurrencyControls 2026-06-26-06:05: A failed initial load leaves saveState "idle", so without an explicit error branch the label fell through to "Ready" while the slider was disabled and an error alert was shown. Surface the load error instead.
+  const globalSaveLabel = gc.status === "loading" || gc.status === "idle"
+    ? t("commandCenter.controls.status.loading", "Loading…")
+    : gc.status === "error"
+    ? t("commandCenter.controls.status.loadError", "Load failed")
+    : gc.saveState === "saving"
+      ? t("commandCenter.controls.status.saving", "Saving…")
+      : gc.saveState === "saved"
+        ? t("commandCenter.controls.status.saved", "Saved")
+        : gc.saveState === "error"
+          ? t("commandCenter.controls.status.saveError", "Save failed")
+          : t("commandCenter.controls.status.ready", "Ready");
   const saveLabel = concurrencyState.status === "loading"
     ? t("commandCenter.controls.status.loading", "Loading…")
     : concurrencySaveState === "saving"
@@ -217,6 +234,37 @@ export const EngineControlMenu = forwardRef<EngineControlMenuHandle, EngineContr
               {enginePaused ? <Play size={16} aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}
               <span>{enginePaused ? t("header.resumeScheduling", "Resume scheduling") : t("header.pauseTriage", "Pause triage")}</span>
             </button>
+          </div>
+
+          {/*
+          FNXC:GlobalConcurrencyControls 2026-06-25-14:10:
+          Operators need to adjust the global cross-project concurrency cap from the footer engine menu and the dashboard Concurrency card, not just the Settings modal; global cap is distinct from per-project maxConcurrent and persists via the central /api/global-concurrency endpoint.
+          */}
+          <div className="engine-control-menu__section engine-control-menu__section--sliders engine-control-menu__section--global">
+            <div className="engine-control-menu__section-header">
+              <span>{t("settings.scheduling.globalMaxConcurrent", "Global Max Concurrent")}</span>
+              <span className="engine-control-menu__scope-caption">{t("commandCenter.controls.scope.allProjects", "All projects")}</span>
+              <span className={`engine-control-menu__save-state engine-control-menu__save-state--${gc.saveState}`} aria-live="polite">
+                {globalSaveLabel}
+              </span>
+            </div>
+            <label className="engine-control-menu__slider" htmlFor="engine-control-global-max-concurrent">
+              <span className="engine-control-menu__slider-label">
+                {t("settings.scheduling.maximumConcurrentAgentsAcrossAllProjects", "Maximum concurrent agents across all projects")}
+                <strong>{gc.value}</strong>
+              </span>
+              <input
+                id="engine-control-global-max-concurrent"
+                className="engine-control-menu__range input"
+                type="range"
+                min={gc.min}
+                max={gc.sliderMax}
+                value={gc.value}
+                disabled={!gc.interactive}
+                onChange={(event) => gc.setValue(event.target.value)}
+              />
+            </label>
+            {gc.status === "error" ? <p className="engine-control-menu__error" role="alert">{t("commandCenter.controls.concurrency.error", "Unable to load concurrency settings")}</p> : null}
           </div>
 
           <div className="engine-control-menu__section engine-control-menu__section--sliders">

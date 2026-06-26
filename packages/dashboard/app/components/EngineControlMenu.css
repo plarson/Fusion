@@ -71,6 +71,14 @@
   font-weight: 500;
 }
 
+/* FNXC:GlobalConcurrencyControls 2026-06-25-22:45: "All projects" scope caption sits between the global-cap title and its save-state indicator; muted so the save-state remains the emphasized signal. */
+.engine-control-menu__scope-caption {
+  margin-inline-start: auto;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+}
+
 .engine-control-menu__save-state--saving {
   color: var(--color-warning);
 }
@@ -82,6 +90,12 @@
 .engine-control-menu__save-state--error,
 .engine-control-menu__error {
   color: var(--color-error);
+}
+
+/* FNXC:GlobalConcurrencyControls 2026-06-25-14:10: The global cap is a cross-project setting; separate it visually from the per-project sliders below with a divider and an "All projects" caption. */
+.engine-control-menu__section--global {
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border);
 }
 
 .engine-control-menu__slider {

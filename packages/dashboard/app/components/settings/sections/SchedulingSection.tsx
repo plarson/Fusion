@@ -17,6 +17,25 @@ export interface SchedulingSectionProps {
     onAddOverlapIgnorePath: () => void;
     onOpenWorkflowSettings?: () => void;
 }
+/*
+FNXC:SettingsScopeGrouping 2026-06-25-10:42:
+Mobile settings must make clear which controls are global (all projects) vs project-scoped; group scheduling fields under labeled Global/This-project subheadings with a scope badge so operators don't mistake the global concurrency cap for a per-project setting.
+*/
+interface ScopeGroupHeaderProps {
+    title: string;
+    caption: string;
+    badgeLabel: string;
+    scope: "global" | "project";
+}
+function ScopeGroupHeader({ title, caption, badgeLabel, scope }: ScopeGroupHeaderProps) {
+    return (<div className="settings-scope-group">
+      <div className="settings-scope-group-header">
+        <h5 className="settings-section-heading">{title}</h5>
+        <span className={`settings-scope-badge settings-scope-badge--${scope}`}>{badgeLabel}</span>
+      </div>
+      <small className="settings-scope-caption">{caption}</small>
+    </div>);
+}
 export function SchedulingSection({ scopeBanner, form, setForm, globalMaxConcurrent, concurrencyLoading = false, onGlobalMaxConcurrentChange, onOverlapIgnorePathChange, onOpenOverlapPathPicker, onRemoveOverlapIgnorePath, onAddOverlapIgnorePath, onOpenWorkflowSettings, }: SchedulingSectionProps) {
     const { t } = useTranslation("app");
     return (<>
@@ -26,6 +45,7 @@ export function SchedulingSection({ scopeBanner, form, setForm, globalMaxConcurr
       FNXC:SettingsConcurrency 2026-06-22-20:18:
       Concurrency inputs represent live project/global limits. Keep them disabled while their actual values are still loading so users cannot edit a blank fallback and accidentally overwrite the resolved limits.
       */}
+      <ScopeGroupHeader scope="global" title={t("settings.scheduling.scopeGlobalTitle", "Global — applies to all projects")} caption={t("settings.scheduling.scopeGlobalCaption", "Shared by every project on this machine.")} badgeLabel={t("settings.scheduling.scopeBadgeGlobal", "Global")}/>
       <div className="form-group">
         <label htmlFor="globalMaxConcurrent">{t("settings.scheduling.globalMaxConcurrent", "Global Max Concurrent")}</label>
         <input id="globalMaxConcurrent" type="number" min={0} max={10000} disabled={concurrencyLoading} value={globalMaxConcurrent ?? ""} onChange={(e) => {
@@ -34,6 +54,8 @@ export function SchedulingSection({ scopeBanner, form, setForm, globalMaxConcurr
         }}/>
         <small className="form-text text-muted">{t("settings.scheduling.maximumConcurrentAgentsAcrossAllProjects", "Maximum concurrent agents across all projects")}</small>
       </div>
+      <div className="settings-section-divider"/>
+      <ScopeGroupHeader scope="project" title={t("settings.scheduling.scopeProjectTitle", "This project")} caption={t("settings.scheduling.scopeProjectCaption", "Only affects the currently selected project.")} badgeLabel={t("settings.scheduling.scopeBadgeProject", "Project")}/>
       <div className="form-group">
         <label htmlFor="maxConcurrent">{t("settings.scheduling.maxConcurrentTasks", "Max Concurrent Tasks")}</label>
         <input id="maxConcurrent" type="number" min={1} max={10} disabled={concurrencyLoading} value={form.maxConcurrent ?? ""} onChange={(e) => {

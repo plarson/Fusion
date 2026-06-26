@@ -355,6 +355,13 @@ describe("FN-803 — validated external Fusion checkout review routing", () => {
     });
 
     await expect(resolveReviewCheckoutForTask(externalCheckoutTask({
+      sourceMetadata: { externalReviewCheckout: null },
+    }), ATLAS_TASK_WORKTREE, { canonicalFusionRuntimeCheckout: CANONICAL_FUSION_CHECKOUT })).resolves.toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("must be structured"),
+    });
+
+    await expect(resolveReviewCheckoutForTask(externalCheckoutTask({
       sourceMetadata: { externalReviewCheckout: { kind: "other-runtime", path: CANONICAL_FUSION_CHECKOUT } },
     }), ATLAS_TASK_WORKTREE, { canonicalFusionRuntimeCheckout: CANONICAL_FUSION_CHECKOUT })).resolves.toMatchObject({
       ok: false,

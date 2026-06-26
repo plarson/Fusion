@@ -1,5 +1,7 @@
 ---
-"@fusion/engine": patch
+"@runfusion/fusion": patch
 ---
 
-Route reviewer sessions for tasks with validated canonical external Fusion runtime checkout metadata to that checkout as the assigned review root while preserving worktree-boundary enforcement for ordinary and workspace reviews.
+summary: Route validated external Fusion runtime reviews to the assigned checkout.
+category: fix
+dev: Supports sourceMetadata.externalReviewCheckout for canonical Fusion runtime review routing while preserving ordinary and workspace worktree boundaries.

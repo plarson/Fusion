@@ -28,7 +28,7 @@ function hasWorkspaceWorktrees(task: Pick<Task, "workspaceWorktrees">): boolean 
 }
 
 function normalizeMetadataEntries(raw: unknown): ExternalReviewCheckoutMetadata[] | undefined {
-  if (raw == null) return undefined;
+  if (raw == null) return [{ kind: undefined, path: undefined }];
   const values = Array.isArray(raw) ? raw : [raw];
   return values.map((value) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {

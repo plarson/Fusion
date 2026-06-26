@@ -133,6 +133,20 @@ describe("computeDependencyBlockedTodoReport", () => {
     expect(report.groups).toEqual([]);
   });
 
+  it("reports only live unresolved blockers for FN-823-shaped mixed dependencies", () => {
+    const tasks = [
+      createTask("FN-801", "done"),
+      createTask("FN-803", "todo"),
+      createTask("FN-819", "archived"),
+      createTask("FN-807", "in-progress"),
+      createTask("FN-823", "todo", { dependencies: ["FN-801", "FN-803", "FN-819", "FN-807"] }),
+    ];
+
+    const report = computeDependencyBlockedTodoReport(tasks, MAX_AUTO_MERGE_RETRIES, { now: NOW_MS });
+    expect(report.groups.map((group) => group.blockerId)).toEqual(["FN-803", "FN-807"]);
+    expect(report.groups.flatMap((group) => group.viaDependencies)).toEqual(["FN-823", "FN-823"]);
+  });
+
   it("sanitizes invalid thresholds", () => {
     const tasks = [
       createTask("B", "in-progress", { columnMovedAt: "2026-01-01T11:40:00.000Z" }),

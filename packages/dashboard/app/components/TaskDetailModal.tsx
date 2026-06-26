@@ -18,6 +18,8 @@ import {
   TASK_PRIORITIES,
   PLANNER_OVERSIGHT_LEVELS,
   getErrorMessage,
+  classifyDependencyStatuses,
+  formatDependencyStatusLabel,
 } from "@fusion/core";
 import { resolveEffectivePlannerOversightLevel } from "../../../core/src/workflow-settings-resolver";
 import { resolveTaskSessionAdvisorEnabled } from "../../../core/src/session-advisor";
@@ -3312,6 +3314,11 @@ export function TaskDetailContent({
     }
   }, [exitSpecEditMode, handleSaveSpecFromEdit]);
 
+  const dependencyStatusById = useMemo(() => {
+    const summary = classifyDependencyStatuses(dependencies, tasks);
+    return new Map(summary.statuses.map((status) => [status.id, status]));
+  }, [dependencies, tasks]);
+
   const availableTasks = tasks
     .filter((t) => t.id !== task.id && !dependencies.includes(t.id))
     .sort((a, b) => {
@@ -5998,7 +6005,9 @@ export function TaskDetailContent({
                 {dependencies.map((dep) => {
                   // Look up dependency metadata from tasks prop
                   const depTask = tasks.find((t) => t.id === dep);
+                  const depStatus = dependencyStatusById.get(dep);
                   const depLabel = depTask?.title || depTask?.description || dep;
+                  const depStatusLabel = depStatus ? formatDependencyStatusLabel(depStatus) : dep;
 
                   return (
                     <li key={dep} className="detail-dep-item">
@@ -6017,6 +6026,9 @@ export function TaskDetailContent({
                       >
                         <span className="detail-dep-id">{dep}</span>
                         <span className="detail-dep-label">{truncate(depLabel, 40)}</span>
+                        {depStatus && depStatus.kind !== "active" && (
+                          <span className="detail-dep-label">{depStatusLabel.replace(dep, "").trim()}</span>
+                        )}
                       </span>
                       <button
                         className="dep-remove-btn"

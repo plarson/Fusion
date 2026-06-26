@@ -9,10 +9,9 @@ import {
   HIGH_FANOUT_BLOCKER_TODO_THRESHOLD,
   TASK_PRIORITIES,
   VALID_TRANSITIONS,
-  classifyDependencyStatuses,
-  formatDependencyStatusLabel,
   getErrorMessage,
 } from "@fusion/core";
+import { classifyDependencyStatuses, formatDependencyStatusLabel } from "../../../core/src/dependency-status";
 import { resolveEffectiveAutoMerge } from "../../../core/src/task-merge";
 import { fetchTaskDetail, uploadAttachment, fetchMission, fetchAgent, type WorkflowFieldDefinition } from "../api";
 import { GitHubBadge } from "./GitHubBadge";

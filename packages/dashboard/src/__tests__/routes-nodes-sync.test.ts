@@ -104,6 +104,11 @@ class MockStore extends EventEmitter {
     return "/tmp/fn-1821-test/.fusion";
   }
 
+  // FNXC:GlobalDirGuard 2026-06-25-23:10: Routes resolve the global central dir via getGlobalSettingsDir(); mock mirrors getFusionDir() (CentralCore is mocked) so route behavior matches pre-change.
+  getGlobalSettingsDir(): string {
+    return this.getFusionDir();
+  }
+
   getDatabase() {
     return {
       exec: vi.fn(),

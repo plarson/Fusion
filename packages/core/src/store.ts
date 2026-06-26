@@ -146,7 +146,7 @@ import { normalizeTaskPriority } from "./task-priority.js";
 import { validateBranchGroupBranchName, filterTasksByBranchGroup } from "./branch-assignment.js";
 import { allowsAutoMergeProcessing } from "./task-merge.js";
 import { canAgentTakeImplementationTaskForExplicitRouting } from "./agent-role-policy.js";
-import { GlobalSettingsStore } from "./global-settings.js";
+import { GlobalSettingsStore, resolveGlobalDir } from "./global-settings.js";
 import { Database, SCHEMA_VERSION, toJson, toJsonNullable, fromJson } from "./db.js";
 import { ArchiveDatabase } from "./archive-db.js";
 import { detectLegacyData, migrateFromLegacy } from "./db-migrate.js";
@@ -16693,6 +16693,17 @@ ${stepsSection}`;
     return this.fusionDir;
   }
 
+  /*
+  FNXC:GlobalDirGuard 2026-06-25-22:12:
+  The resolved GLOBAL settings dir. Distinct from getFusionDir() which is this project's `.fusion/`. Any CentralCore/global-store construction MUST use this, never getFusionDir(); passing the project dir spins up a stray per-project central DB that shadows ~/.fusion and silently resets global settings.
+
+  FNXC:GlobalDirGuard 2026-06-25-22:50:
+  Returns a fully-RESOLVED absolute path (string), not the raw optional field. Resolving here (rather than leaking CentralCore's `undefined → ~/.fusion` default to every caller) makes the contract honest and fires the project-local `.fusion` guard at this call site instead of deferring it to CentralCore construction. Under VITEST `this.globalSettingsDir` is always set to a temp dir, so resolveGlobalDir returns it verbatim and never throws the no-explicit-dir test error.
+  */
+  getGlobalSettingsDir(): string {
+    return resolveGlobalDir(this.globalSettingsDir);
+  }
+
   getTasksDir(): string {
     return this.tasksDir;
   }
@@ -16715,14 +16726,16 @@ ${stepsSection}`;
       return this.secretsStore;
     }
 
-    const central = new CentralCore(this.getFusionDir());
+    // FNXC:GlobalDirGuard 2026-06-25-22:13: Secrets live in the GLOBAL central DB (~/.fusion), not this project's `.fusion/`. Use the resolved global dir; passing getFusionDir() created a stray per-project central DB and reset global settings.
+    const central = new CentralCore(this.getGlobalSettingsDir());
     await central.init();
     this.secretsCentralCore = central;
     const centralDb = (central as unknown as { db: import("./central-db.js").CentralDatabase | null }).db;
     if (!centralDb) {
       throw new Error("Central database unavailable for secrets store");
     }
-    const masterKeyManager = new MasterKeyManager();
+    // FNXC:GlobalDirGuard 2026-06-25-23:00: The master key is GLOBAL — pass the resolved global dir explicitly so it co-locates with the global central DB (matching prod ~/.fusion) and so getSecretsStore() is exercisable under tests (a bare new MasterKeyManager() throws under VITEST because resolveGlobalDir() requires an explicit dir there).
+    const masterKeyManager = new MasterKeyManager({ globalDir: this.getGlobalSettingsDir() });
     const masterKeyProvider = () => masterKeyManager.getOrCreateKey();
     this.secretsStore = new SecretsStore(this.db, centralDb, masterKeyProvider);
     return this.secretsStore;

@@ -4,6 +4,7 @@ import {
   sortTasksByPriorityFanoutThenAgeAndId,
   buildUnblockWeightMap,
   computeBlockerFanoutMap,
+  isDependencySchedulingSatisfied,
   compareTasksByPriorityThenAgeAndId,
   HIGH_FANOUT_BLOCKER_TODO_THRESHOLD,
   type TaskStore,
@@ -202,7 +203,7 @@ export function isCoordinationOnlyTask(task: Task, scope: string[]): boolean {
 }
 
 function isLegacyDependencySatisfied(dep: Task | undefined): boolean {
-  return !!dep && (dep.column === "done" || dep.column === "in-review" || dep.column === "archived");
+  return isDependencySchedulingSatisfied(dep);
 }
 
 function isMarkerDependencySatisfied(dep: Task | undefined, markerAccepted: boolean): boolean {

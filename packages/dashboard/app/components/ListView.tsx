@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { ArrowUpDown, ArrowUp, ArrowDown, Link, Columns3, EyeOff, Eye, ChevronRight, Zap, Trash2, Pause, Play, Archive } from "lucide-react";
 import type { Task, TaskDetail, Column, ColumnId, TaskCreateInput, MergeResult, GithubIssueAction } from "@fusion/core";
-import { COLUMNS, DEFAULT_COLUMN, getErrorMessage, isColumn } from "@fusion/core";
+import { COLUMNS, DEFAULT_COLUMN, classifyDependencyStatuses, formatDependencySummary, getErrorMessage, isColumn } from "@fusion/core";
 import { useColumnLabel } from "../i18n/labels";
 import { sortTasksForDisplayColumn } from "./taskSorting";
 import { batchUpdateTaskModels, fetchBoardWorkflows, fetchNodes, fetchTaskDetail } from "../api";
@@ -2077,6 +2077,9 @@ export function ListView({
                             (task.column === "in-progress" || ACTIVE_STATUSES.has(visualStatus as string));
                           const hasStatus = typeof visualStatus === "string" && visualStatus.trim().length > 0;
                           const hasDependencies = Boolean(task.dependencies && task.dependencies.length > 0);
+                          const dependencySummary = hasDependencies ? classifyDependencyStatuses(task.dependencies ?? [], tasks) : null;
+                          const dependencyTitle = dependencySummary ? formatDependencySummary(dependencySummary) : "";
+                          const activeDependencyCount = dependencySummary?.active.length ?? 0;
                           const taskProgress = getTaskProgress(task);
                           const hasProgress = taskProgress.hasProgress;
                           const isSelectionMode = bulkEditEnabled;
@@ -2135,8 +2138,8 @@ export function ListView({
                               {(hasDependencies || hasProgress) && (
                                 <div className="list-card-row list-card-meta">
                                   {hasDependencies && (
-                                    <span className="list-dep-badge" title={task.dependencies.join(", ")}>
-                                      <Link size={12} /> {task.dependencies.length}
+                                    <span className="list-dep-badge" title={dependencyTitle}>
+                                      <Link size={12} /> {activeDependencyCount}/{task.dependencies.length}
                                     </span>
                                   )}
                                   {hasProgress && (
@@ -2359,9 +2362,14 @@ export function ListView({
                                 {visibleColumns.has("dependencies") && (
                                   <td className="list-cell list-cell-deps">
                                     {task.dependencies && task.dependencies.length > 0 ? (
-                                      <span className="list-dep-badge" title={task.dependencies.join(", ")}>
-                                        <Link size={12} /> {task.dependencies.length}
-                                      </span>
+                                      (() => {
+                                        const dependencySummary = classifyDependencyStatuses(task.dependencies ?? [], tasks);
+                                        return (
+                                          <span className="list-dep-badge" title={formatDependencySummary(dependencySummary)}>
+                                            <Link size={12} /> {dependencySummary.active.length}/{task.dependencies.length}
+                                          </span>
+                                        );
+                                      })()
                                     ) : (
                                       "-"
                                     )}

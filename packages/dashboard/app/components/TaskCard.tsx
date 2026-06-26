@@ -2422,9 +2422,11 @@ function TaskCardComponent({
                   key={depId}
                   className="card-dep-badge clickable"
                   onClick={(e) => void handleDepClick(e, depId)}
-                  title={t("tasks.viewDependency", "Click to view {{depId}}", { depId })}
+                  title={depId === task.blockedBy
+                    ? t("tasks.viewActiveDependency", "Click to view active blocker {{depId}}", { depId })
+                    : t("tasks.viewHistoricalDependency", "Click to view dependency metadata {{depId}} (not currently stamped as blocker)", { depId })}
                 >
-                  <Link size={12} style={{ verticalAlign: "middle" }} /> {depId}
+                  <Link size={12} style={{ verticalAlign: "middle" }} /> {depId}{depId === task.blockedBy ? " (active)" : " (not current blocker)"}
                 </span>
               ))}
             </div>

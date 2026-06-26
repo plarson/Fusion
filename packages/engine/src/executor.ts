@@ -1454,6 +1454,8 @@ export interface TaskExecutorOptions {
    * PTY manager + telemetry hub + adapter registry + hook endpoint together.
    */
   cliAgentRuntime?: CliAgentRuntime;
+  /** Optional canonical Fusion runtime checkout override for review routing (tests/local runtime embedding). */
+  canonicalFusionRuntimeCheckoutForReview?: string;
 }
 
 /** Bundled CLI Agent Executor runtime dependencies (U7). */
@@ -12807,7 +12809,9 @@ ${failureFeedback}
     fallbackWorktreePath: string,
     invokeForCwd: (cwd: string) => Promise<ReviewResult>,
   ): Promise<ReviewResult> {
-    const resolution = await resolveReviewCheckoutForTask(task, fallbackWorktreePath);
+    const resolution = await resolveReviewCheckoutForTask(task, fallbackWorktreePath, {
+      canonicalFusionRuntimeCheckout: this.options.canonicalFusionRuntimeCheckoutForReview,
+    });
     if (!resolution.ok) {
       return {
         verdict: "UNAVAILABLE",

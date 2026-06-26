@@ -254,7 +254,8 @@ describe("U2 KTD3 — step-inversion review seam (executor.ts:5668) loops per su
 });
 
 
-const CANONICAL_FUSION_CHECKOUT = "/Users/plarson/src/Fusion-local-runtime";
+let CANONICAL_FUSION_CHECKOUT = "";
+let canonicalFusionCheckoutTemp: string | undefined;
 const ATLAS_TASK_WORKTREE = "/Users/plarson/Source/phillarson-xyz/atlas-notes/.worktrees/fn-779-shaped";
 
 function externalCheckoutTask(overrides: Partial<Task> = {}): Task {
@@ -273,10 +274,24 @@ function externalCheckoutTask(overrides: Partial<Task> = {}): Task {
 }
 
 describe("FN-803 — validated external Fusion checkout review routing", () => {
+  beforeEach(async () => {
+    canonicalFusionCheckoutTemp = await mkdtemp(join(tmpdir(), "fn-803-canonical-git-"));
+    await execFileAsync("git", ["init"], { cwd: canonicalFusionCheckoutTemp });
+    CANONICAL_FUSION_CHECKOUT = canonicalFusionCheckoutTemp;
+  });
+
+  afterEach(async () => {
+    if (canonicalFusionCheckoutTemp) {
+      await rm(canonicalFusionCheckoutTemp, { recursive: true, force: true });
+      canonicalFusionCheckoutTemp = undefined;
+      CANONICAL_FUSION_CHECKOUT = "";
+    }
+  });
+
   it("in-session fn_review_step routes explicit FN-779-shaped tasks to the canonical Fusion checkout", async () => {
     const task = externalCheckoutTask();
     const store = makeStore(task);
-    const executor = new TaskExecutor(store, "/Users/plarson/Source/phillarson-xyz/atlas-notes");
+    const executor = new TaskExecutor(store, "/Users/plarson/Source/phillarson-xyz/atlas-notes", { canonicalFusionRuntimeCheckoutForReview: CANONICAL_FUSION_CHECKOUT });
     const seen = scriptReviewByCwd({
       [CANONICAL_FUSION_CHECKOUT]: { verdict: "APPROVE", review: "external ok", summary: "external ok" },
       [ATLAS_TASK_WORKTREE]: { verdict: "REVISE", review: "wrong cwd", summary: "wrong cwd" },
@@ -302,7 +317,7 @@ describe("FN-803 — validated external Fusion checkout review routing", () => {
   it("workflow step-review routes explicit FN-779-shaped tasks to the same external checkout", async () => {
     const task = externalCheckoutTask();
     const store = makeStore(task);
-    const executor = new TaskExecutor(store, "/Users/plarson/Source/phillarson-xyz/atlas-notes");
+    const executor = new TaskExecutor(store, "/Users/plarson/Source/phillarson-xyz/atlas-notes", { canonicalFusionRuntimeCheckoutForReview: CANONICAL_FUSION_CHECKOUT });
     const seen = scriptReviewByCwd({
       [CANONICAL_FUSION_CHECKOUT]: { verdict: "APPROVE", review: "external ok", summary: "external ok" },
     });
@@ -414,7 +429,7 @@ describe("FN-803 — validated external Fusion checkout review routing", () => {
       sourceMetadata: { externalReviewCheckout: { kind: "canonical-fusion-runtime", path: "/definitely/missing/Fusion-local-runtime" } },
     });
     const store = makeStore(task);
-    const executor = new TaskExecutor(store, "/Users/plarson/Source/phillarson-xyz/atlas-notes");
+    const executor = new TaskExecutor(store, "/Users/plarson/Source/phillarson-xyz/atlas-notes", { canonicalFusionRuntimeCheckoutForReview: CANONICAL_FUSION_CHECKOUT });
     const tool = (executor as any).createReviewStepTool(
       task.id,
       ATLAS_TASK_WORKTREE,
@@ -442,7 +457,7 @@ describe("FN-803 — validated external Fusion checkout review routing", () => {
       sourceMetadata: { externalReviewCheckout: { kind: "canonical-fusion-runtime", path: "/definitely/missing/Fusion-local-runtime" } },
     });
     const store = makeStore(task);
-    const executor = new TaskExecutor(store, "/Users/plarson/Source/phillarson-xyz/atlas-notes");
+    const executor = new TaskExecutor(store, "/Users/plarson/Source/phillarson-xyz/atlas-notes", { canonicalFusionRuntimeCheckoutForReview: CANONICAL_FUSION_CHECKOUT });
     const seams = executor.createAuthoritativeWorkflowSeams({ autoMerge: false } as any);
     const context = {
       [FOREACH_ACTIVE_CONTEXT_KEY]: { stepIndex: 1, worktreePath: ATLAS_TASK_WORKTREE, baselineSha: "base" },

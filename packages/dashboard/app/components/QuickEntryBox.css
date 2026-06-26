@@ -205,12 +205,6 @@ The global `.description-with-refine textarea { padding-right: 70px }` (styles.c
   cursor: pointer;
 }
 
-.quick-entry-hint {
-  font-size: 0.6875rem;
-  color: var(--text-dim);
-  margin-left: auto;
-  white-space: nowrap;
-}
 
 .quick-entry-model-trigger {
   font-size: 0.75rem;
@@ -355,12 +349,6 @@ The global `.description-with-refine textarea { padding-right: 70px }` (styles.c
     align-items: flex-start;
     gap: 10px;
   }
-
-  .quick-entry-hint {
-    margin-left: 0;
-    width: 100%;
-    text-align: center;
-  }
 }
 
 /* Quick Entry Box main row with toggle */
@@ -435,12 +423,6 @@ The global `.description-with-refine textarea { padding-right: 70px }` (styles.c
     flex-direction: column;
     align-items: flex-start;
     gap: 10px;
-  }
-
-  .quick-entry-hint {
-    margin-left: 0;
-    width: 100%;
-    text-align: center;
   }
 
   .quick-entry-toggle {

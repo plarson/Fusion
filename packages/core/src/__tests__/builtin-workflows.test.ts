@@ -39,6 +39,14 @@ describe("built-in workflows", () => {
     }
   });
 
+  it("does not expose lowercase Code review step names in built-in workflow nodes", () => {
+    for (const workflow of BUILTIN_WORKFLOWS) {
+      for (const node of workflow.ir.nodes) {
+        expect(node.config?.name, `${workflow.id}:${node.id}`).not.toBe("Code review");
+      }
+    }
+  });
+
   it("includes the stepwise coding built-in modeling step inversion (KTD-9)", () => {
     const stepwise = getBuiltinWorkflow("builtin:stepwise-coding");
     expect(stepwise).toBeDefined();
@@ -459,6 +467,7 @@ describe("built-in workflows", () => {
 
     const codeReview = byId("code-review");
     expect(codeReview?.kind).toBe("gate");
+    expect(codeReview?.config?.name).toBe("Code Review");
     expect(codeReview?.config?.skillName).toBe("compound-engineering:ce-code-review");
     expect(codeReview?.config?.gateMode).toBe("gate");
     expect(codeReview?.config?.toolMode).toBe("coding");

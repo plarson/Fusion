@@ -4,7 +4,8 @@ import { WorkflowResultsTab } from "../WorkflowResultsTab";
 import * as api from "../../api";
 import { useAgentLogs } from "../../hooks/useAgentLogs";
 import { loadAllAppCss, loadAllAppCssBaseOnly } from "../../test/cssFixture";
-import type { AgentLogEntry, Settings, Task, WorkflowDefinition, WorkflowStep, WorkflowStepResult } from "@fusion/core";
+import type { Agent, AgentLogEntry, Settings, Task, WorkflowDefinition, WorkflowStep, WorkflowStepResult } from "@fusion/core";
+import { resolveEffectiveExecutor, resolveEffectivePlanning, resolveEffectiveValidator } from "../effective-model-resolution";
 
 vi.mock("@xyflow/react", () => ({
   ReactFlow: ({ nodes = [], edges = [] }: { nodes?: unknown[]; edges?: unknown[] }) => (
@@ -442,6 +443,77 @@ describe("WorkflowResultsTab", () => {
     expect(onWorkflowReconciled).toHaveBeenCalledTimes(1);
   });
 
+  it("shows Workflow model settings that match the Chat effective model resolver for runtime markers", async () => {
+    const activeTask = {
+      ...baseTask,
+      status: "executing",
+      column: "in-progress",
+      modelProvider: "configured-executor",
+      modelId: "configured-executor-model",
+      validatorModelProvider: "configured-reviewer",
+      validatorModelId: "configured-reviewer-model",
+      planningModelProvider: null,
+      planningModelId: null,
+    } as Task;
+    const agentLogEntries: AgentLogEntry[] = [
+      {
+        timestamp: "2026-06-25T00:00:00Z",
+        taskId: "FN-001",
+        agent: "executor",
+        type: "text",
+        text: "Executor using model: runtime-executor/runtime-executor-model",
+      },
+      {
+        timestamp: "2026-06-25T00:00:01Z",
+        taskId: "FN-001",
+        agent: "reviewer",
+        type: "text",
+        text: "Reviewer using model: runtime-reviewer/runtime-reviewer-model",
+      },
+      {
+        timestamp: "2026-06-25T00:00:02Z",
+        taskId: "FN-001",
+        agent: "triage",
+        type: "text",
+        text: "Triage using model: runtime-planning/runtime-planning-model",
+      },
+    ];
+    const assignedAgent = {
+      id: "agent-runtime",
+      name: "Runtime Agent",
+      role: "executor",
+      state: "running",
+      createdAt: "2026-06-25T00:00:00Z",
+      updatedAt: "2026-06-25T00:00:00Z",
+      metadata: {},
+      runtimeConfig: { model: "assigned-provider/assigned-model" },
+    } as Agent;
+
+    render(
+      <WorkflowResultsTab
+        taskId="FN-001"
+        task={activeTask}
+        settings={mockSettings}
+        results={mockResults}
+        agentLogEntries={agentLogEntries}
+        assignedAgent={assignedAgent}
+      />,
+    );
+
+    await screen.findByTestId("workflow-state-summary-name");
+    fireEvent.click(screen.getByTestId("workflow-model-settings-toggle"));
+
+    const chatExecutor = resolveEffectiveExecutor(activeTask, agentLogEntries, assignedAgent, mockSettings);
+    const chatReviewer = resolveEffectiveValidator(activeTask, agentLogEntries, assignedAgent, mockSettings);
+    const chatPlanning = resolveEffectivePlanning(activeTask, agentLogEntries, mockSettings);
+
+    await waitFor(() => expect(screen.getByTestId("workflow-model-setting-executor")).toHaveTextContent(`${chatExecutor.provider}/${chatExecutor.modelId}`));
+    expect(screen.getByTestId("workflow-model-setting-reviewer")).toHaveTextContent(`${chatReviewer.provider}/${chatReviewer.modelId}`);
+    expect(screen.getByTestId("workflow-model-setting-planning")).toHaveTextContent(`${chatPlanning.provider}/${chatPlanning.modelId}`);
+    expect(screen.getByTestId("workflow-model-setting-executor")).not.toHaveTextContent("configured-executor/configured-executor-model");
+    expect(screen.getByTestId("workflow-model-setting-reviewer")).not.toHaveTextContent("configured-reviewer/configured-reviewer-model");
+  });
+
   it("shows effective model settings and default fallbacks", async () => {
     const { rerender } = render(
       <WorkflowResultsTab taskId="FN-001" task={baseTask} settings={mockSettings} results={mockResults} />,
@@ -671,6 +743,42 @@ describe("WorkflowResultsTab", () => {
     expect(screen.getByTestId("workflow-configured-phase-WS-102")).toHaveTextContent("Post-merge");
 
     expect(screen.getByText("Pre-merge steps run after implementation, before merge. Post-merge steps run after merge succeeds.")).toBeInTheDocument();
+  });
+
+  it("shows found optional-group steps with empty descriptions without the missing-definition fallback", async () => {
+    mockedFetchWorkflowOptionalSteps.mockResolvedValueOnce([
+      {
+        templateId: "code-review",
+        name: "Code Review",
+        description: "",
+        phase: "pre-merge",
+        defaultOn: true,
+      },
+    ]);
+
+    render(
+      <WorkflowResultsTab
+        taskId="FN-001"
+        results={[]}
+        canEdit
+        enabledWorkflowSteps={["WS-101", "code-review"]}
+      />,
+    );
+
+    const configuredStep = await screen.findByTestId("workflow-configured-step-code-review");
+    await waitFor(() => expect(configuredStep).toHaveTextContent("Code Review"));
+    expect(screen.getByTestId("workflow-configured-phase-code-review")).toHaveTextContent("Pre-merge");
+    expect(within(configuredStep).queryByText("Step definition not found.")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("workflow-steps-edit-toggle"));
+
+    const checkboxStep = await screen.findByTestId("workflow-step-checkbox-code-review");
+    expect(checkboxStep).toHaveTextContent("Code Review");
+    expect(within(checkboxStep).queryByText("Step definition not found.")).not.toBeInTheDocument();
+
+    const orderStep = screen.getByTestId("workflow-step-order-item-code-review");
+    expect(orderStep).toHaveTextContent("Code Review");
+    expect(within(orderStep).queryByText("Step definition not found.")).not.toBeInTheDocument();
   });
 
   it("falls back to step ID and default description when definition is missing", () => {

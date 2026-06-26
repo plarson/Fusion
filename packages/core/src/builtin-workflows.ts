@@ -216,7 +216,11 @@ export const BUILTIN_WORKFLOWS: WorkflowDefinition[] = [
         id: "code-review",
         kind: "gate",
         config: {
-          name: "Code review",
+          /*
+           * FNXC:Workflows 2026-06-25-00:00:
+           * FN-7045 requires every built-in code-review step display name to be title-case "Code Review" so compound-engineering matches WORKFLOW_STEP_TEMPLATES and the optional Code Review group.
+           */
+          name: "Code Review",
           executor: "skill",
           skillName: "compound-engineering:ce-code-review",
           gateMode: "gate",

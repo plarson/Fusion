@@ -296,6 +296,11 @@ function renderQuickEntryBox(props = {}, { startExpanded = false } = {}) {
   return { ...result, props: { ...defaultProps, ...props } };
 }
 
+function expectQuickEntryHintAbsent(container: HTMLElement) {
+  expect(container.querySelector(".quick-entry-hint")).toBeNull();
+  expect(screen.queryByText("Enter to create · Esc to cancel")).toBeNull();
+}
+
 // Helper to ensure the QuickEntryBox is expanded by clicking the toggle only when needed.
 function expandQuickEntry() {
   const toggleButton = screen.getByTestId("quick-entry-toggle");
@@ -467,6 +472,19 @@ describe("QuickEntryBox", () => {
     expect((textarea as HTMLTextAreaElement).rows).toBe(2);
   });
 
+  /* FNXC:QuickEntry 2026-06-25-00:00: FN-7047 requires the retired quick-entry keyboard hint to be absent across board and list surfaces, with no empty `.quick-entry-hint` shell left behind. */
+  it("does not render the retired keyboard hint in desktop expanded or collapsed list modes", () => {
+    mockDesktopViewport();
+    const desktop = renderQuickEntryBox({ singleLine: false });
+    expectQuickEntryHintAbsent(desktop.container);
+    desktop.unmount();
+
+    mockMobileViewport();
+    const list = renderQuickEntryBox({ singleLine: true, defaultExpanded: false });
+    expect(screen.getByTestId("quick-entry-box").className).toContain("quick-entry-box--collapsed");
+    expectQuickEntryHintAbsent(list.container);
+  });
+
   // FNXC:QuickEntry 2026-06-22-19:25: List view passes singleLine so quick-add is a compact one-line input (not the tall 80px auto-grow variant).
   describe("singleLine (List view compact mode)", () => {
     it("renders a one-line textarea that is not expanded and does not grow on focus/typing", () => {
@@ -560,7 +578,7 @@ describe("QuickEntryBox", () => {
     });
   });
 
-  describe("post-submission focus restoration (FN-6217)", () => {
+  describe("post-submission focus behavior (FN-7042: no refocus)", () => {
     it("does not auto-focus the quick-entry textarea on empty desktop mount", async () => {
       mockDesktopViewport();
       renderQuickEntryBox({});
@@ -602,7 +620,7 @@ describe("QuickEntryBox", () => {
       expect(document.activeElement).not.toBe(textarea);
     });
 
-    it("focuses the quick-entry textarea after a successful Enter submission on desktop", async () => {
+    it("does not refocus the quick-entry textarea after a successful Enter submission on desktop", async () => {
       mockDesktopViewport();
       const onCreate = vi.fn().mockResolvedValue(CREATED_TASK);
       renderQuickEntryBox({ onCreate });
@@ -616,11 +634,12 @@ describe("QuickEntryBox", () => {
       await waitForSubmitSuccessToClear(textarea);
       await flushPendingTimers();
 
-      expect(focusSpy).toHaveBeenCalledTimes(1);
-      expect(document.activeElement).toBe(textarea);
+      // FN-7042 reverses FN-6217/FN-6219: successful creation clears the draft but never steals focus back.
+      expect(focusSpy).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(textarea);
     });
 
-    it("focuses the quick-entry textarea after a successful Save-button submission on desktop", async () => {
+    it("does not refocus the quick-entry textarea after a successful Save-button submission on desktop", async () => {
       mockDesktopViewport();
       const onCreate = vi.fn().mockResolvedValue(CREATED_TASK);
       renderQuickEntryBox({ onCreate });
@@ -634,11 +653,11 @@ describe("QuickEntryBox", () => {
       await waitForSubmitSuccessToClear(textarea);
       await flushPendingTimers();
 
-      expect(focusSpy).toHaveBeenCalledTimes(1);
-      expect(document.activeElement).toBe(textarea);
+      expect(focusSpy).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(textarea);
     });
 
-    it("focuses the quick-entry textarea only after duplicate-confirmed creation completes on desktop", async () => {
+    it("does not refocus the quick-entry textarea after duplicate-confirmed creation completes on desktop", async () => {
       mockDesktopViewport();
       const onCreate = vi.fn().mockResolvedValue(CREATED_TASK);
       vi.mocked(checkDuplicateTasks).mockResolvedValueOnce([
@@ -660,8 +679,8 @@ describe("QuickEntryBox", () => {
       await waitForSubmitSuccessToClear(textarea);
       await flushPendingTimers();
 
-      expect(focusSpy).toHaveBeenCalledTimes(1);
-      expect(document.activeElement).toBe(textarea);
+      expect(focusSpy).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(textarea);
     });
 
     it("never auto-focuses the quick-entry textarea on mobile, including after a successful submission", async () => {
@@ -1557,25 +1576,25 @@ describe("QuickEntryBox", () => {
     });
   });
 
-  it("maintains focus after successful creation", async () => {
+  it("does not refocus after successful creation", async () => {
     const { props } = renderQuickEntryBox({});
-    const textarea = screen.getByTestId("quick-entry-input");
+    const textarea = screen.getByTestId("quick-entry-input") as HTMLTextAreaElement;
+    const focusSpy = vi.spyOn(textarea, "focus");
 
-    fireEvent.focus(textarea);
     fireEvent.change(textarea, { target: { value: "Task to create" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     await waitFor(() => {
       expect(props.onCreate).toHaveBeenCalled();
     });
+    await waitFor(() => expect(textarea.value).toBe(""));
+    await flushPendingTimers();
 
-    // Focus restoration happens after submit state clears
-    await waitFor(() => {
-      expect(document.activeElement).toBe(textarea);
-    });
+    expect(focusSpy).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(textarea);
   });
 
-  it("does not restore focus after successful creation at mobile width", async () => {
+  it("does not refocus after successful creation at mobile width", async () => {
     const innerWidthSpy = vi.spyOn(window, "innerWidth", "get").mockReturnValue(375);
     const { props } = renderQuickEntryBox({});
     const textarea = screen.getByTestId("quick-entry-input");
@@ -2939,12 +2958,13 @@ describe("QuickEntryBox", () => {
       expect(screen.queryByAltText("remove.png")).toBeNull();
     });
 
-    it("uploads each pending image after task creation", async () => {
+    it("uploads each pending image after task creation without refocusing", async () => {
       const onCreate = vi.fn().mockResolvedValue(CREATED_TASK);
       renderQuickEntryBox({ onCreate });
       expandQuickEntry();
 
-      const textarea = screen.getByTestId("quick-entry-input");
+      const textarea = screen.getByTestId("quick-entry-input") as HTMLTextAreaElement;
+      const focusSpy = vi.spyOn(textarea, "focus");
       const fileInput = screen.getByTestId("quick-entry-file-input") as HTMLInputElement;
       const fileA = new File(["a"], "a.png", { type: "image/png" });
       const fileB = new File(["b"], "b.png", { type: "image/png" });
@@ -2960,6 +2980,8 @@ describe("QuickEntryBox", () => {
 
       expect(uploadAttachment).toHaveBeenCalledWith(CREATED_TASK.id, fileA, TEST_PROJECT_ID);
       expect(uploadAttachment).toHaveBeenCalledWith(CREATED_TASK.id, fileB, TEST_PROJECT_ID);
+      expect(focusSpy).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(textarea);
     });
 
     it("does not upload attachments when no pending images exist", async () => {
@@ -3043,9 +3065,10 @@ describe("QuickEntryBox", () => {
       expect(controls?.hasAttribute("hidden")).toBe(true);
     });
 
-    it("after task creation with autoExpand, focus restore preserves visible controls", async () => {
+    it("after task creation with autoExpand, no refocus still preserves visible controls", async () => {
       const { props } = renderQuickEntryBox();
-      const textarea = screen.getByTestId("quick-entry-input");
+      const textarea = screen.getByTestId("quick-entry-input") as HTMLTextAreaElement;
+      const focusSpy = vi.spyOn(textarea, "focus");
       const controls = document.getElementById("quick-entry-controls");
 
       // Type and submit without collapsing disclosure.
@@ -3056,10 +3079,12 @@ describe("QuickEntryBox", () => {
         expect(props.onCreate).toHaveBeenCalled();
       });
 
-      // After creation, focus is restored asynchronously and visible controls remain visible.
+      // FN-7042: creation no longer restores focus; visible controls should remain visible anyway.
       await waitFor(() => {
         expect(textarea.classList.contains("quick-entry-input--expanded")).toBe(true);
       });
+      expect(focusSpy).not.toHaveBeenCalled();
+      expect(document.activeElement).not.toBe(textarea);
       expect(controls?.hasAttribute("hidden")).toBe(false);
     });
 

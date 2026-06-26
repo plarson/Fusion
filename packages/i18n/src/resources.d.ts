@@ -7935,7 +7935,6 @@ export default interface Resources {
       "promoteTask": "Promote task",
       "promoting": "Promoting…",
       "queued": "Queued",
-      "quickEntryHint": "Enter to create · Esc to cancel",
       "refine": "Refine",
       "refineAddDetails": "Add details",
       "refineAddDetailsDesc": "Add implementation details and context",

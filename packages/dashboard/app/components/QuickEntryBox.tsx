@@ -18,7 +18,6 @@ import { ProviderIcon } from "./ProviderIcon";
 import { WorkflowOptionalStepsDropdown } from "./WorkflowOptionalStepsDropdown";
 
 const STORAGE_KEY = "kb-quick-entry-text";
-const MOBILE_BREAKPOINT_PX = 768;
 const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 interface PendingImage {
@@ -111,7 +110,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     return "";
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [postSubmitFocusRequest, setPostSubmitFocusRequest] = useState(0);
   // isExpanded controls textarea height styling (auto-resize)
   // FNXC:QuickEntry 2026-06-22-19:25: singleLine (List view) starts collapsed so the textarea is one line, not the tall 80px variant.
   const [isExpanded, setIsExpanded] = useState(!singleLine);
@@ -122,8 +120,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
   const fileInputRef = useRef<HTMLInputElement>(null);
   const touchButtonRef = useRef<HTMLButtonElement | null>(null);
   const justResetRef = useRef(false);
-  const postSubmitFocusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handledPostSubmitFocusRequestRef = useRef(0);
   const previousProjectIdRef = useRef(projectId);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const pendingImagesRef = useRef<PendingImage[]>([]);
@@ -386,46 +382,10 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     }
   }, [description, isExpanded, autoResize, singleLine]);
 
-  const requestFocusAfterSuccessfulSubmit = useCallback(() => {
-    setPostSubmitFocusRequest((request) => request + 1);
-  }, []);
-
   /*
-  FNXC:QuickEntryFocus 2026-06-19-16:50:
-  Desktop users should keep typing after Enter, Save, or duplicate-confirmed task creation, while mobile users must not receive an automatic focus that opens the soft keyboard.
-  Drive the post-submit focus from a resolved-submit state request instead of a ref-gated effect so React state ordering cannot skip the restoration when the form clears under broad jsdom load.
+  FNXC:QuickEntryFocus 2026-06-25-00:00:
+  After a successful task creation, the quick-entry textarea must not re-focus itself on any surface, desktop or mobile. The user explicitly does not want focus to return to the input after adding a task, superseding FN-6217/FN-6219; keep clearing the form on submit.
   */
-  useEffect(() => {
-    if (
-      postSubmitFocusRequest === 0 ||
-      handledPostSubmitFocusRequestRef.current === postSubmitFocusRequest ||
-      isSubmitting ||
-      description !== "" ||
-      !textareaRef.current
-    ) {
-      return;
-    }
-
-    handledPostSubmitFocusRequestRef.current = postSubmitFocusRequest;
-
-    if (postSubmitFocusTimeoutRef.current) {
-      clearTimeout(postSubmitFocusTimeoutRef.current);
-    }
-
-    postSubmitFocusTimeoutRef.current = setTimeout(() => {
-      postSubmitFocusTimeoutRef.current = null;
-      if (typeof window !== "undefined" && window.innerWidth > MOBILE_BREAKPOINT_PX) {
-        textareaRef.current?.focus();
-      }
-    }, 0);
-
-    return () => {
-      if (postSubmitFocusTimeoutRef.current) {
-        clearTimeout(postSubmitFocusTimeoutRef.current);
-        postSubmitFocusTimeoutRef.current = null;
-      }
-    };
-  }, [description, isSubmitting, postSubmitFocusRequest]);
 
   // Clear dep search when dropdown closes
   useEffect(() => {
@@ -634,7 +594,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
         }
       }
       resetForm();
-      requestFocusAfterSuccessfulSubmit();
     } catch (err) {
       setDescription(originalDescription);
       addToast(getErrorMessage(err) || t("tasks.createFailed", "Failed to create task"), "error");
@@ -667,7 +626,6 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
     projectId,
     addToast,
     resetForm,
-    requestFocusAfterSuccessfulSubmit,
   ]);
 
   const handleSubmit = useCallback(async () => {
@@ -2271,9 +2229,7 @@ export function QuickEntryBox({ onCreate, addToast, tasks = [], availableModels,
           }}
           data-testid="quick-entry-file-input"
         />
-        <div className="quick-entry-hint">
-          {t("tasks.quickEntryHint", "Enter to create · Esc to cancel")}
-        </div>
+        {/* FNXC:QuickEntry 2026-06-25-00:00: FN-7047 removes the persistent "Enter to create · Esc to cancel" hint so quick entry has no leftover affordance shell after the help text was retired. */}
       </div>
       {duplicateMatches && (
         <DuplicateWarningModal

@@ -3,12 +3,16 @@ import type { DateRange } from "../DateRangePicker";
 /*
 FNXC:CommandCenter 2026-06-16-09:42:
 Shared Command Center area helpers (PR #1683): date-range query building and count formatting reused across the analytics areas so range-to-query and unavailable-vs-zero rendering stay consistent.
+
+FNXC:CommandCenter 2026-06-25-00:00:
+FN-7019 defines null date bounds as open analytics windows, not as a request to default. `rangeQuery` preserves every non-null bound so bounded presets refetch with `from=...` and All time refetches with the picker's explicit `to=selected-now` upper bound.
 */
 
 /**
  * Build the `?from=&to=` query string for an analytics endpoint from a
- * {@link DateRange}. Open bounds (null) are omitted so the server applies its
- * documented default window. The picker already rejects `from > to`
+ * {@link DateRange}. Open bounds (null) are omitted because the server resolves
+ * one-sided requests as open windows; a range with no usable bounds remains the
+ * documented programmatic default. The picker already rejects `from > to`
  * client-side, but we guard here too so a programmatic caller cannot send an
  * inverted range.
  */

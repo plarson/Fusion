@@ -53,7 +53,6 @@ import {
   resolveAgentPrompt,
   resolvePersistAgentThinkingLog,
   resolveEffectiveAgentPermissionPolicy,
-  resolveProjectDefaultModel,
   resolveAgentMemoryInclusionMode,
   loadWorkspaceConfig,
   type WorkspaceConfig,
@@ -13482,13 +13481,21 @@ You have access to the file system to review changes.${verdictBlock}`;
     });
 
     // Determine primary model and an explicit fallback. The workflow step's
-    // own override takes precedence; otherwise we use the project default
-    // override before falling through to the global default. The
-    // fallback is the per-step override's missing-counterpart settings, then
-    // the global validator/fallback pair, then the executor's `fallbackProvider`.
-    const defaultModel = resolveProjectDefaultModel(settings);
-    const primaryProvider = workflowStep.modelProvider || defaultModel.provider;
-    const primaryModelId = workflowStep.modelId || defaultModel.modelId;
+    // own override takes precedence; otherwise use the canonical executor
+    // hierarchy: task override → project execution lane → global execution lane
+    // → project default override → global default. The fallback is the per-step
+    // override's missing-counterpart settings, then the global validator/fallback
+    // pair, then the executor's `fallbackProvider`.
+    // FNXC:ModelResolution 2026-06-25-12:00: FN-7039 requires workflow steps to inherit project execution-lane model settings before default settings so configured Execution models reach step sessions unless the step itself overrides them.
+    const assignedRuntimeConfig = await this.getAssignedAgentRuntimeConfig(task.assignedAgentId);
+    const executorModel = resolveExecutorSessionModel(
+      task.modelProvider,
+      task.modelId,
+      settings,
+      assignedRuntimeConfig,
+    );
+    const primaryProvider = workflowStep.modelProvider || executorModel.provider;
+    const primaryModelId = workflowStep.modelId || executorModel.modelId;
     const useOverride = !!(workflowStep.modelProvider && workflowStep.modelId);
 
     type ModelTuple = { provider?: string; modelId?: string };

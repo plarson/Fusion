@@ -5,6 +5,7 @@ import type { StalePausedReviewSignal } from "./stale-paused-review.js";
 import type { StalePausedTodoSignal } from "./stale-paused-todo.js";
 import type { StalledReviewSignal } from "./stalled-review-detector.js";
 import type { TaskAgeStalenessSignal } from "./task-age-staleness.js";
+import type { SecretScope } from "./secrets-store.js";
 
 export {
   computeCapacityRisk,
@@ -3100,6 +3101,58 @@ export interface WorktrunkSettings {
   installedBinaryPath?: string;
 }
 
+/**
+ * FNXC:McpConfig 2026-06-25-00:00:
+ * MCP servers are trusted once enabled because downstream runtime slices may launch local commands or connect to operator-provided URLs. Store only declarations here; sensitive env, header, and token material MUST be represented as Fusion-managed secret references, never inline plaintext.
+ */
+export interface McpSecretRef {
+  secretRef: string;
+  scope: SecretScope;
+}
+
+export function isMcpSecretRef(value: unknown): value is McpSecretRef {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.secretRef === "string" &&
+    candidate.secretRef.trim().length > 0 &&
+    (candidate.scope === "project" || candidate.scope === "global")
+  );
+}
+
+export type McpSensitiveValue = McpSecretRef | string;
+
+export interface McpStdioTransport {
+  transport: "stdio";
+  command: string;
+  args?: string[];
+  env?: Record<string, McpSensitiveValue>;
+}
+
+export interface McpSseTransport {
+  transport: "sse";
+  url: string;
+  headers?: Record<string, McpSensitiveValue>;
+}
+
+export interface McpStreamableHttpTransport {
+  transport: "streamable-http";
+  url: string;
+  headers?: Record<string, McpSensitiveValue>;
+}
+
+export type McpTransport = McpStdioTransport | McpSseTransport | McpStreamableHttpTransport;
+
+export type McpServerDefinition = {
+  name: string;
+  enabled?: boolean;
+} & McpTransport;
+
+export interface McpServersSettings {
+  enabled?: boolean;
+  servers?: McpServerDefinition[];
+}
+
 export interface GlobalSettings {
   /** Theme mode preference: dark, light, or system (follows OS). Default: "dark". */
   themeMode?: ThemeMode;
@@ -3492,6 +3545,10 @@ export interface GlobalSettings {
    *  Stores both provider configs, active provider selection, token strategy,
    *  and lifecycle restart metadata for remote tunnel orchestration. */
   remoteAccess?: RemoteAccessProjectSettings;
+  /** Global defaults for user-configurable MCP servers.
+   *  Project-level `mcpServers` entries override by server name and may disable
+   *  a global server without deleting the global declaration. */
+  mcpServers?: McpServersSettings;
   /** Global defaults for worktrunk integration.
    *  Merged with project-level `worktrunk` field-by-field in `getSettings()`/
    *  `getSettingsFast()` so partial project overrides inherit unspecified fields. */
@@ -3792,6 +3849,10 @@ export interface ProjectSettings {
   researchSettings?: ResearchProjectSettings;
   /** Optional per-project `.env` materialization settings for exportable secrets. */
   secretsEnv?: SecretsEnvSettings;
+  /** Project-scoped MCP server overrides.
+   *  Entries override global server declarations by name; `enabled: false` on a
+   *  same-named entry disables that server for this project. */
+  mcpServers?: McpServersSettings;
   /** Sandbox command-execution settings.
    *  When omitted, runtime behavior is preserved via native passthrough defaults. */
   sandbox?: SandboxProjectSettings;
@@ -4584,6 +4645,7 @@ export {
   resolvePersistAgentThinkingLog,
   sanitizeCliAgentSettings,
   sanitizeCliAgentsSettings,
+  sanitizeMcpServers,
   CLI_AGENT_ADAPTER_IDS,
   CLI_AGENT_AUTONOMY_MODES,
 } from "./settings-schema.js";

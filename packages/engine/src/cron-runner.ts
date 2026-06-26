@@ -1,7 +1,7 @@
 import { exec } from "node:child_process";
 
 import {
-  resolveProjectDefaultModel,
+  resolveExecutionSettingsModel,
   runScheduledEvalBatch,
   resolveTaskEvaluationSettings,
   isEvalsExperimentalEnabled,
@@ -855,9 +855,10 @@ export class CronRunner {
       };
     }
 
-    // Resolve model: step override → project default override → global default
+    // Resolve model: step override → project execution lane → global execution lane → project default override → global default
+    // FNXC:ModelResolution 2026-06-25-12:00: FN-7039 requires scheduled AI-prompt automation steps to use execution-lane settings before default settings because these steps have no task/runtime model context.
     const settings = await this.store.getSettings();
-    const defaultModel = resolveProjectDefaultModel(settings);
+    const defaultModel = resolveExecutionSettingsModel(settings);
     const modelProvider = step.modelProvider?.trim() || defaultModel.provider;
     const modelId = step.modelId?.trim() || defaultModel.modelId;
 

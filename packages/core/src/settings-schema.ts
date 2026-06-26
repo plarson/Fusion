@@ -1,5 +1,5 @@
 import { DEFAULT_MAX_AUTO_MERGE_RETRIES } from "./in-review-stall.js";
-import type { CliAgentSettings, GlobalSettings, ProjectSettings, Settings } from "./types.js";
+import type { CliAgentSettings, GlobalSettings, McpSecretRef, McpServerDefinition, ProjectSettings, Settings } from "./types.js";
 
 export interface MergeRequestContractShadowSettingsSource {
   mergeRequestContractShadowEnabled?: boolean;
@@ -200,6 +200,10 @@ export const DEFAULT_GLOBAL_SETTINGS = {
   researchGlobalMaxSearchResults: 10,
   researchGlobalFetchTimeoutMs: 30_000,
   researchGlobalUserAgent: "FusionResearchBot/1.0",
+  mcpServers: {
+    enabled: false,
+    servers: [],
+  },
   remoteAccess: {
     activeProvider: null,
     providers: {
@@ -295,6 +299,10 @@ export const DEFAULT_PROJECT_SETTINGS = {
   owningNodeHandoffPolicy: "reassign-to-local",
   defaultNodeId: undefined,
   secretsEnv: undefined,
+  mcpServers: {
+    enabled: false,
+    servers: [],
+  },
   worktreeInitCommand: undefined,
   /*
   FNXC:WorktreeCopyFiles 2026-06-24-00:00:
@@ -697,4 +705,84 @@ export function sanitizeCliAgentsSettings(value: unknown): Record<string, CliAge
     if (entry) out[adapterId] = entry;
   }
   return out;
+}
+
+function sanitizeMcpSecretRef(value: unknown): McpSecretRef | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  if (typeof input.secretRef !== "string") return undefined;
+  const secretRef = input.secretRef.trim();
+  if (!secretRef || (input.scope !== "project" && input.scope !== "global")) return undefined;
+  return { secretRef, scope: input.scope };
+}
+
+function sanitizeMcpSensitiveMap(value: unknown): Record<string, McpSecretRef> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, McpSecretRef> = {};
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (!key) continue;
+    const ref = sanitizeMcpSecretRef(rawValue);
+    if (ref) out[key] = ref;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function sanitizeMcpServerDefinition(value: unknown): McpServerDefinition | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  if (typeof input.name !== "string") return undefined;
+  const name = input.name.trim();
+  if (!name) return undefined;
+  const enabled = typeof input.enabled === "boolean" ? input.enabled : undefined;
+  const base = { name, ...(enabled !== undefined ? { enabled } : {}) };
+
+  if (input.transport === "stdio") {
+    if (typeof input.command !== "string" || input.command.trim().length === 0) return undefined;
+    const args = sanitizeStringArray(input.args);
+    const env = sanitizeMcpSensitiveMap(input.env);
+    return {
+      ...base,
+      transport: "stdio",
+      command: input.command.trim(),
+      ...(args ? { args } : {}),
+      ...(env ? { env } : {}),
+    };
+  }
+
+  if (input.transport === "sse" || input.transport === "streamable-http") {
+    if (typeof input.url !== "string" || input.url.trim().length === 0) return undefined;
+    const headers = sanitizeMcpSensitiveMap(input.headers);
+    return {
+      ...base,
+      transport: input.transport,
+      url: input.url.trim(),
+      ...(headers ? { headers } : {}),
+    };
+  }
+
+  return undefined;
+}
+
+/**
+ * Sanitize MCP settings at the write boundary. Malformed server declarations are
+ * dropped, duplicate names collapse to the last valid declaration, and sensitive
+ * env/header values survive only as Fusion secret references. Pure — no I/O.
+ */
+export function sanitizeMcpServers(value: unknown): { enabled?: boolean; servers: McpServerDefinition[] } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { enabled: false, servers: [] };
+  }
+  const input = value as Record<string, unknown>;
+  const byName = new Map<string, McpServerDefinition>();
+  if (Array.isArray(input.servers)) {
+    for (const rawServer of input.servers) {
+      const server = sanitizeMcpServerDefinition(rawServer);
+      if (server) byName.set(server.name, server);
+    }
+  }
+  return {
+    enabled: typeof input.enabled === "boolean" ? input.enabled : false,
+    servers: [...byName.values()],
+  };
 }

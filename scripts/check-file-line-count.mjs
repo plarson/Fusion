@@ -25,6 +25,9 @@ FN-6917 re-confirms the `pnpm test`-blocking premise is stale because FN-5048 le
 
 FNXC:CI 2026-06-25-00:00:
 FN-7013 re-confirms the `pnpm test`-blocking premise is stale: FN-5048 removed this guard from pretest and left it opt-in under `check:line-count` only. Sixty-one current violations were re-ratcheted after organic feature/test growth and eight stale baseline entries were tightened or pruned. `AgentLogViewer.test.tsx` and `merger-ai.ts` were temporarily grandfathered after crossing the hard cap as long-existing files, with focused split follow-ups FN-7028 and FN-7029. Wholesale god-file shrink/refactor remains the long-term direction and stays deferred to dedicated follow-ups.
+
+FNXC:CI 2026-06-25-17:44:
+FN-7035 split the two new hard-cap crossers (`ChatView.core.test.tsx` and `notifier.test.ts`) into focused sibling suites rather than grandfathering them. Six existing grandfathered entries were re-ratcheted to current counts after organic test and feature growth; `store.ts` and `types.ts` drift was left out of scope for a follow-up. Wholesale god-file shrink remains long-term deferred work for dedicated refactors.
 */
 // Repo-wide guard: hand-written source files may not exceed a hard line-count
 // cap (MAX_LINES). This stops the next god-file from being born while leaving

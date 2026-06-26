@@ -6,20 +6,6 @@
   display: inline-flex;
 }
 
-.wf-optional-steps-dropdown-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 4px 8px;
-  font-size: 0.8rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 6px);
-  background: var(--surface, transparent);
-  color: inherit;
-  cursor: pointer;
-}
-
 .wf-optional-steps-dropdown-trigger:disabled {
   opacity: 0.5;
   cursor: default;

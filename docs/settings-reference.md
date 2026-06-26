@@ -122,7 +122,29 @@ Fusion automatically falls back to ntfy's JSON publish format when a notificatio
 | `researchGlobalUserAgent` | `string` | `"FusionResearchBot/1.0"` | User-Agent header for HTTP requests made by research providers. |
 | `experimentalFeatures` | `Record<string, boolean>` | `{}` | Global-scoped experimental feature flags. Includes `experimentalFeatures.researchView`, which gates all Research surfaces and tools (dashboard view, engine task-session tools, and CLI `fn_research_*` tools), and `experimentalFeatures.evalsView`, which gates Evals surfaces (dashboard view, Settings → Scheduled Evals, and scheduled-eval cron execution). |
 | `remoteAccess` | `RemoteAccessSettings` | `{ activeProvider: null, providers: {...}, tokenStrategy: {...}, lifecycle: {...} }` | Global-scoped remote access provider + token strategy configuration used by Remote Access routes and tunnel lifecycle controls. |
+| `mcpServers` | `McpServersSettings` | `{ enabled: false, servers: [] }` | Global MCP server declarations shared across projects. Project `mcpServers` can enable/disable the effective set, override a same-named global server, or disable a global server with a same-named `enabled:false` entry. Sensitive env/header/token values must be `{ secretRef, scope }` references to Fusion-managed secrets, never plaintext. |
 | `worktrunk` | `WorktrunkSettings` | `{ enabled: false, binaryPath: undefined, installedBinaryPath: undefined, onFailure: "fail" }` | Global defaults for worktrunk integration. Merged field-by-field with project `worktrunk` values; project values override global values for matching fields. |
+
+### MCP server settings
+
+`mcpServers` is available in both global and project settings:
+
+```ts
+type McpServersSettings = {
+  enabled?: boolean;
+  servers?: McpServerDefinition[];
+};
+```
+
+Each server is named and uses one transport:
+
+- `stdio`: `{ name, enabled?, transport: "stdio", command, args?, env? }`
+- `sse`: `{ name, enabled?, transport: "sse", url, headers? }`
+- `streamable-http`: `{ name, enabled?, transport: "streamable-http", url, headers? }`
+
+Resolution uses project-over-global precedence by server name. The project-level `enabled` flag overrides the global flag when set; if the effective flag is false, no MCP servers are active. When enabled, global servers are loaded first, project servers with the same `name` replace them, and a project server with `enabled:false` removes the inherited server.
+
+Secret rule: `env` and `headers` maps are sensitive. Values must be Fusion secret references such as `{ "secretRef": "sec_...", "scope": "project" }` or `{ "secretRef": "sec_...", "scope": "global" }`. Write-boundary sanitizers and validators reject plaintext strings in these fields. Claude Desktop-style imports return `secretsToCreate` descriptors for plaintext env/header values and replace those values with secret refs in the imported definitions.
 
 ### Notification providers (pluggable)
 
@@ -324,6 +346,7 @@ Defaults from `DEFAULT_PROJECT_SETTINGS`; key scope from `PROJECT_SETTINGS_KEYS`
 | `unavailableNodePolicy` | `"block" \| "fallback-local"` | `"block"` | Project routing policy used during scheduler dispatch when a task resolves to a remote node and node health is known. `"block"` keeps the task in `todo` if the node is unhealthy; `"fallback-local"` reroutes dispatch to local execution. See [Architecture → Task Routing Architecture](./architecture.md#task-routing-architecture). |
 | `secretsAccessPolicy` | `"auto" \| "prompt" \| "deny"` | `undefined` | Project-level default secret access policy (overrides global default when present). |
 | `secretsEnv` | `{ enabled?: boolean; filename?: string; overwritePolicy?: "skip" \| "merge" \| "replace"; keyPrefix?: string; requireGitignored?: boolean }` | `undefined` | Per-project secrets `.env` materialization configuration. When `enabled`, the engine writes `secretsEnv.filename` (default `.env`) into each acquired task worktree from secrets marked `env_exportable=true`. `overwritePolicy` controls merge/skip/replace against an existing file; `requireGitignored` (default `true`) refuses to write a non-gitignored path; `keyPrefix` filters which exported keys are included. See [Secrets](./secrets.md#env-auto-write-into-worktrees). |
+| `mcpServers` | `McpServersSettings` | `{ enabled: false, servers: [] }` | Project-scoped MCP server settings. Project entries override global entries by `name`; `enabled:false` on a same-named project entry disables the inherited global server. Sensitive env/header/token material must be Fusion secret references only. See [MCP server settings](#mcp-server-settings). |
 | `owningNodeHandoffPolicy` | `"block" \| "reassign-to-local" \| "reassign-any-healthy"` | `"reassign-to-local"` | Policy for tasks already checked out by an unavailable owning node. `"block"` parks, `"reassign-to-local"` takes over on local node, `"reassign-any-healthy"` makes takeover eligible on healthy peers. |
 
 | `groupOverlappingFiles` | `boolean` | `true` | Serialize execution when file scopes overlap. |
@@ -853,6 +876,8 @@ Z.ai's built-in provider uses the existing `zai` auth entry / `ZAI_API_KEY` envi
 5. Global `defaultProvider` + `defaultModelId`
 6. Assigned durable agent runtime model (`runtimeConfig.model` or `runtimeConfig.modelProvider` + `runtimeConfig.modelId`) when both provider and model ID are set and no task/lane/default pair is configured
 7. Automatic provider/model resolution
+
+Workflow prompt steps and scheduled/manual AI-prompt automation steps use the same executor lane before falling back to project/global defaults; explicit step-level `modelProvider` + `modelId` values still take precedence for that individual step.
 
 ### Heartbeat model (durable agents)
 

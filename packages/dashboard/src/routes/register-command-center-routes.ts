@@ -86,9 +86,13 @@ function isValidIso(value: string): boolean {
 /**
  * Resolve `from`/`to` query params into an always-valid ISO range.
  *
- * Both bounds must be present, parseable, and ordered (`from <= to`); otherwise
- * the documented default window (last {@link DEFAULT_WINDOW_DAYS} days ending
- * now) is used and `defaulted` is true. `now` is injectable for tests.
+ * FNXC:CommandCenter 2026-06-25-00:00:
+ * FN-7019 fixes the picker/server contract: the date picker omits null bounds,
+ * so a from-only request means `[from, now]` and a to-only request means
+ * `[epoch, to]`. Only a truly empty/invalid range or an ordered-range violation
+ * may fall back to the documented default window; otherwise presets collapse to
+ * last-7-days and Command Center charts do not change when operators select a
+ * different range. `now` is injectable for tests.
  */
 export function resolveRange(
   query: Request["query"],
@@ -96,15 +100,17 @@ export function resolveRange(
 ): ResolvedRange {
   const rawFrom = typeof query.from === "string" ? query.from : undefined;
   const rawTo = typeof query.to === "string" ? query.to : undefined;
+  const fromMs = rawFrom !== undefined && isValidIso(rawFrom) ? Date.parse(rawFrom) : undefined;
+  const toMs = rawTo !== undefined && isValidIso(rawTo) ? Date.parse(rawTo) : undefined;
 
-  if (
-    rawFrom !== undefined &&
-    rawTo !== undefined &&
-    isValidIso(rawFrom) &&
-    isValidIso(rawTo) &&
-    Date.parse(rawFrom) <= Date.parse(rawTo)
-  ) {
-    return { from: rawFrom, to: rawTo, defaulted: false };
+  if (fromMs !== undefined && toMs !== undefined) {
+    if (fromMs <= toMs) {
+      return { from: rawFrom as string, to: rawTo as string, defaulted: false };
+    }
+  } else if (fromMs !== undefined) {
+    return { from: rawFrom as string, to: new Date(now).toISOString(), defaulted: false };
+  } else if (toMs !== undefined) {
+    return { from: new Date(0).toISOString(), to: rawTo as string, defaulted: false };
   }
 
   const to = new Date(now).toISOString();

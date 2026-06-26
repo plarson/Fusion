@@ -79,10 +79,8 @@ vi.mock("../agent-session-helpers.js", async () => {
       settings: Record<string, unknown> | undefined,
       assignedAgentRuntimeConfig?: Record<string, unknown>,
     ) => {
-      const model = typeof assignedAgentRuntimeConfig?.model === "string" ? assignedAgentRuntimeConfig.model : "";
-      const slash = model.indexOf("/");
-      if (slash > 0 && slash < model.length - 1) {
-        return { provider: model.slice(0, slash), modelId: model.slice(slash + 1) };
+      if (settings?.testMode === true || (typeof settings?.defaultProvider === "string" && settings.defaultProvider.trim().toLowerCase() === "mock")) {
+        return { provider: "mock", modelId: "scripted" };
       }
       if (taskModelProvider && taskModelId) return { provider: taskModelProvider, modelId: taskModelId };
       if (typeof settings?.executionProvider === "string" && typeof settings?.executionModelId === "string") {
@@ -96,6 +94,11 @@ vi.mock("../agent-session-helpers.js", async () => {
       }
       if (typeof settings?.defaultProvider === "string" && typeof settings?.defaultModelId === "string") {
         return { provider: settings.defaultProvider as string, modelId: settings.defaultModelId as string };
+      }
+      const model = typeof assignedAgentRuntimeConfig?.model === "string" ? assignedAgentRuntimeConfig.model : "";
+      const slash = model.indexOf("/");
+      if (slash > 0 && slash < model.length - 1) {
+        return { provider: model.slice(0, slash), modelId: model.slice(slash + 1) };
       }
       return { provider: undefined, modelId: undefined };
     },

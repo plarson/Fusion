@@ -35,6 +35,18 @@ describe("model-resolution", () => {
     ).toEqual({ provider: "google", modelId: "gemini-2.5-pro" });
   });
 
+  it("selects the project execution lane over the base default for workflow-step callers", () => {
+    const resolved = resolveExecutionSettingsModel({
+      executionProvider: "openai",
+      executionModelId: "gpt-4o",
+      defaultProvider: "anthropic",
+      defaultModelId: "claude-3-5-sonnet",
+    });
+
+    expect(resolved).toEqual({ provider: "openai", modelId: "gpt-4o" });
+    expect(resolved).not.toEqual({ provider: "anthropic", modelId: "claude-3-5-sonnet" });
+  });
+
   it("falls back from planning global to the project default override", () => {
     expect(
       resolvePlanningSettingsModel({

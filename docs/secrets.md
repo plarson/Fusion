@@ -38,6 +38,7 @@ Threat-model baseline:
 - Secret plaintext is **not** stored in SQLite.
 - Ciphertext + nonce are persisted; plaintext exists only in process memory during create/reveal.
 - Secret values must never be logged.
+- MCP server settings store only secret references for sensitive env/header/token fields; imports surface plaintext as secret-creation descriptors instead of persisting it in settings.
 
 See also: [Storage](./storage.md), [Multi-project](./multi-project.md), [Architecture](./architecture.md), [Settings reference](./settings-reference.md).
 
@@ -133,7 +134,7 @@ Fusion can materialize env-exportable secrets into each acquired task worktree w
 - Fingerprint sidecar: successful writes persist `.fusion-secrets-env.fingerprint` containing `<sha256>\n<filename>\n` (mode `0o600`) so teardown can verify file integrity before deletion.
 - Teardown cleanup: when a worktree is removed, Fusion deletes the managed env file only when the on-disk fingerprint still matches; edited files are preserved and only the sidecar is removed.
 
-Settings shape is split by scope: project-level secrets settings are limited to `ProjectSettings.secretsEnv`, while cross-node sync passphrase state is stored only as the reserved `__sync_passphrase__` row in `secrets_global` and exposed read-only through `GlobalSettings.secretsSyncPassphraseConfigured` (`packages/core/src/types.ts`). Settings never carry the plaintext passphrase.
+Settings shape is split by scope: project-level secrets settings include `ProjectSettings.secretsEnv` and MCP secret references in `ProjectSettings.mcpServers`, while cross-node sync passphrase state is stored only as the reserved `__sync_passphrase__` row in `secrets_global` and exposed read-only through `GlobalSettings.secretsSyncPassphraseConfigured` (`packages/core/src/types.ts`). Settings never carry plaintext passphrases or MCP credentials; MCP env/header/token fields use `{ secretRef, scope }` and materialize through `SecretsStore.revealSecret(...)` only at the runtime use seam.
 
 ### Test locations
 

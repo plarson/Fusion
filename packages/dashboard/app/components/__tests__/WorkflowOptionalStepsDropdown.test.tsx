@@ -13,8 +13,27 @@ const STEP: ResolvedWorkflowOptionalStep = {
   defaultOn: false,
 };
 
+const STEP_TWO: ResolvedWorkflowOptionalStep = {
+  templateId: "test-review",
+  name: "Test Review",
+  description: "Review test coverage",
+  icon: "check-circle",
+  phase: "post-implementation",
+  defaultOn: false,
+};
+
 // Controlled host: parent owns the enabled set, mirroring the create surfaces.
-function Host({ steps, initial = [] }: { steps: ResolvedWorkflowOptionalStep[]; initial?: string[] }) {
+function Host({
+  steps,
+  initial = [],
+  disabled = false,
+  triggerTestId,
+}: {
+  steps: ResolvedWorkflowOptionalStep[];
+  initial?: string[];
+  disabled?: boolean;
+  triggerTestId?: string;
+}) {
   const [enabled, setEnabled] = useState<string[]>(initial);
   return (
     <WorkflowOptionalStepsDropdown
@@ -23,8 +42,16 @@ function Host({ steps, initial = [] }: { steps: ResolvedWorkflowOptionalStep[]; 
       onToggle={(id) =>
         setEnabled((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
       }
+      disabled={disabled}
+      triggerTestId={triggerTestId}
     />
   );
+}
+
+function expectSharedButtonTrigger(trigger: HTMLElement) {
+  expect(trigger).toHaveClass("btn", "btn-sm", "wf-optional-steps-dropdown-trigger");
+  expect(trigger).toHaveAttribute("aria-haspopup", "listbox");
+  expect(trigger).toHaveAttribute("aria-expanded");
 }
 
 afterEach(() => {
@@ -38,9 +65,26 @@ describe("WorkflowOptionalStepsDropdown", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("reflects the selected count in the trigger label", () => {
-    render(<Host steps={[STEP]} />);
+  it("uses shared button classes and preserves trigger attributes when none are selected", () => {
+    render(<Host steps={[STEP]} triggerTestId="custom-optional-steps-trigger" />);
+    const trigger = screen.getByTestId("custom-optional-steps-trigger");
+    expectSharedButtonTrigger(trigger);
+    expect(trigger).toHaveTextContent("Steps: none");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("uses shared button classes and count label when multiple steps are selected", () => {
+    render(<Host steps={[STEP, STEP_TWO]} initial={["browser-verification", "test-review"]} />);
     const trigger = screen.getByTestId("wf-optional-steps-dropdown-trigger");
+    expectSharedButtonTrigger(trigger);
+    expect(trigger).toHaveTextContent("Steps: 2 selected");
+  });
+
+  it("uses shared button classes and disabled semantics when submitting", () => {
+    render(<Host steps={[STEP]} disabled />);
+    const trigger = screen.getByTestId("wf-optional-steps-dropdown-trigger");
+    expectSharedButtonTrigger(trigger);
+    expect(trigger).toBeDisabled();
     expect(trigger).toHaveTextContent("Steps: none");
   });
 

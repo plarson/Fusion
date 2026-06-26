@@ -4,13 +4,16 @@ import type {
   HeartbeatPromptTemplate,
   HeartbeatScopeDisciplineMode,
   Locale,
+  McpSensitiveValue,
+  McpServerDefinition,
+  McpServersSettings,
   SandboxBackendName,
   SandboxFailureMode,
   SandboxPolicy,
   SandboxProjectSettings,
   UnavailableNodePolicy,
 } from "./types.js";
-import { isLocale } from "./types.js";
+import { isLocale, isMcpSecretRef } from "./types.js";
 
 const UNAVAILABLE_NODE_POLICIES: readonly UnavailableNodePolicy[] = ["block", "fallback-local"] as const;
 const DIRECT_MERGE_COMMIT_STRATEGIES: readonly DirectMergeCommitStrategy[] = ["auto", "always-squash", "always-rebase"] as const;
@@ -203,4 +206,171 @@ export function validateSandboxProjectSettings(value: unknown): SandboxProjectSe
     ...(policy !== undefined ? { policy } : {}),
     ...(failureMode !== undefined ? { failureMode } : {}),
   };
+}
+
+export interface McpValidationError {
+  path: string;
+  code:
+    | "invalid-shape"
+    | "invalid-name"
+    | "duplicate-name"
+    | "invalid-transport"
+    | "missing-command"
+    | "missing-url"
+    | "invalid-args"
+    | "invalid-sensitive-map"
+    | "plaintext-secret";
+  message: string;
+}
+
+export interface McpValidationResult<T> {
+  value?: T;
+  errors: McpValidationError[];
+}
+
+function mcpError(path: string, code: McpValidationError["code"], message: string): McpValidationError {
+  return { path, code, message };
+}
+
+function validateMcpStringArray(value: unknown, path: string): McpValidationResult<string[] | undefined> {
+  if (value === undefined) return { value: undefined, errors: [] };
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string" && entry.trim().length > 0)) {
+    return { errors: [mcpError(path, "invalid-args", "Expected an array of non-empty strings")] };
+  }
+  return { value: value.map((entry) => entry.trim()), errors: [] };
+}
+
+function validateMcpSensitiveMap(
+  value: unknown,
+  path: string,
+): McpValidationResult<Record<string, McpSensitiveValue> | undefined> {
+  if (value === undefined) return { value: undefined, errors: [] };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { errors: [mcpError(path, "invalid-sensitive-map", "Expected an object whose values are secret references")] };
+  }
+  const out: Record<string, McpSensitiveValue> = {};
+  const errors: McpValidationError[] = [];
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!key.trim()) {
+      errors.push(mcpError(`${path}.${key}`, "invalid-sensitive-map", "Sensitive field names must be non-empty"));
+      continue;
+    }
+    if (typeof entry === "string") {
+      errors.push(mcpError(`${path}.${key}`, "plaintext-secret", "Sensitive MCP values must be Fusion secret references, never plaintext strings"));
+      continue;
+    }
+    if (!isMcpSecretRef(entry)) {
+      errors.push(mcpError(`${path}.${key}`, "invalid-sensitive-map", "Sensitive MCP values must be { secretRef, scope } objects"));
+      continue;
+    }
+    out[key.trim()] = { secretRef: entry.secretRef.trim(), scope: entry.scope };
+  }
+  return errors.length > 0 ? { errors } : { value: out, errors: [] };
+}
+
+export function validateMcpServerDefinitionDetailed(value: unknown, path = "server"): McpValidationResult<McpServerDefinition> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { errors: [mcpError(path, "invalid-shape", "MCP server definition must be an object")] };
+  }
+  const input = value as Record<string, unknown>;
+  const errors: McpValidationError[] = [];
+  if (typeof input.name !== "string" || input.name.trim().length === 0) {
+    errors.push(mcpError(`${path}.name`, "invalid-name", "MCP server name is required"));
+  }
+  const enabled = typeof input.enabled === "boolean" ? input.enabled : undefined;
+
+  if (input.transport === "stdio") {
+    if (typeof input.command !== "string" || input.command.trim().length === 0) {
+      errors.push(mcpError(`${path}.command`, "missing-command", "stdio MCP servers require a command"));
+    }
+    const args = validateMcpStringArray(input.args, `${path}.args`);
+    const env = validateMcpSensitiveMap(input.env, `${path}.env`);
+    errors.push(...args.errors, ...env.errors);
+    if (errors.length > 0) return { errors };
+    return {
+      value: {
+        name: (input.name as string).trim(),
+        ...(enabled !== undefined ? { enabled } : {}),
+        transport: "stdio",
+        command: (input.command as string).trim(),
+        ...(args.value ? { args: args.value } : {}),
+        ...(env.value ? { env: env.value } : {}),
+      },
+      errors: [],
+    };
+  }
+
+  if (input.transport === "sse" || input.transport === "streamable-http") {
+    if (typeof input.url !== "string" || input.url.trim().length === 0) {
+      errors.push(mcpError(`${path}.url`, "missing-url", `${input.transport} MCP servers require a url`));
+    }
+    const headers = validateMcpSensitiveMap(input.headers, `${path}.headers`);
+    errors.push(...headers.errors);
+    if (errors.length > 0) return { errors };
+    return {
+      value: {
+        name: (input.name as string).trim(),
+        ...(enabled !== undefined ? { enabled } : {}),
+        transport: input.transport,
+        url: (input.url as string).trim(),
+        ...(headers.value ? { headers: headers.value } : {}),
+      },
+      errors: [],
+    };
+  }
+
+  errors.push(mcpError(`${path}.transport`, "invalid-transport", "MCP transport must be stdio, sse, or streamable-http"));
+  return { errors };
+}
+
+/** Returns a normalized MCP server definition, or undefined with rejection details available from validateMcpServerDefinitionDetailed. */
+export function validateMcpServerDefinition(value: unknown): McpServerDefinition | undefined {
+  return validateMcpServerDefinitionDetailed(value).value;
+}
+
+export function validateMcpServerDefinitionsDetailed(value: unknown, path = "servers"): McpValidationResult<McpServerDefinition[]> {
+  if (!Array.isArray(value)) {
+    return { errors: [mcpError(path, "invalid-shape", "MCP servers must be an array")] };
+  }
+  const errors: McpValidationError[] = [];
+  const out: McpServerDefinition[] = [];
+  const names = new Set<string>();
+  value.forEach((entry, index) => {
+    const result = validateMcpServerDefinitionDetailed(entry, `${path}.${index}`);
+    errors.push(...result.errors);
+    if (!result.value) return;
+    if (names.has(result.value.name)) {
+      errors.push(mcpError(`${path}.${index}.name`, "duplicate-name", `Duplicate MCP server name: ${result.value.name}`));
+      return;
+    }
+    names.add(result.value.name);
+    out.push(result.value);
+  });
+  return errors.length > 0 ? { errors } : { value: out, errors: [] };
+}
+
+/** Returns unique normalized MCP server definitions, otherwise undefined. */
+export function validateMcpServerDefinitions(value: unknown): McpServerDefinition[] | undefined {
+  return validateMcpServerDefinitionsDetailed(value).value;
+}
+
+export function validateMcpServersSettingsDetailed(value: unknown, path = "mcpServers"): McpValidationResult<McpServersSettings> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { errors: [mcpError(path, "invalid-shape", "MCP settings must be an object")] };
+  }
+  const input = value as Record<string, unknown>;
+  const servers = input.servers === undefined ? { value: [], errors: [] } : validateMcpServerDefinitionsDetailed(input.servers, `${path}.servers`);
+  if (servers.errors.length > 0) return { errors: servers.errors };
+  return {
+    value: {
+      enabled: typeof input.enabled === "boolean" ? input.enabled : undefined,
+      servers: servers.value ?? [],
+    },
+    errors: [],
+  };
+}
+
+/** Returns normalized MCP settings, otherwise undefined. */
+export function validateMcpServersSettings(value: unknown): McpServersSettings | undefined {
+  return validateMcpServersSettingsDetailed(value).value;
 }

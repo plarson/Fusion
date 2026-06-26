@@ -57,7 +57,8 @@ import { ActivityArea } from "../ActivityArea";
 import { EcosystemArea } from "../EcosystemArea";
 import { useAnalyticsArea } from "../useAnalyticsArea";
 import { ConfirmDialogProvider } from "../../../../hooks/useConfirm";
-import type { DateRange } from "../DateRangePicker";
+import { rangeQuery } from "../areaShared";
+import { defaultPresets, rangeFromPreset, type DateRange } from "../../DateRangePicker";
 
 const range7d: DateRange = { from: "2026-06-08", to: null, preset: "7d" };
 const customRange = (from: string, to: string): DateRange => ({ from, to, preset: "custom" });
@@ -363,6 +364,28 @@ function expectSvgLineFillsBoxAndKeepsRoundMarkers(testId: string, label: string
   expect(pointPairs.at(-1)?.[0]).toBe(viewBoxWidth - 3);
 }
 
+describe("rangeQuery / rangeFromPreset", () => {
+  it("serializes every default preset into a distinct server-resolvable query", () => {
+    vi.useFakeTimers({ now: new Date("2026-06-15T12:00:00.000Z") });
+    const presets = defaultPresets((_key, fallback) => fallback);
+    const queries = Object.fromEntries(presets.map((preset) => [preset.id, rangeQuery(rangeFromPreset(preset))]));
+
+    expect(queries).toEqual({
+      "24h": "?from=2026-06-14",
+      "7d": "?from=2026-06-08",
+      "30d": "?from=2026-05-16",
+      all: "?to=2026-06-15T12%3A00%3A00.000Z",
+    });
+    expect(new Set(Object.values(queries)).size).toBe(presets.length);
+  });
+
+  it("preserves custom and open-ended custom ranges without collapsing them", () => {
+    expect(rangeQuery(customRange("2026-06-01", "2026-06-10"))).toBe("?from=2026-06-01&to=2026-06-10");
+    expect(rangeQuery({ from: "2026-06-01", to: null, preset: "custom" })).toBe("?from=2026-06-01");
+    expect(rangeQuery({ from: null, to: "2026-06-10", preset: "custom" })).toBe("?to=2026-06-10");
+  });
+});
+
 describe("useAnalyticsArea", () => {
   it("polls only when pollMs is provided and clears the interval on unmount", async () => {
     vi.useFakeTimers();
@@ -407,6 +430,35 @@ describe("useAnalyticsArea", () => {
       await Promise.resolve();
     });
     expect(apiMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refetches with distinct request keys for each default preset", async () => {
+    vi.useFakeTimers({ now: new Date("2026-06-15T12:00:00.000Z") });
+    apiMock.mockResolvedValue({ ok: true });
+    const presets = defaultPresets((_key, fallback) => fallback);
+    const ranges = presets.map(rangeFromPreset);
+
+    const { rerender } = renderHook(
+      ({ range }) => useAnalyticsArea<{ ok: boolean }>("/command-center/tokens", range),
+      { initialProps: { range: ranges[0] as DateRange } },
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    for (const range of ranges.slice(1)) {
+      rerender({ range });
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+
+    expect(apiMock.mock.calls.map(([path]) => path)).toEqual([
+      "/command-center/tokens?from=2026-06-14",
+      "/command-center/tokens?from=2026-06-08",
+      "/command-center/tokens?from=2026-05-16",
+      "/command-center/tokens?to=2026-06-15T12%3A00%3A00.000Z",
+    ]);
   });
 
   it("does not fetch or schedule polling for inverted custom ranges", async () => {

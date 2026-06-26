@@ -16,6 +16,11 @@
  * matching the quick-add card's prior no-chip-block behavior and the modal's
  * empty-state choice, so both surfaces look identical.
  *
+ * FNXC:TaskCreationButtons 2026-06-25-00:00:
+ * The optional-steps trigger must reuse shared `.btn .btn-sm` styling so it has
+ * the same padding, background, border, radius, and interaction affordances as
+ * the quick-add and New Task action buttons on every creation surface.
+ *
  * Accessibility: trigger has aria-haspopup/aria-expanded; the panel is a
  * role="listbox" labelled by the trigger; each option is a role="option" with
  * aria-checked. Escape closes and refocuses the trigger; arrow keys move the
@@ -145,7 +150,7 @@ export function WorkflowOptionalStepsDropdown({
         ref={triggerRef}
         type="button"
         id={labelId}
-        className="wf-optional-steps-dropdown-trigger"
+        className="btn btn-sm wf-optional-steps-dropdown-trigger"
         data-testid={triggerTestId}
         aria-haspopup="listbox"
         aria-expanded={isOpen}
@@ -157,7 +162,7 @@ export function WorkflowOptionalStepsDropdown({
         onKeyDown={onTriggerKeyDown}
       >
         <span>{triggerLabel}</span>
-        <ChevronDown size={13} aria-hidden />
+        <ChevronDown size={12} aria-hidden />
       </button>
 
       {isOpen &&

@@ -31,7 +31,7 @@ import {
   readAgentMemoryFile,
   resolvePlanningSettingsModel,
   resolvePluginEntryPath,
-  resolveProjectDefaultModel,
+  resolveExecutionSettingsModel,
   resolveTitleSummarizerSettingsModel,
   writeAgentMemoryFile,
 } from "@fusion/core";
@@ -5121,7 +5121,9 @@ async function executeAiPromptStep(
   }
 
   const settings = await taskStore.getSettings();
-  const defaultModel = resolveProjectDefaultModel(settings);
+  // Resolve model: step override → project execution lane → global execution lane → project default override → global default
+  // FNXC:ModelResolution 2026-06-25-12:00: FN-7039 requires manual AI-prompt workflow runs to use execution-lane settings before default settings because these runs have no task/runtime model context.
+  const defaultModel = resolveExecutionSettingsModel(settings);
   const modelProvider = step.modelProvider?.trim() || defaultModel.provider;
   const modelId = step.modelId?.trim() || defaultModel.modelId;
   let responseText = "";

@@ -4,9 +4,9 @@ import { Calendar } from "lucide-react";
 import "./DateRangePicker.css";
 
 export interface DateRange {
-  /** ISO date string (YYYY-MM-DD) or null for an open lower bound. */
+  /** ISO date string/timestamp or null for an open lower bound. */
   from: string | null;
-  /** ISO date string (YYYY-MM-DD) or null for an open upper bound (now). */
+  /** ISO date string/timestamp or null for an open upper bound (now). */
   to: string | null;
   /** Identifier for the active preset, or "custom". */
   preset: string;
@@ -35,8 +35,12 @@ export function defaultPresets(t: (key: string, fallback: string) => string): Da
 }
 
 export function rangeFromPreset(preset: DateRangePreset): DateRange {
+  /*
+  FNXC:CommandCenter 2026-06-25-00:00:
+  FN-7019 requires picker presets to serialize windows the server can distinguish. Bounded presets keep an open upper bound (`to: null`) so the server resolves `[from, now]`; All time must carry the selection timestamp as an explicit upper bound so it resolves `[epoch, selected-now]` instead of collapsing into the no-param default window.
+  */
   if (preset.days === null) {
-    return { from: null, to: null, preset: preset.id };
+    return { from: null, to: new Date(Date.now()).toISOString(), preset: preset.id };
   }
   const from = new Date(Date.now() - preset.days * 86_400_000);
   return { from: from.toISOString().slice(0, 10), to: null, preset: preset.id };
@@ -151,7 +155,7 @@ export function DateRangePicker({ value, onChange, presets }: DateRangePickerPro
               <span>{t("commandCenter.range.to", "To")}</span>
               <input
                 type="date"
-                value={value.to ?? ""}
+                value={value.to?.slice(0, 10) ?? ""}
                 onChange={(e) => applyCustom(value.from, e.target.value || null)}
                 data-testid="cc-date-range-to"
               />

@@ -3,6 +3,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -69,6 +70,7 @@ The gray top header band (task id + column badge) was over-padded. Trim its vert
 
 .detail-body {
   padding: calc(var(--space-lg) + var(--space-xs));
+  min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-color: var(--border) transparent;
@@ -1012,6 +1014,17 @@ FN-6500 fixes a tablet regression from FN-5599: the task-detail overlay offset a
     height: 92vh;
     max-height: calc(100dvh - var(--overlay-padding-top, 6vh) - var(--space-md));
   }
+
+  .detail-tabs {
+    width: 100%;
+    max-inline-size: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    touch-action: pan-x pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 @media (max-width: 768px) {
@@ -1110,6 +1123,14 @@ Embedded in the full-width board-card panel the detail content must be width-bou
   width: 100%;
   min-width: 0;
   max-width: 100%;
+}
+
+.task-detail-content--embedded .detail-tabs {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* The gray header row must wrap (task id left, Back-to-board right) instead of overflowing on narrow panels. */
@@ -1917,8 +1938,8 @@ The overflowing task-detail tab strip must keep horizontal touch panning enabled
 FNXC:TaskDetailTabs 2026-06-22-18:00:
 Remove the divider between the tab selector and the detail area below. Keep the active-tab underline as the only local selection affordance.
 
-FNXC:TaskDetailTabs 2026-06-23-20:25:
-Narrow mobile task detail surfaces from both Board and List must allow horizontal tab scrolling. The tab strip is the horizontal scroller, not the detail body; bound it to the available inline size and preserve pan-x so parent overflow clipping does not trap hidden tabs.
+FNXC:TaskDetailTabs 2026-06-25-16:55:
+Task-detail tabs must remain reachable as a one-row horizontal scroller on mobile across the Board modal and List embedded pane. The tab strip is the scroller, opts out of the global mobile pan-y lock with pan-x pan-y, and keeps tab children non-shrinking so conditional and plugin tabs overflow-scroll instead of clipping or compressing.
 */
 .detail-tabs {
   display: flex;

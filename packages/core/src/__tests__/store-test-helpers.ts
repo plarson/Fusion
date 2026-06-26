@@ -24,7 +24,7 @@ vi.mock("../run-command.js", async (importOriginal) => {
 
 import { execSync } from "node:child_process";
 import { runCommandAsync } from "../run-command.js";
-import { Database } from "../db.js";
+import { Database, setInMemoryTemplateSnapshot } from "../db.js";
 import { DEFAULT_PROJECT_SETTINGS } from "../types.js";
 import { TaskStore, TaskHasDependentsError } from "../store.js";
 import type { Task } from "../types.js";
@@ -72,6 +72,49 @@ export function buildTruncationSql(db: Database): string {
 
 export function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "kb-store-test-"));
+}
+
+/*
+ * FNXC:CoreTests 2026-06-25-16:30:
+ * Migrated in-memory DB snapshot for DB-backed test suites.
+ *
+ * db.init() replays SCHEMA_SQL + ~129 migrations on every fresh in-memory DB
+ * (~30-90ms each). Suites that build a new store per test (AgentStore,
+ * MissionStore, TaskStore, dashboard route stores, …) pay that cost hundreds of
+ * times. This harness migrates ONE in-memory DB per test file, serializes it,
+ * and registers the bytes via setInMemoryTemplateSnapshot so every later
+ * in-memory Database is restored from the snapshot instead of re-migrating.
+ *
+ * Isolation is unchanged: each test still constructs its own brand-new
+ * in-memory DB; only the migration work is amortized. Disk-backed stores
+ * (cross-instance persistence tests) are never touched by the snapshot.
+ *
+ * Usage:
+ *   beforeAll(() => installInMemoryDbSnapshot());
+ *   afterAll(() => clearInMemoryDbSnapshot());
+ * Leave existing per-test `new <Store>({ inMemoryDb: true }); init()` as-is.
+ */
+let cachedMigratedSnapshot: Uint8Array | null = null;
+
+export function installInMemoryDbSnapshot(): void {
+  if (process.env.FN_NO_SNAPSHOT === "1") return; // A/B benchmark escape hatch
+  if (!cachedMigratedSnapshot) {
+    // Build the template with the hook OFF so this DB runs real migrations once.
+    setInMemoryTemplateSnapshot(null);
+    const templateDir = makeTmpDir();
+    const template = new Database(templateDir, { inMemory: true });
+    try {
+      template.init();
+      cachedMigratedSnapshot = template.serializeSnapshot();
+    } finally {
+      template.close();
+    }
+  }
+  setInMemoryTemplateSnapshot(cachedMigratedSnapshot);
+}
+
+export function clearInMemoryDbSnapshot(): void {
+  setInMemoryTemplateSnapshot(null);
 }
 
 async function clearDirectoryContents(dir: string): Promise<void> {

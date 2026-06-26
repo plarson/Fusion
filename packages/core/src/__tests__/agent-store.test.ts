@@ -10,8 +10,9 @@
  * agent:heartbeat, agent:stateChanged), error paths, state transition
  * validation, concurrency locking, and SQLite persistence.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { AgentStore } from "../agent-store.js";
+import { installInMemoryDbSnapshot, clearInMemoryDbSnapshot } from "./store-test-helpers.js";
 import { TaskStore } from "../store.js";
 import { validateSnapshotEnvelope } from "../shared-mesh-state.js";
 import { rm } from "node:fs/promises";
@@ -30,6 +31,11 @@ import {
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "fn-agent-store-test-"));
 }
+
+// FNXC:CoreTests 2026-06-25-16:30: amortize the ~129-migration db.init() cost
+// across this file's in-memory stores via one migrated-schema snapshot.
+beforeAll(() => installInMemoryDbSnapshot());
+afterAll(() => clearInMemoryDbSnapshot());
 
 describe("AgentStore", () => {
   let rootDir: string;

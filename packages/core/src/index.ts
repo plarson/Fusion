@@ -697,6 +697,9 @@ export {
   toJsonNullable,
   fromJson,
   SCHEMA_VERSION,
+  // FNXC:CoreTests 2026-06-25-16:30: test-only migrated-DB snapshot hook so
+  // cross-package suites (dashboard route tests) can amortize db.init() cost.
+  setInMemoryTemplateSnapshot,
 } from "./db.js";
 export {
   ProjectIdentityConflictError,

@@ -44,6 +44,11 @@ interface RawDatabase {
   exec(sql: string): void;
   prepare(sql: string): RawStatement;
   close(): void;
+  // Optional snapshot API (node:sqlite ≥ 22.x, bun:sqlite). Both runtimes
+  // expose `serialize()` → Uint8Array and `deserialize(buf)` that replaces the
+  // open database's contents in place. Used only by the test snapshot harness.
+  serialize?: () => Uint8Array;
+  deserialize?: (data: Uint8Array) => void;
 }
 
 type DatabaseCtor = new (path: string) => RawDatabase;
@@ -82,6 +87,31 @@ export class DatabaseSync {
 
   close(): void {
     this.impl.close();
+  }
+
+  /**
+   * FNXC:CoreTests 2026-06-25-16:30:
+   * Snapshot the entire database into a byte buffer. Backs the test-only
+   * migrated-DB snapshot harness so the 129-migration init() runs once per
+   * test file instead of once per test. Throws if the runtime lacks the API.
+   */
+  serialize(): Uint8Array {
+    if (typeof this.impl.serialize !== "function") {
+      throw new Error("SQLite runtime does not support serialize()");
+    }
+    return this.impl.serialize();
+  }
+
+  /**
+   * FNXC:CoreTests 2026-06-25-16:30:
+   * Replace this (in-memory) database's contents with a previously serialized
+   * snapshot. Restores a fully-migrated schema without replaying migrations.
+   */
+  deserialize(data: Uint8Array): void {
+    if (typeof this.impl.deserialize !== "function") {
+      throw new Error("SQLite runtime does not support deserialize()");
+    }
+    this.impl.deserialize(data);
   }
 
   prepare(sql: string): SqliteStatement {

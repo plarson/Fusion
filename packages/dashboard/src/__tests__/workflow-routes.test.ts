@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import express from "express";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,10 +11,16 @@ import { registerWorkflowRoutes } from "../routes/register-workflow-routes.js";
 import { ApiError, sendErrorResponse } from "../api-error.js";
 import { request } from "../test-request.js";
 import { emitWorkflowSseEvent } from "../sse.js";
+import { installInMemoryDbSnapshot, clearInMemoryDbSnapshot } from "./db-snapshot-helper.js";
 
 vi.mock("../sse.js", () => ({
   emitWorkflowSseEvent: vi.fn(),
 }));
+
+// FNXC:DashboardTests 2026-06-25-16:30: amortize the ~129-migration store.init()
+// cost across this file's in-memory TaskStore/AgentStore via one snapshot.
+beforeAll(() => installInMemoryDbSnapshot());
+afterAll(() => clearInMemoryDbSnapshot());
 
 function linearIr(): WorkflowIr {
   return {

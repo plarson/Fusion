@@ -57,6 +57,33 @@ function getCssAtRuleBlockContaining(css: string, atRule: string, selector: stri
   throw new Error(`Missing ${atRule} block containing ${selector}`);
 }
 
+function getExactCssRuleBlock(css: string, selector: string): string {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const ruleMatch = css.match(new RegExp(`(?:^|[}\\n])\\s*${escapedSelector}\\s*\\{([^}]*)\\}`));
+  return ruleMatch?.[1] ?? "";
+}
+
+function getCssAtRuleBlockContainingExactRule(css: string, atRule: string, selector: string): string {
+  let startAt = 0;
+  while (startAt < css.length) {
+    const { block, endIndex } = getCssAtRuleBlock(css, atRule, startAt);
+    if (getExactCssRuleBlock(block, selector)) {
+      return block;
+    }
+    startAt = endIndex;
+  }
+
+  throw new Error(`Missing ${atRule} block containing exact ${selector}`);
+}
+
+function expectHorizontalTabScroller(ruleBlock: string, surface: string): void {
+  expect(ruleBlock, `${surface} overflow-x`).toContain("overflow-x: auto;");
+  expect(ruleBlock, `${surface} overflow-y`).toContain("overflow-y: hidden;");
+  expect(ruleBlock, `${surface} overscroll`).toContain("overscroll-behavior-inline: contain;");
+  expect(ruleBlock, `${surface} touch-action`).toContain("touch-action: pan-x pan-y;");
+  expect(ruleBlock, `${surface} momentum-scroll`).toContain("-webkit-overflow-scrolling: touch;");
+}
+
 describe("TaskDetailModal", () => {
   describe("mobile responsive structure", () => {
     it("keeps detail metadata as a single wrapping flex row without mobile column fallbacks", () => {
@@ -120,6 +147,32 @@ describe("TaskDetailModal", () => {
       expect(tabletModalBlock).not.toContain("16px");
     });
 
+    it("keeps task-detail tabs as horizontal scrollers across modal, embedded, mobile, and tablet surfaces", () => {
+      const css = readDashboardStylesSource();
+      const baseTabsBlock = getExactCssRuleBlock(css, ".detail-tabs");
+      const mobileBlock = getCssAtRuleBlockContainingExactRule(css, "@media (max-width: 768px)", ".detail-tabs");
+      const mobileTabsBlock = getExactCssRuleBlock(mobileBlock, ".detail-tabs");
+      const tabletBlock = getCssAtRuleBlockContainingExactRule(css, "@media (min-width: 769px) and (max-width: 1024px)", ".detail-tabs");
+      const tabletTabsBlock = getExactCssRuleBlock(tabletBlock, ".detail-tabs");
+      const embeddedTabsBlock = getExactCssRuleBlock(css, ".task-detail-content--embedded .detail-tabs");
+      const detailContentBlock = getCssRuleBlock(css, ".task-detail-content");
+      const detailBodyBlock = getCssRuleBlock(css, ".detail-body");
+      const detailTabBlock = getCssRuleBlock(css, ".detail-tab");
+
+      expectHorizontalTabScroller(baseTabsBlock, "base .detail-tabs");
+      expectHorizontalTabScroller(mobileTabsBlock, "mobile .detail-tabs");
+      expectHorizontalTabScroller(tabletTabsBlock, "tablet .detail-tabs");
+      expectHorizontalTabScroller(embeddedTabsBlock, "embedded .detail-tabs");
+      expect(baseTabsBlock).toContain("min-width: 0;");
+      expect(mobileTabsBlock).toContain("min-width: 0;");
+      expect(detailTabBlock).toContain("flex-shrink: 0;");
+      expect(detailContentBlock).toContain("min-height: 0;");
+      expect(detailContentBlock).toContain("min-width: 0;");
+      expect(detailBodyBlock).toContain("min-width: 0;");
+      expect(detailBodyBlock).not.toContain("overflow-x: auto;");
+      expect(detailBodyBlock).not.toContain("overflow: hidden;");
+    });
+
     it("renders responsive structural classes (modal-lg, overlay, spacer, tabs, detail-body)", () => {
       const { container } = render(
         <TaskDetailModal
@@ -139,7 +192,19 @@ describe("TaskDetailModal", () => {
       expect(container.querySelector(".detail-timestamps")).toBeTruthy();
       expect(container.querySelectorAll(".detail-timestamp-item").length).toBe(2);
       const tabs = container.querySelectorAll(".detail-tab");
-      expect(tabs.length).toBe(11);
+      expect(Array.from(tabs).map((tab) => tab.textContent?.trim())).toEqual([
+        "Chat",
+        "Definition",
+        "Logs",
+        "Changes",
+        "Review",
+        "Comments",
+        "Artifacts",
+        "Model",
+        "Workflow",
+        "Stats",
+        "Routing",
+      ]);
       expect(tabs[0].classList.contains("detail-tab-active")).toBe(true);
       expect(Array.from(tabs).slice(1).every((t) => !t.classList.contains("detail-tab-active"))).toBe(true);
       // Responsive CSS controls sizing — no inline padding/fontSize/borderBottom leaks

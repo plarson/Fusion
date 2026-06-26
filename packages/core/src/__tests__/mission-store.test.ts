@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
 import { MissionStore, deriveMilestoneAcceptanceCriteriaFromFeatures } from "../mission-store.js";
+import { installInMemoryDbSnapshot, clearInMemoryDbSnapshot } from "./store-test-helpers.js";
 import { GoalStore } from "../goal-store.js";
 import { Database, SCHEMA_VERSION } from "../db.js";
 import type { MissionFeature } from "../mission-types.js";
@@ -12,6 +13,11 @@ import { rm } from "node:fs/promises";
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "kb-mission-test-"));
 }
+
+// FNXC:CoreTests 2026-06-25-16:30: amortize the ~129-migration db.init() cost
+// across this file's in-memory databases via one migrated-schema snapshot.
+beforeAll(() => installInMemoryDbSnapshot());
+afterAll(() => clearInMemoryDbSnapshot());
 
 function linearIr(name: string): WorkflowIr {
   return {

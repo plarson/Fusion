@@ -107,12 +107,15 @@ The merge gate is thin and trusted: CI blocks PRs on exactly Lint, Typecheck, Bu
 pnpm test          # gate suite + changed-only affected tests (bounded; never full-suite)
 pnpm test:gate     # the merge gate: curated engine-core suite + CI-shape test
 pnpm smoke:boot    # boot smoke: CLI --help + real serve /api/health
+pnpm verify:fast   # TEST-FREE verification: typecheck + build (scoped to changed packages) + boot smoke; recommended non-test verification/testCommand. Additive — changes no default
 pnpm test:velocity # weekly report-only test velocity baseline; use -- --measure --write-report to refresh
 pnpm test:full     # full workspace suite — explicit opt-in only
 pnpm lint
 pnpm build
 pnpm verify:workspace  # deep opt-in verification (lint -> test:full -> build); NOT the merge gate
 ```
+
+`pnpm verify:fast` is the recommended **test-free verification** path: typecheck + build scoped to the changed packages (it reuses `pnpm test`'s changed-package resolution) plus the boot smoke once, with **no test run**. It is deterministic and flake-free, suitable as a project `testCommand`/verification command when you want non-test verification; the full suite stays available and runs non-blocking. It is additive and does not change `pnpm test`, the gate, or CI. See `docs/testing.md`.
 
 ### Standing Rule: Flaky Tests Are Quarantined on Sight (Deletion Ratchet)
 
@@ -130,6 +133,12 @@ pnpm verify:workspace  # deep opt-in verification (lint -> test:full -> build); 
 - Do not mask slowness by raising worker/concurrency knobs.
 - Do not add new real-network calls, real polling loops, or mock-the-world shells when a narrower seam exists.
 - Use the testing taxonomy in `docs/testing.md` when deciding trim vs keep.
+
+### Standing Rule: Scope Verification to Changed Files — Do Not Use `allowFullSuite`
+
+- When verifying via `fn_run_verification`, **do not pass `allowFullSuite: true` unless absolutely necessary.** It is a last-resort escape hatch that runs a marathon command (root `pnpm test`, `pnpm test:full`, `verify:workspace`, whole-package tests, repeat loops) far in excess of what the change requires, and it is the main way verification balloons past its budget.
+- Default to a **file-scoped** command targeting only the tests affected by the diff, e.g. `pnpm --filter @fusion/<pkg> exec vitest run src/path/to/changed.test.ts --silent=passed-only --reporter=dot`. The marathon soft-cap exists to push you toward this.
+- `allowFullSuite: true` is justified only for a genuinely full run with no targetable test set (e.g. a cross-cutting infra change) — and then state the reason. The thin merge gate (`pnpm test:gate`) is the cross-cutting safety net, not per-task verification.
 
 ### Standing Rule: Fix the Invariant, Not the Repro (FN-5893)
 

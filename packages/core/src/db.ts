@@ -1830,6 +1830,26 @@ export function integrityCheckSqliteFileAsync(
 
 // ── Database Class ───────────────────────────────────────────────────
 
+/**
+ * FNXC:CoreTests 2026-06-25-16:30:
+ * Test-only migrated-schema snapshot. db.init() replays the full schema plus
+ * ~129 migrations on every fresh in-memory DB (~30-90ms each), which is minutes
+ * of pure setup across thousands of DB-backed tests. The snapshot harness
+ * (store-test-helpers.ts → installInMemoryDbSnapshot) builds ONE migrated
+ * in-memory DB per test file, serializes it, and registers the bytes here.
+ * Any subsequent in-memory Database deserializes the snapshot at open time, so
+ * init() finds schemaVersion === SCHEMA_VERSION and the matching compat
+ * fingerprint and short-circuits all migration/backfill work. Each test still
+ * gets a brand-new, fully-isolated in-memory DB — only the migration cost is
+ * amortized. Never consulted for disk-backed (production) databases.
+ */
+let inMemoryTemplateSnapshot: Uint8Array | null = null;
+
+/** Register/clear the in-memory migrated-DB snapshot. Test harness only. */
+export function setInMemoryTemplateSnapshot(snapshot: Uint8Array | null): void {
+  inMemoryTemplateSnapshot = snapshot;
+}
+
 type SharedIntegrityCheckState = {
   timer: ReturnType<typeof setTimeout> | null;
   subscribers: Set<Database>;
@@ -1928,11 +1948,27 @@ export class Database {
     } else {
       // Wait up to the configured timeout for locks to clear before returning SQLITE_BUSY.
       this.db.exec(`PRAGMA busy_timeout = ${this.busyTimeoutMs}`);
+      // FNXC:CoreTests 2026-06-25-16:30:
+      // Restore the migrated-schema snapshot in place of replaying migrations.
+      // deserialize() swaps page content only; the connection-level pragmas set
+      // above/below (busy_timeout, foreign_keys) persist across the swap.
+      if (inMemoryTemplateSnapshot) {
+        this.db.deserialize(inMemoryTemplateSnapshot);
+      }
     }
     // Enable foreign key enforcement
     this.db.exec("PRAGMA foreign_keys = ON");
 
     this._fts5Available = probeFts5(this.db);
+  }
+
+  /**
+   * FNXC:CoreTests 2026-06-25-16:30:
+   * Serialize the entire database to a byte buffer for the test snapshot
+   * harness (see setInMemoryTemplateSnapshot). Test-only.
+   */
+  serializeSnapshot(): Uint8Array {
+    return this.db.serialize();
   }
 
   /**

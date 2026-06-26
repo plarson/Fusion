@@ -5,7 +5,8 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { ArrowUpDown, ArrowUp, ArrowDown, Link, Columns3, EyeOff, Eye, ChevronRight, Zap, Trash2, Pause, Play, Archive } from "lucide-react";
 import type { Task, TaskDetail, Column, ColumnId, TaskCreateInput, MergeResult, GithubIssueAction } from "@fusion/core";
-import { COLUMNS, DEFAULT_COLUMN, classifyDependencyStatuses, formatDependencySummary, getErrorMessage, isColumn } from "@fusion/core";
+import { COLUMNS, DEFAULT_COLUMN, getErrorMessage, isColumn } from "@fusion/core";
+import { classifyDependencyStatuses, formatDependencySummary } from "../../../core/src/dependency-status";
 import { useColumnLabel } from "../i18n/labels";
 import { sortTasksForDisplayColumn } from "./taskSorting";
 import { batchUpdateTaskModels, fetchBoardWorkflows, fetchNodes, fetchTaskDetail } from "../api";
@@ -2366,7 +2367,7 @@ export function ListView({
                                         const dependencySummary = classifyDependencyStatuses(task.dependencies ?? [], tasks);
                                         return (
                                           <span className="list-dep-badge" title={formatDependencySummary(dependencySummary)}>
-                                            <Link size={12} /> {dependencySummary.active.length}/{task.dependencies.length}
+                                            <Link size={12} /> {dependencySummary.active.length}/{dependencySummary.statuses.length}
                                           </span>
                                         );
                                       })()

@@ -18,9 +18,8 @@ import {
   VALID_TRANSITIONS,
   isColumn,
   getErrorMessage,
-  classifyDependencyStatuses,
-  formatDependencyStatusLabel,
 } from "@fusion/core";
+import { classifyDependencyStatuses, formatDependencyStatusLabel } from "../../../core/src/dependency-status";
 import { isNearDuplicateCanonicalInactive } from "../../../core/src/near-duplicate-canonical";
 import { resolveEffectiveAutoMerge } from "../../../core/src/task-merge";
 import { uploadAttachment, deleteAttachment, updateTask, repairOverlapBlocker, pauseTask, unpauseTask, fetchTaskDetail, fetchSettings, fetchGlobalSettings, requestSpecRevision, rebuildTaskSpec, approvePlan, rejectPlan, refineTask, fetchWorkflowResults, assignTask, fetchAgents, fetchAgent, refreshPrStatus, fetchBoardWorkflows, updateTaskCustomFields, summarizeTitle, api } from "../api";
@@ -2447,10 +2446,9 @@ export function TaskDetailContent({
     }
   }, [exitSpecEditMode, handleSaveSpecFromEdit]);
 
-  const dependencyStatusById = useMemo(() => {
-    const summary = classifyDependencyStatuses(dependencies, tasks);
-    return new Map(summary.statuses.map((status) => [status.id, status]));
-  }, [dependencies, tasks]);
+  const dependencyStatuses = useMemo(() => (
+    classifyDependencyStatuses(dependencies, tasks).statuses
+  ), [dependencies, tasks]);
 
   const availableTasks = tasks
     .filter((t) => t.id !== task.id && !dependencies.includes(t.id))
@@ -3948,12 +3946,12 @@ export function TaskDetailContent({
             <h4>{t("taskDetail.deps.heading", "Dependencies")}</h4>
             {dependencies.length > 0 ? (
               <ul className="detail-dep-list">
-                {dependencies.map((dep) => {
+                {dependencyStatuses.map((depStatus) => {
                   // Look up dependency metadata from tasks prop
+                  const dep = depStatus.id;
                   const depTask = tasks.find((t) => t.id === dep);
-                  const depStatus = dependencyStatusById.get(dep);
                   const depLabel = depTask?.title || depTask?.description || dep;
-                  const depStatusLabel = depStatus ? formatDependencyStatusLabel(depStatus) : dep;
+                  const depStatusLabel = formatDependencyStatusLabel(depStatus);
 
                   return (
                     <li key={dep} className="detail-dep-item">
@@ -3972,8 +3970,8 @@ export function TaskDetailContent({
                       >
                         <span className="detail-dep-id">{dep}</span>
                         <span className="detail-dep-label">{truncate(depLabel, 40)}</span>
-                        {depStatus && depStatus.kind !== "active" && (
-                          <span className="detail-dep-label">{depStatusLabel.replace(dep, "").trim()}</span>
+                        {depStatus.kind !== "active" && (
+                          <span className="detail-dep-status">{depStatusLabel.replace(dep, "").trim()}</span>
                         )}
                       </span>
                       <button

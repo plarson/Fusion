@@ -244,9 +244,14 @@ export function getUnmetSchedulingDependencies(
     onParityDiff?: (diff: SchedulingDependencyParityDiff) => void;
   },
 ): string[] {
-  return task.dependencies.filter((depId) => {
+  const unmet: string[] = [];
+  const seen = new Set<string>();
+  for (const rawDepId of task.dependencies) {
+    const depId = rawDepId.trim();
+    if (!depId || seen.has(depId)) continue;
+    seen.add(depId);
     const dep = tasks.find((candidate) => candidate.id === depId);
-    if (!dep) return false;
+    if (!dep) continue;
     const legacySatisfied = isLegacyDependencySatisfied(dep);
     const markerSatisfied = isMarkerDependencySatisfied(dep, options?.markerAcceptedByTaskId?.get(depId) === true);
     if (options?.onParityDiff && legacySatisfied !== markerSatisfied) {
@@ -257,8 +262,9 @@ export function getUnmetSchedulingDependencies(
         markerSatisfied,
       });
     }
-    return !legacySatisfied;
-  });
+    if (!legacySatisfied) unmet.push(depId);
+  }
+  return unmet;
 }
 
 export function isRunnableQueuedOverlapCandidate(

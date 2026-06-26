@@ -768,6 +768,7 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, onMoveTask, 
                   prAuthAvailable={prAuthAvailable}
                   autoMergeEnabled={Boolean(autoMerge)}
                   nearDuplicateCanonicalInactive={resolveNearDuplicateCanonicalInactive(task)}
+                  dependencyTasks={allTasks}
                 />
               ))}
               {shouldPaginate && hiddenTaskCount > 0 && (

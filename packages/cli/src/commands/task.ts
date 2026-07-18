@@ -603,7 +603,7 @@ export async function runTaskList(projectName?: string) {
 
     console.log(`  ${dot} ${label} (${colTasks.length})`);
     for (const t of colTasks) {
-      const dependencySummary = await resolveDependencySummary(store, t.dependencies);
+      const dependencySummary = await resolveDependencySummary(context.store, t.dependencies);
       const deps = dependencySummary ? ` [${dependencySummary}]` : "";
       const label = t.title || t.description.slice(0, 60) + (t.description.length > 60 ? "…" : "");
       console.log(`    ${t.id}  ${label}${deps}`);

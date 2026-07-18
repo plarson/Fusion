@@ -1,66 +1,95 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { TaskStore } from "@fusion/core";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { pgDescribe } from "../../../core/src/__test-utils__/pg-test-harness.js";
+import { createPgExtensionHarness } from "./pg-extension-harness.js";
+
+const resolveProjectMock = vi.hoisted(() => vi.fn());
+const closeProjectStoreMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("../project-context.js", () => ({
+  resolveProject: resolveProjectMock,
+  closeProjectStore: closeProjectStoreMock,
+}));
+
 import { runTaskList, runTaskShow } from "../commands/task.js";
 
 const logs: string[] = [];
+const pgTest = pgDescribe;
 
-async function seedMixedDependencies(rootDir: string): Promise<void> {
-  const store = new TaskStore(rootDir);
-  await store.init();
-  await store.createTask({ title: "Done dependency", description: "done", column: "done" }); // FN-001
-  await store.createTask({ title: "Live todo dependency", description: "todo", column: "todo" }); // FN-002
-  const archived = await store.createTask({ title: "Archived dependency", description: "archived", column: "todo" }); // FN-003
-  await store.archiveTask(archived.id);
-  await store.createTask({ title: "Live progress dependency", description: "progress", column: "in-progress" }); // FN-004
-  await store.createTask({
-    title: "Mixed dependent",
-    description: "dependent",
-    column: "todo",
-    dependencies: ["FN-001", "FN-002", "FN-003", "FN-004"],
-  });
-}
+pgTest("task dependency CLI output", () => {
+  const h = createPgExtensionHarness("fn-task-dependency-output");
+  let ids: {
+    done: string;
+    todo: string;
+    archived: string;
+    progress: string;
+    dependent: string;
+  };
 
-describe("task dependency CLI output", () => {
-  const originalCwd = process.cwd();
-  let tmpDir: string;
-  let exitSpy: ReturnType<typeof vi.spyOn>;
-
+  beforeAll(h.beforeAll);
   beforeEach(async () => {
-    tmpDir = await mkdtemp(join(tmpdir(), "fusion-task-deps-cli-"));
-    process.chdir(tmpDir);
+    await h.beforeEach();
+    const store = h.store();
+    resolveProjectMock.mockResolvedValue({
+      store,
+      projectId: h.rootDir(),
+      projectPath: h.rootDir(),
+      projectName: "test",
+      isRegistered: false,
+    });
+
     logs.length = 0;
     vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
       logs.push(args.join(" "));
     });
-    exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+    vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
       throw new Error(`process.exit:${code ?? 0}`);
     }) as never);
-    await seedMixedDependencies(tmpDir);
+
+    const done = await store.createTask({ title: "Done dependency", description: "done", column: "done" });
+    const todo = await store.createTask({ title: "Live todo dependency", description: "todo", column: "todo" });
+    const archived = await store.createTask({ title: "Archived dependency", description: "archived", column: "todo" });
+    await store.archiveTask(archived.id);
+    const progress = await store.createTask({ title: "Live progress dependency", description: "progress", column: "in-progress" });
+    const dependent = await store.createTask({
+      title: "Mixed dependent",
+      description: "dependent",
+      column: "todo",
+      dependencies: [done.id, todo.id, archived.id, progress.id],
+    });
+    ids = {
+      done: done.id,
+      todo: todo.id,
+      archived: archived.id,
+      progress: progress.id,
+      dependent: dependent.id,
+    };
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    process.chdir(originalCwd);
-    await rm(tmpDir, { recursive: true, force: true });
+    resolveProjectMock.mockReset();
+    closeProjectStoreMock.mockClear();
+    await h.afterEach();
   });
+  afterAll(h.afterAll);
 
   it("labels active and resolved dependencies in task list output", async () => {
     await expect(runTaskList()).rejects.toThrow("process.exit:0");
 
     const output = logs.join("\n");
-    expect(output).toContain("FN-005  Mixed dependent [active deps: FN-002, FN-004; resolved deps: FN-001 (done/resolved), FN-003 (archived/resolved)]");
-    expect(output).not.toContain("[FN-001, FN-002, FN-003, FN-004]");
+    expect(output).toContain(
+      `${ids.dependent}  Mixed dependent [active deps: ${ids.todo}, ${ids.progress}; resolved deps: ${ids.done} (done/resolved), ${ids.archived} (archived/resolved)]`,
+    );
+    expect(output).not.toContain(`[${ids.done}, ${ids.todo}, ${ids.archived}, ${ids.progress}]`);
   });
 
   it("labels active and resolved dependencies in task show output", async () => {
-    await runTaskShow("FN-005");
+    await runTaskShow(ids.dependent);
 
     const output = logs.join("\n");
-    expect(output).toContain("Dependencies: active deps: FN-002, FN-004; resolved deps: FN-001 (done/resolved), FN-003 (archived/resolved)");
-    expect(output).not.toContain("Dependencies: FN-001, FN-002, FN-003, FN-004");
-    expect(exitSpy).not.toHaveBeenCalled();
+    expect(output).toContain(
+      `Dependencies: active deps: ${ids.todo}, ${ids.progress}; resolved deps: ${ids.done} (done/resolved), ${ids.archived} (archived/resolved)`,
+    );
+    expect(output).not.toContain(`Dependencies: ${ids.done}, ${ids.todo}, ${ids.archived}, ${ids.progress}`);
+    expect(process.exit).not.toHaveBeenCalled();
   });
 });

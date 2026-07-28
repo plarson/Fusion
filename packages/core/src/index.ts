@@ -139,6 +139,7 @@ export type {
   RankedAssignedTaskLine,
   RankAssignedTasksForWakeDeltaResult,
 } from "./assigned-task-ranking.js";
+export * from "./dependency-status.js";
 export { MOCK_PROVIDER_ID } from "./mock-provider-constants.js";
 export type { MockProviderId, MockSessionPurpose } from "./mock-provider-constants.js";
 export {

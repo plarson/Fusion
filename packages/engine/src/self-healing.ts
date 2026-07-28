@@ -4415,7 +4415,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const todoTaskIds = new Set(todoTasks.map((t) => t.id));
       for (const dependent of dependents) {
         try {
-          const unresolvedDeps = dependent.dependencies.filter((depId) => {
+          const unresolvedDeps = [...new Set(dependent.dependencies)].filter((depId) => {
             const dep = taskById.get(depId);
             return dep && dep.column !== "done" && dep.column !== "in-review" && dep.column !== "archived";
           });
@@ -5352,7 +5352,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       for (const task of candidates.values()) {
         const blockerId = task.blockedBy;
 
-        const unresolvedDeps = task.dependencies.filter((depId) => {
+        const unresolvedDeps = [...new Set(task.dependencies)].filter((depId) => {
           const dep = taskById.get(depId);
           // listTasks excludes soft-deleted rows, so missing dependency IDs are
           // treated as resolved here by design.

@@ -526,6 +526,7 @@ export default defineConfig({
       Keep this exact alias before the broader core alias so Vite does not rewrite the subpath.
       */
       "@fusion/core/task-delete-attribution": resolve(__dirname, "../core/src/task-delete-attribution.ts"),
+      "@fusion/core/dependency-status": resolve(__dirname, "../core/src/dependency-status.ts"),
       "@fusion/core": resolve(__dirname, "../core/src/index.ts"),
       "@fusion/engine": resolve(__dirname, "../engine/src/index.ts"),
       "@fusion/plugin-sdk": resolve(__dirname, "../plugin-sdk/src/index.ts"),

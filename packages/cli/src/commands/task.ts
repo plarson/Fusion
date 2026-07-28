@@ -1,4 +1,4 @@
-import { TaskStore, COLUMNS, COLUMN_LABELS, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation } from "@fusion/core";
+import { TaskStore, COLUMNS, COLUMN_LABELS, CentralCore, buildAutoPauseClearPatch, buildManualRetryResetPatch, extractIntentSignature, findNearDuplicates, getTaskDuplicateLineage, isWorkspaceTask, reconcileDeterministicDuplicate, resolveTaskGithubTracking, runDeterministicDuplicateGuard, type Settings, type Column, type ColumnId, type StepStatus, type AgentLogType, type AgentLogEntry, type IntentSignature, type NearDuplicateCandidate, type NearDuplicateMatch, type TaskDependencyMutation, classifyDependencyStatuses, formatDependencySummary } from "@fusion/core";
 import { isInReviewMissingWorktreeSessionStartFailure, runAiMerge, landWorkspaceTask, installBaselineArchiveWorktreeDisposer } from "@fusion/engine";
 import { createInterface } from "node:readline/promises";
 import type { PlanningQuestion, PlanningSummary } from "@fusion/core";
@@ -49,6 +49,22 @@ function getResearchSourceContext(sourceMetadata: unknown): string | undefined {
 
   const runId = (sourceMetadata as { runId?: unknown }).runId;
   return typeof runId === "string" && runId.length > 0 ? runId : undefined;
+}
+
+
+async function resolveDependencySummary(store: TaskStore, dependencyIds: readonly string[]): Promise<string> {
+  if (dependencyIds.length === 0) return "";
+  const dependencyTasks = await Promise.all(dependencyIds.map(async (id) => {
+    try {
+      return await store.getTask(id);
+    } catch {
+      return undefined;
+    }
+  }));
+  return formatDependencySummary(classifyDependencyStatuses(
+    dependencyIds,
+    dependencyTasks.flatMap((task) => task ? [{ id: task.id, column: task.column }] : []),
+  ));
 }
 
 async function formatTaskDuplicateLineage(task: Awaited<ReturnType<TaskStore["getTask"]>>, store: TaskStore): Promise<string | null> {
@@ -524,7 +540,7 @@ export async function runTaskCreate(descriptionArg?: string, attachFiles?: strin
     }
     console.log(`    Column: ${resolvedTask.column}`);
     if (resolvedTask.dependencies.length > 0) {
-      console.log(`    Dependencies: ${resolvedTask.dependencies.join(", ")}`);
+      console.log(`    Dependencies: ${await resolveDependencySummary(store, resolvedTask.dependencies)}`);
     }
     if (resolvedNode) {
       console.log(`    Node: ${resolvedNode.name || resolvedNode.id}`);
@@ -599,7 +615,8 @@ export async function runTaskList(projectName?: string) {
 
     console.log(`  ${dot} ${label} (${colTasks.length})`);
     for (const t of colTasks) {
-      const deps = t.dependencies.length ? ` [deps: ${t.dependencies.join(", ")}]` : "";
+      const dependencySummary = await resolveDependencySummary(context.store, t.dependencies);
+      const deps = dependencySummary ? ` [${dependencySummary}]` : "";
       const label = t.title || t.description.slice(0, 60) + (t.description.length > 60 ? "…" : "");
       console.log(`    ${t.id}  ${label}${deps}`);
     }
@@ -978,7 +995,7 @@ async function runTaskShowWithStore(id: string, store: TaskStore) {
   console.log(`  ${task.id}: ${task.title || task.description}`);
   console.log(`  Column: ${columnLabel(task.column)}${task.size ? ` · Size: ${task.size}` : ""}${task.reviewLevel !== undefined ? ` · Review: ${task.reviewLevel}` : ""}`);
   if (task.dependencies.length) {
-    console.log(`  Dependencies: ${task.dependencies.join(", ")}`);
+    console.log(`  Dependencies: ${await resolveDependencySummary(store, task.dependencies)}`);
   }
   console.log(`  Node: ${nodeSummary}`);
   if (settings.unavailableNodePolicy) {
@@ -2442,7 +2459,7 @@ export async function runTaskPlan(
           outputResult(`  ${alreadyCreated ? "✓ Task already created from this plan:" : "✓ Created"} ${task.id}: ${task.title || task.description.slice(0, 60)}${task.description.length > 60 ? "…" : ""}\n`);
           console.log(`    Column: ${task.column ?? "triage"}`);
           if (task.dependencies.length > 0) {
-            console.log(`    Dependencies: ${task.dependencies.join(", ")}`);
+            console.log(`    Dependencies: ${await resolveDependencySummary(store, task.dependencies)}`);
           }
           console.log(`    Path:   .fusion/tasks/${task.id}/`);
           console.log();

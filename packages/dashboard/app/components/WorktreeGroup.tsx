@@ -159,6 +159,7 @@ function WorktreeGroupComponent({
           autoMergeEnabled={autoMergeEnabled}
           mergeStrategy={mergeStrategy}
           nearDuplicateCanonicalInactive={resolveNearDuplicateCanonicalInactive(task)}
+          dependencyTasks={allTasks}
         />
       ))}
       {queuedTasks.map((task) => (
@@ -198,6 +199,7 @@ function WorktreeGroupComponent({
           autoMergeEnabled={autoMergeEnabled}
           mergeStrategy={mergeStrategy}
           nearDuplicateCanonicalInactive={resolveNearDuplicateCanonicalInactive(task)}
+          dependencyTasks={allTasks}
         />
       ))}
     </div>

@@ -4,6 +4,7 @@ import {
   sortTasksByPriorityFanoutThenAgeAndId,
   buildUnblockWeightMap,
   computeBlockerFanoutMap,
+  isDependencySchedulingSatisfied,
   compareTasksByPriorityThenAgeAndId,
   HIGH_FANOUT_BLOCKER_TODO_THRESHOLD,
   type TaskStore,
@@ -232,7 +233,7 @@ export function isCoordinationOnlyTask(task: Task, scope: string[]): boolean {
 }
 
 function isLegacyDependencySatisfied(dep: Task | undefined): boolean {
-  return !!dep && (dep.column === "done" || dep.column === "in-review" || dep.column === "archived");
+  return isDependencySchedulingSatisfied(dep);
 }
 
 function isMarkerDependencySatisfied(dep: Task | undefined, markerAccepted: boolean): boolean {
@@ -274,9 +275,14 @@ export function getUnmetSchedulingDependencies(
     onParityDiff?: (diff: SchedulingDependencyParityDiff) => void;
   },
 ): string[] {
-  return task.dependencies.filter((depId) => {
+  const unmet: string[] = [];
+  const seen = new Set<string>();
+  for (const rawDepId of task.dependencies) {
+    const depId = rawDepId.trim();
+    if (!depId || seen.has(depId)) continue;
+    seen.add(depId);
     const dep = tasks.find((candidate) => candidate.id === depId);
-    if (!dep) return false;
+    if (!dep) continue;
     const legacySatisfied = isLegacyDependencySatisfied(dep);
     const markerSatisfied = isMarkerDependencySatisfied(dep, options?.markerAcceptedByTaskId?.get(depId) === true);
     if (options?.onParityDiff && legacySatisfied !== markerSatisfied) {
@@ -287,8 +293,9 @@ export function getUnmetSchedulingDependencies(
         markerSatisfied,
       });
     }
-    return !legacySatisfied;
-  });
+    if (!legacySatisfied) unmet.push(depId);
+  }
+  return unmet;
 }
 
 export function isRunnableQueuedOverlapCandidate(

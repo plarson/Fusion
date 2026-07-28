@@ -24,6 +24,7 @@ import {
   setupTaskDetailModalHooks,
 } from "./TaskDetailModal.test-helpers";
 import { TaskDetailModal, TaskDetailContent } from "../TaskDetailModal";
+import type { Column, Task } from "@fusion/core";
 import {
   assertModalGeometryRecoveryAndSheetContracts,
   assertRenderedModalTouchGeometry,
@@ -2031,6 +2032,34 @@ describe("TaskDetailModal", () => {
       expect(depLabels[1].textContent).toBe("Add tests");
     });
 
+    it("labels resolved dependencies separately from active dependencies", () => {
+      const allTasks: Task[] = [
+        { id: "FN-801", title: "Done dep", description: "Done dep", column: "done" as Column, dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+        { id: "FN-803", title: "Todo dep", description: "Todo dep", column: "todo" as Column, dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+        { id: "FN-819", title: "Archived dep", description: "Archived dep", column: "archived" as Column, dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+        { id: "FN-807", title: "Progress dep", description: "Progress dep", column: "in-progress" as Column, dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
+      ];
+
+      const { baseElement: container } = render(
+        <TaskDetailModal
+          initialTab="definition"
+          task={makeTask({ id: "FN-823", dependencies: ["FN-801", "FN-803", "FN-819", "FN-807"] })}
+          tasks={allTasks}
+          onClose={noop}
+          onMoveTask={noopMove}
+          onDeleteTask={noopDelete}
+          onMergeTask={noopMerge}
+          onOpenDetail={noopOpenDetail}
+          addToast={noop}
+        />,
+      );
+
+      expect(container.textContent).toContain("FN-803");
+      expect(container.textContent).toContain("FN-807");
+      expect(container.textContent).toContain("(done/resolved)");
+      expect(container.textContent).toContain("(archived/resolved)");
+    });
+
     it("renders dependency label from description when title is not available", () => {
       const allTasks: Task[] = [
         { id: "FN-001", description: "Login is broken", column: "todo" as Column, dependencies: [], steps: [], currentStep: 0, log: [], createdAt: "", updatedAt: "" },
@@ -2246,7 +2275,7 @@ describe("TaskDetailModal", () => {
       );
 
       expect(screen.getByText("Blocking")).toBeTruthy();
-      expect(container.textContent).toContain("FN-100");
+      expect(container.textContent).not.toContain("FN-100");
       expect(container.textContent).toContain("FN-101");
       expect(container.querySelector(".detail-blocking-item--stale")?.textContent).toBe("(stale)");
     });

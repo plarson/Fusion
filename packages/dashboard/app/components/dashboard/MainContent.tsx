@@ -908,8 +908,6 @@ export function MainContent({
             prAuthAvailable={prAuthAvailable}
             onOpenWorkflowEditor={openWorkflowEditorWithNav}
             onCreateWorkflow={openCreateWorkflowWithNav}
-            workflowColumnsEnabled
-            settingsLoaded={settingsLoaded}
             workflowControlsInHeader={sidebarActive || isMobile}
           />
         </PageErrorBoundary>
@@ -1025,8 +1023,6 @@ export function MainContent({
           prAuthAvailable={prAuthAvailable}
           onOpenWorkflowEditor={openWorkflowEditorWithNav}
           onCreateWorkflow={openCreateWorkflowWithNav}
-          workflowColumnsEnabled
-          settingsLoaded={settingsLoaded}
           workflowControlsInHeader={sidebarActive || isMobile}
         />
       </PageErrorBoundary>
@@ -1072,8 +1068,6 @@ export function MainContent({
         mergeStrategy={mergeStrategy}
         onOpenWorkflowEditor={openWorkflowEditorWithNav}
         onCreateWorkflow={openCreateWorkflowWithNav}
-        workflowColumnsEnabled
-        settingsLoaded={settingsLoaded}
         workflowControlsInHeader={sidebarActive || isMobile}
       />
     </PageErrorBoundary>

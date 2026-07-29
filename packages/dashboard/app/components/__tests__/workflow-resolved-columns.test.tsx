@@ -504,6 +504,60 @@ describe("U10 — surfaces render workflow-resolved columns", () => {
       expect(building?.label).toBe("Back to Building");
     });
 
+    /*
+    FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (U12 — R8):
+    When the payload carries `moveTargets`, the menu uses the workflow's REAL graph
+    adjacency instead of approximating from neighbouring columns. This fixture makes
+    the two disagree on purpose: `staging` sits between `backlog` and `building`, so
+    the neighbour approximation yields exactly those two — while the declared
+    adjacency also allows a jump to `shipped` and forbids going back to `backlog`.
+
+    REVERT CHECK: drop the `declaredTargets` branch and this fails — the neighbour
+    fallback returns ["backlog","building"], missing the legal `shipped` jump and
+    offering `backlog`, which the workflow's graph does not allow. That is precisely
+    the class of defect the old neighbour approximation shipped for every custom
+    workflow: menu entries the store would reject, and legal moves it never offered.
+    */
+    it("uses the workflow's declared adjacency, not neighbouring columns", () => {
+      const withAdjacency: TaskContextMenuColumnMetadata[] = renamedMoveColumns.map((column) =>
+        column.id === "staging"
+          ? { ...column, moveTargets: ["building", "shipped"] }
+          : column,
+      );
+      const transitions = getTaskMoveTransitions(
+        mkTask({ id: "FN-16", column: "staging" as Task["column"] }),
+        t,
+        columnLabel,
+        withAdjacency,
+      );
+      expect(transitions.map((transition) => transition.column)).toEqual(["building", "shipped"]);
+    });
+
+    it("drops an adjacency edge into a column this board cannot show", () => {
+      /*
+      Two distinct exclusions, because they fail differently (PR #2525 review —
+      CodeRabbit): `hidden` is a DECLARED column carrying `hiddenFromBoard`, which only
+      the visibility filter removes, and `nowhere` is an id the workflow does not
+      declare at all. Testing only the unknown id would let the hidden-column filtering
+      be deleted with the case still green.
+      */
+      const withHidden: TaskContextMenuColumnMetadata[] = [
+        ...renamedMoveColumns.map((column) =>
+          column.id === "staging"
+            ? { ...column, moveTargets: ["building", "hidden", "nowhere"] }
+            : column,
+        ),
+        { id: "hidden" as ColumnId, label: "Hidden", flags: { hiddenFromBoard: true } },
+      ];
+      const transitions = getTaskMoveTransitions(
+        mkTask({ id: "FN-17", column: "staging" as Task["column"] }),
+        t,
+        columnLabel,
+        withHidden,
+      );
+      expect(transitions.map((transition) => transition.column)).toEqual(["building"]);
+    });
+
     it("never offers a column the workflow does not declare", () => {
       const transitions = getTaskMoveTransitions(
         mkTask({ id: "FN-13", column: "in-review" }),

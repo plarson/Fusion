@@ -455,6 +455,8 @@ export const BUILTIN_WORKFLOWS: WorkflowDefinition[] = [
       "plan-replan": { x: 400, y: 320 },
       parse: { x: 570, y: 160 },
       steps: { x: 740, y: 160 },
+      /* U8: the pending-review park is an exit, not a stage — placed off the main line. */
+      "review-pending-handoff": { x: 740, y: 320 },
       "browser-verification": { x: 910, y: 160 },
       "browser-verification-remediation": { x: 910, y: 320 },
       "code-review": { x: 1080, y: 160 },
@@ -491,6 +493,8 @@ export const BUILTIN_WORKFLOWS: WorkflowDefinition[] = [
       "plan-replan": { x: 400, y: 320 },
       parse: { x: 570, y: 160 },
       steps: { x: 740, y: 160 },
+      /* U8: the pending-review park is an exit, not a stage — placed off the main line. */
+      "review-pending-handoff": { x: 740, y: 320 },
       "browser-verification": { x: 910, y: 160 },
       "browser-verification-remediation": { x: 910, y: 320 },
       "code-review": { x: 1080, y: 160 },
@@ -717,6 +721,8 @@ export const BUILTIN_WORKFLOWS: WorkflowDefinition[] = [
       "plan-replan": { x: 400, y: 320 },
       parse: { x: 570, y: 160 },
       steps: { x: 740, y: 160 },
+      /* U8: the pending-review park is an exit, not a stage — placed off the main line. */
+      "review-pending-handoff": { x: 740, y: 320 },
       "rework-hold": { x: 740, y: 320 },
       "browser-verification": { x: 910, y: 160 },
       "browser-verification-remediation": { x: 910, y: 320 },
@@ -855,6 +861,8 @@ export const BUILTIN_WORKFLOWS: WorkflowDefinition[] = [
       "plan-replan": { x: 910, y: 320 },
       parse: { x: 1080, y: 160 },
       steps: { x: 1250, y: 160 },
+      /* U8: the pending-review park is an exit, not a stage — placed off the main line. */
+      "review-pending-handoff": { x: 1250, y: 320 },
       "browser-verification": { x: 1420, y: 160 },
       "browser-verification-remediation": { x: 1420, y: 320 },
       "code-review": { x: 1590, y: 160 },

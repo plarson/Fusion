@@ -5759,7 +5759,7 @@ export class TaskExecutor {
    *  the (step-session) implementation exactly once per run and lets later step
    *  instances observe the projection rather than re-running execute() per step.
    *  Keyed by task id; cleared alongside the pin. */
-  private graphStepRunOnce = new Map<string, Promise<{ taskDone: boolean; modifiedFiles: string[] }>>();
+  private graphStepRunOnce = new Map<string, Promise<{ taskDone: boolean; modifiedFiles: string[]; exit?: ImplementationExit }>>();
 
   /** Step-inversion (KTD-4): the foreach instance the step-execute seam is
    *  currently driving for a graph-owned task, so `runGraphTaskStep` can honor
@@ -7027,7 +7027,7 @@ export class TaskExecutor {
     governingNodeId?: string,
     thinkingLevel?: ThinkingLevel,
     skillName?: string,
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<{ success: boolean; error?: string; exit?: ImplementationExit }> {
     const active = this.foreachActiveForTask(task.id, instanceId);
     /*
     FNXC:WorkflowStepSessions 2026-06-30-00:00:
@@ -7081,8 +7081,16 @@ export class TaskExecutor {
           }
         });
     }
+    /*
+    FNXC:WorkflowExecutionOwnership 2026-07-29-11:20 (U8 / R4):
+    The memoized pass's result was awaited and DISCARDED here — which is exactly where the
+    implementation exit died. One pass serves every foreach instance, so the exit is a property
+    of the pass, not of a step: each instance reports the same ending, which is correct because
+    the ending is what stopped the whole session.
+    */
+    let phaseResult: { taskDone: boolean; modifiedFiles: string[]; exit?: ImplementationExit } | undefined;
     try {
-      await phase;
+      phaseResult = await phase;
     } catch (err) {
       // Clear the poisoned memo so a rework cycle can retry the implementation
       // (only if it is still the same rejected promise — do not clobber a fresh
@@ -7121,15 +7129,27 @@ export class TaskExecutor {
         };
       }
       const status = live.steps[stepIndex]?.status;
-      if (status === "done" || status === "skipped") return { success: true };
+      /*
+      FNXC:WorkflowExecutionOwnership 2026-07-29-14:10 (U8 / R4, PR #2546 review — greptile P2):
+      Carry the pass's ending on the SUCCESS returns too. One pass serves every foreach instance,
+      so "this step completed" and "the pass stopped on a pending-review block" are independent
+      facts and both can hold. Reporting only on failure made the exit branch-dependent: with
+      `deferDoneToReview` every instance returns success, so the ending would never reach the seam
+      and the graph-owned park would be unreachable for that shape.
+
+      The seam still routes it only on FAILURE — a genuinely completed step must not be diverted
+      to the park — so this is inert today and correct once the seam flip lands.
+      */
+      if (status === "done" || status === "skipped") return { success: true, exit: phaseResult?.exit };
       // Step not terminal after the pass: when a review will author done-ness
       // (deferDoneToReview), the pass having RUN is the success signal — the review
       // gates the projection write. Otherwise the implementation pass failed to
       // complete this step, so report failure rather than masking it (FIX 3: the
       // prior code returned success on both branches, hiding step-session failures).
-      if (active?.deferDoneToReview === true) return { success: true };
+      if (active?.deferDoneToReview === true) return { success: true, exit: phaseResult?.exit };
       return {
         success: false,
+        exit: phaseResult?.exit,
         error: `step ${stepIndex} not completed by implementation pass (status: ${status ?? "unknown"})`,
       };
     } catch (err) {
@@ -7202,6 +7222,7 @@ export class TaskExecutor {
         outcome: result.success ? "success" : "failure",
         baselineSha: refreshed.baseCommitSha,
         checkpointId: undefined,
+        exit: result.exit,
       };
     }
 
@@ -8021,9 +8042,20 @@ export class TaskExecutor {
         // foreach sub-walk threads them to later template nodes (step-review/reset).
         active.baselineSha = result.baselineSha;
         active.checkpointId = result.checkpointId;
+        /*
+        FNXC:WorkflowExecutionOwnership 2026-07-29-11:30 (U8 / R4):
+        `step-done` / `step-failed` was a two-value flattening of every possible ending, and it
+        is why the pending-review ending could never reach an edge on the stepwise shape. A
+        blocked-on-pending-review pass is a WAIT, not a step defect: the outcome stays `failure`
+        (the step genuinely did not complete) while the VALUE names the ending, which is what the
+        foreach propagates upward — `runForeach` returns a failing instance's value as its own —
+        so the `steps` node can carry an `outcome:review-pending` edge to the park node.
+        Every other ending keeps `step-failed` exactly as before.
+        */
+        const failureValue = result.exit === "review-handoff-pending-review" ? "review-pending" : "step-failed";
         return {
           outcome: result.outcome,
-          value: result.outcome === "success" ? "step-done" : "step-failed",
+          value: result.outcome === "success" ? "step-done" : failureValue,
           contextPatch: {
             [FOREACH_ACTIVE_CONTEXT_KEY]: active,
           },

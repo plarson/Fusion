@@ -16,6 +16,7 @@ import { WorkflowSwitcher } from "./WorkflowSwitcher";
 import { computeWorkflowStatusCounts } from "./workflowStatusCounts";
 import { writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
 import { useBoardWorkflows } from "../hooks/useBoardWorkflows";
+import { useUnmappedWorkflowRefetch } from "../hooks/useUnmappedWorkflowRefetch";
 import {
   ALL_WORKFLOWS_BOARD_VIEW_ID,
   readBoardWorkflowViewSelection,
@@ -437,60 +438,7 @@ export function Board({ tasks, projectId, maxConcurrent, showWorktreeGrouping, o
 
   The refetch is deferred by one macrotask and re-checked against the latest state at fire time: the board's own quick-create commits the new task one microtask before applyOptimisticTaskWorkflow seeds it, so a synchronous refetch here would double-fire alongside the optimistic path. Deferring lets the seed land first — an already-mapped task is then skipped — so this only fetches for tasks that truly arrived without a workflow mapping.
   */
-  const boardWorkflowsRef = useRef(boardWorkflows);
-  boardWorkflowsRef.current = boardWorkflows;
-  const tasksRef = useRef(tasks);
-  tasksRef.current = tasks;
-  const lastUnmappedTaskSignatureRef = useRef<string | null>(null);
-  const unmappedRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /*
-  FNXC:WorkflowBoard 2026-07-12-23:40:
-  The FN-7591 refetch must also fire for a PRESENT-but-unrepresentable mapping, not only an
-  absent one. The server emits a taskWorkflowIds entry for every task (defaulting to the
-  default workflow), so a stale selection row makes e.g. an "ideas"-column card map to plain
-  Coding — an entry that exists but whose workflow does not declare the task's column. The
-  `=== undefined` guard alone never re-fired for those, leaving the card permanently
-  invisible in the aggregate view. A mapping is "suspect" when the resolved workflow's
-  column set does not contain the task's stored column. The signature guard still prevents
-  refetch loops for mappings that stay wrong after a fresh fetch.
-  */
-  const isTaskWorkflowMappingSuspect = useCallback((
-    payload: NonNullable<typeof boardWorkflows>,
-    task: Task,
-  ): boolean => {
-    const assigned = payload.taskWorkflowIds[task.id];
-    if (assigned === undefined) return true;
-    const known = payload.workflows.some((workflow) => workflow.id === assigned);
-    const workflowId = known ? assigned : payload.defaultWorkflowId;
-    const workflow = payload.workflows.find((candidate) => candidate.id === workflowId);
-    return workflow !== undefined && !workflow.columns.some((column) => column.id === task.column);
-  }, []);
-  useEffect(() => {
-    if (!boardWorkflows || !workflowMode) return;
-    const unmapped = tasks
-      .filter((task) => isTaskWorkflowMappingSuspect(boardWorkflows, task))
-      .map((task) => task.id)
-      .sort();
-    if (unmapped.length === 0) {
-      lastUnmappedTaskSignatureRef.current = null;
-      return;
-    }
-    const signature = unmapped.join(",");
-    if (signature === lastUnmappedTaskSignatureRef.current) return;
-    lastUnmappedTaskSignatureRef.current = signature;
-    if (unmappedRefetchTimerRef.current) clearTimeout(unmappedRefetchTimerRef.current);
-    unmappedRefetchTimerRef.current = setTimeout(() => {
-      unmappedRefetchTimerRef.current = null;
-      const latestWorkflows = boardWorkflowsRef.current;
-      if (!latestWorkflows) return;
-      const stillUnmapped = tasksRef.current.some((task) => isTaskWorkflowMappingSuspect(latestWorkflows, task));
-      if (stillUnmapped) refreshBoardWorkflows({ forceFresh: true });
-    }, 0);
-  }, [boardWorkflows, isTaskWorkflowMappingSuspect, refreshBoardWorkflows, tasks, workflowMode]);
-
-  useEffect(() => () => {
-    if (unmappedRefetchTimerRef.current) clearTimeout(unmappedRefetchTimerRef.current);
-  }, []);
+  useUnmappedWorkflowRefetch({ boardWorkflows, tasks, workflowMode, refreshBoardWorkflows, projectId });
 
   const resolveWorkflowQuickCreateTarget = useCallback((targetWorkflowId: string, preferredColumnId?: string | null): ColumnId | undefined => {
     if (targetWorkflowId === ALL_WORKFLOWS_BOARD_VIEW_ID) return undefined;

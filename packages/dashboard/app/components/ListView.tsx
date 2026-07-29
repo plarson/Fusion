@@ -33,6 +33,7 @@ import { WorkflowSwitcher } from "./WorkflowSwitcher";
 import { computeWorkflowStatusCounts } from "./workflowStatusCounts";
 import { writeBoardWorkflowsCache } from "../utils/boardWorkflowsCache";
 import { useBoardWorkflows } from "../hooks/useBoardWorkflows";
+import { useUnmappedWorkflowRefetch } from "../hooks/useUnmappedWorkflowRefetch";
 import { TaskContextMenu, buildTaskActionMenuModel, getTaskPrAutomationLabel, type TaskContextMenuColumnMetadata, type TaskMenuActionDescriptor } from "./TaskContextMenu";
 import type { DetailTaskOpenOptions } from "../hooks/useModalManager";
 
@@ -776,6 +777,17 @@ export function ListView({
   back to the shared union when the task's workflow is unresolvable, which yields the
   previous (neighbour-approximated) behaviour rather than a wrong answer.
   */
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (U12 — PR #2525 review, greptile):
+  SELF-HEAL, shared with Board. A task whose `taskWorkflowIds` entry is absent or
+  suspect resolves to no per-workflow metadata, so its move menu silently degrades to
+  the neighbour approximation and stays there until some unrelated refresh happens.
+  Board has forced one board-workflows refetch for this since FN-7591; List had none,
+  so the degraded state persisted longest exactly where it is most likely — a
+  just-created card, which is when a workflow was actually chosen.
+  */
+  useUnmappedWorkflowRefetch({ boardWorkflows, tasks, workflowMode, refreshBoardWorkflows, projectId });
+
   const taskContextMenuColumnsByTaskId = useMemo(() => {
     const map = new Map<string, readonly TaskContextMenuColumnMetadata[]>();
     if (!workflowMode || !boardWorkflows) return map;

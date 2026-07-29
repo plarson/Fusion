@@ -1444,6 +1444,15 @@ export class InProcessRuntime
         recoverFailedPreMergeStep: (task) => this.executor.recoverFailedPreMergeWorkflowStep(task),
         getExecutingTaskIds: () => this.executor?.getExecutingTaskIds() ?? new Set<string>(),
         clearPhantomExecutorBinding: (taskId: string, options?: { preserveWorktrees?: boolean }) => this.executor?.clearPhantomExecutorBinding(taskId, options),
+        /*
+        FNXC:NodeWorktreeIsolation 2026-07-29-06:05 (FN-6756):
+        Wire the read-only liveness probe. self-healing.ts's own comment records that
+        `releaseExecutorWorktreeOwnership` was a declared-but-never-wired option that
+        silently no-opped; an unwired probe here would be worse — `?.() === true` is
+        false when unwired, so every sweep gating on it would silently stop deferring
+        for live sessions and the FN-6756 fix would evaporate without a test failing.
+        */
+        hasLiveSessionSurface: (taskId: string) => this.executor?.hasLiveSessionSurface(taskId) ?? false,
         listWorktreeHolders: () => this.executor?.listWorktreeHolders() ?? [],
         // FNXC:PlanningEvacuation 2026-07-25-23:00: the executor owns the release safety conditions.
         releasePreExecutionWorktree: (taskId, reason) =>

@@ -59,8 +59,10 @@ export interface UseBoardWorkflowsResult {
   isAllWorkflowsSelected: boolean;
   setSelectedWorkflowId: Dispatch<SetStateAction<string | null>>;
   /** Force a fresh fetch (used on switcher open, and when the board detects a rendered
-   *  task missing from `taskWorkflowIds`, since task→workflow assignment emits no workflow SSE). */
-  refreshBoardWorkflows: (options?: { forceFresh?: boolean }) => void;
+   *  task missing from `taskWorkflowIds`, since task→workflow assignment emits no workflow SSE).
+   *  Resolves when the fetch has SETTLED — it never rejects, since a failed fetch is
+   *  non-authoritative — so a caller that must not overlap attempts can await it. */
+  refreshBoardWorkflows: (options?: { forceFresh?: boolean }) => Promise<void>;
   /**
    * Raw state setter, exposed so Board can apply optimistic task→workflow assignment.
    * Planning does not use this.
@@ -146,7 +148,16 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
     setBoardWorkflowsState(cached ? { projectId, payload: cached } : null);
   }, [projectId, readBoardWorkflowsCache]);
 
-  const refreshBoardWorkflows = useCallback((options?: { forceFresh?: boolean }) => {
+  /*
+  FNXC:WorkflowBoard 2026-07-29-00:00 (PR #2530 review — greptile):
+  RETURNS its settle promise now (additive — existing callers ignore it). The
+  unmapped-workflow repair needs to know when a forced refresh has SETTLED: on a slow
+  request it was starting its second attempt on a fixed 250ms timer while the first was
+  still in flight, so both attempts could be spent before either answer arrived. The
+  promise never rejects — a failed fetch stays non-authoritative — so awaiting it is
+  safe for every caller.
+  */
+  const refreshBoardWorkflows = useCallback((options?: { forceFresh?: boolean }): Promise<void> => {
     const seq = ++boardWorkflowsFetchSeqRef.current;
     if (options?.forceFresh) {
       clearBoardWorkflowsCache(projectId);
@@ -154,7 +165,7 @@ export function useBoardWorkflows(params: UseBoardWorkflowsParams): UseBoardWork
     const fetchPromise = options === undefined
       ? fetchBoardWorkflows(projectId)
       : fetchBoardWorkflows(projectId, options);
-    fetchPromise
+    return fetchPromise
       .then((payload) => {
         if (seq === boardWorkflowsFetchSeqRef.current) {
           setBoardWorkflowsState({ projectId, payload });

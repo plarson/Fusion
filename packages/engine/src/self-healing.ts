@@ -297,6 +297,14 @@ export interface SelfHealingOptions {
    */
   clearPhantomExecutorBinding?: (taskId: string, options?: { preserveWorktrees?: boolean }) => boolean | void;
   /*
+  FNXC:NodeWorktreeIsolation 2026-07-29-06:05 (FN-6756):
+  READ-ONLY liveness probe. Lets a sweep gate on "is an agent working this task?"
+  WITHOUT the destructive release, so it can refuse before mutating and still hold
+  ownership until its own writes commit. Same expression as
+  clearPhantomExecutorBinding's refusal, exposed rather than re-derived.
+  */
+  hasLiveSessionSurface?: (taskId: string) => boolean;
+  /*
   FNXC:PlanningEvacuation 2026-07-25-23:00:
   Releases a task's PRE-EXECUTION worktree (acquired at planning time) when the card is parked
   without ever executing. The executor owns the safety conditions — never executed, no live session,
@@ -10420,6 +10428,24 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const fresh = await this.store.getTask(task.id);
           const latestExecutingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
           if (!fresh) continue;
+          /*
+          FNXC:NodeWorktreeIsolation 2026-07-29-06:05 (FN-6756 — gate before mutating, PR #2531 review):
+          `latestExecutingIds` is TaskExecutor-owned and blind to a triage PLANNING
+          session, exactly as clearPhantomExecutorBinding's four session maps were.
+          This sweep does not merely clear a binding — it un-parks the row, requeues
+          the card and releases worktree ownership, so an executor-only gate let a
+          live planner be requeued and stripped of its worktree through a second
+          door after the leaked-slot reaper's was closed.
+
+          Gate on the SHARED read-only probe here, before any mutation, so a live
+          session defers the whole recovery to a later sweep with nothing written,
+          nothing logged and nothing counted. The destructive release stays BELOW the
+          fallible writes — see the ordering note there.
+          */
+          if (this.options.hasLiveSessionSurface?.(fresh.id) === true) {
+            log.debug(`[self-healing] deferring pause-abort recovery for ${fresh.id}: a live session surface is registered`);
+            continue;
+          }
           const route = this.classifyPausedAbortWorkflowRecovery(fresh, settings, latestExecutingIds.has(fresh.id));
           if (route.kind === "no-action") {
             continue;
@@ -10457,12 +10483,34 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             });
             await this.store.updateTask(task.id, { workflowTransitionNotification });
           }
-          // Release any in-memory worktree ownership the leaked park may still
-          // pin, so the requeued task does not re-block the concurrency gate.
-          // FNXC:WorkflowLifecycle 2026-06-20-00:00: use clearPhantomExecutorBinding
-          // (wired + live-session-refusal guarded), NOT releaseExecutorWorktreeOwnership
-          // which is a declared-but-never-wired option — it would silently no-op.
-          this.options.clearPhantomExecutorBinding?.(task.id);
+          /*
+          FNXC:NodeWorktreeIsolation 2026-07-29-06:05 (FN-6756 — ordering, PR #2531 review):
+          Release worktree ownership only AFTER the fallible writes have committed.
+
+          This sat here originally with its return DISCARDED, which let a refusal be
+          followed by "Auto-recovered…", the audit and `recovered++` — reporting
+          success while pulling a worktree from under a live planner, which is why it
+          went unnoticed. My first correction hoisted the release ABOVE the writes so
+          a refusal could abort cleanly, and that traded one fault for another: an
+          `updateTask`/`moveTask` rejection after a SUCCESSFUL release left ownership
+          given up with the task un-repaired and nothing owning the repair — the same
+          torn-write shape U12 hit on re-home, irreversible step before fallible step.
+
+          Both faults are fixed by splitting the question from the act: liveness is
+          gated ABOVE via the read-only probe (so a live session never reaches these
+          writes), and the irreversible release runs LAST, once the writes it depends
+          on have landed. A throw before this point leaves ownership intact and the
+          park in place for the next sweep.
+
+          The refusal is still honored as defense-in-depth: reaching it means a
+          session started between the probe and here, so ownership stays with that
+          session. The un-park and requeue genuinely happened, so the recovery is
+          still counted — the warning records only that the worktree was not released.
+          */
+          const phantomReleased = this.options.clearPhantomExecutorBinding?.(task.id);
+          if (phantomReleased === false) {
+            log.warn(`[self-healing] pause-abort recovery for ${task.id}: worktree ownership retained — a session started before the release`);
+          }
 
           await this.store.logEntry(
             task.id,

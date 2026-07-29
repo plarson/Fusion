@@ -36,6 +36,7 @@ import { VALID_TRANSITIONS } from "./types.js";
 import type { Column } from "./types.js";
 import type { WorkflowIr, WorkflowIrV2 } from "./workflow-ir-types.js";
 import { DEFAULT_WORKFLOW_COLUMN_IDS } from "./workflow-ir.js";
+import { resolveLifecycleColumns, resolveReboundTarget } from "./workflow-lifecycle-traits.js";
 
 /** A column→allowed-target-columns adjacency map. */
 export type ColumnAdjacency = Map<string, string[]>;
@@ -73,6 +74,83 @@ function orderDerivedAdjacency(ir: WorkflowIrV2): ColumnAdjacency {
   return adj;
 }
 
+
+/*
+FNXC:MergedPlanningColumn 2026-07-29-11:05 (U11):
+`isDefaultWorkflowColumns` recognises the default workflow by matching the legacy SIX column ids
+as a set. U11 merges Todo into Planning, so the default declares FIVE — the match stops firing and
+the default board silently falls through to `orderDerivedAdjacency`, which is neighbor-only.
+
+That is a real, operator-visible loss, not a cosmetic one. Measured against `VALID_TRANSITIONS`,
+neighbor adjacency both DROPS legal moves and INVENTS an illegal one:
+
+  in-progress -> done       DROPPED — the mission-validation cross edge, which is the exact case
+                            `custom-review-lane-merge-blocker` covers
+  in-review   -> todo       DROPPED — sending review work back to planning
+  todo/done   -> archived   DROPPED — the FN-4892 direct-archival edges
+  done        -> in-review  INVENTED — a backward edge into review that no rule ever allowed
+
+So adjacency is derived from lifecycle ROLES instead of column ids. `VALID_TRANSITIONS` is a
+role-level statement wearing legacy id clothing; expressing it that way makes it survive a rename
+or a merge, which is the whole point of this program. Applied only when the workflow declares the
+full lifecycle role set — anything less is a genuinely custom shape and keeps neighbor adjacency,
+so no existing custom workflow changes behavior.
+
+For the legacy six, intake and hold are distinct columns and this reproduces `VALID_TRANSITIONS`
+verbatim (asserted). For the merged shape the two roles resolve to the SAME column, so the
+self-edges collapse and the remaining edges are exactly the legacy ones with `triage` folded in.
+*/
+const ROLE_TRANSITIONS: Record<string, string[]> = {
+  intake: ["hold", "archived"],
+  hold: ["wip", "intake", "archived"],
+  wip: ["review", "hold", "intake", "complete"],
+  review: ["complete", "wip", "hold", "intake"],
+  complete: ["hold", "intake", "archived"],
+  archived: ["complete"],
+};
+
+/** Role→column-id for this workflow, or `undefined` when a lifecycle role is missing. */
+function resolveRoleColumns(ir: WorkflowIrV2): Record<string, string> | undefined {
+  const lifecycle = resolveLifecycleColumns(ir);
+  if (!lifecycle) return undefined;
+  const { intake, hold, wip, review, complete, archived } = lifecycle;
+  // A workflow missing any lifecycle role is a genuinely custom shape; neighbor adjacency is the
+  // honest answer there rather than a half-applied lifecycle.
+  if (!wip || !review || !complete || !archived) return undefined;
+  const planning = hold ?? intake;
+  if (!planning) return undefined;
+  return {
+    intake: intake ?? planning,
+    hold: planning,
+    wip,
+    review,
+    complete,
+    archived,
+  };
+}
+
+function roleDerivedAdjacency(ir: WorkflowIrV2): ColumnAdjacency | undefined {
+  const roles = resolveRoleColumns(ir);
+  if (!roles) return undefined;
+  const declared = new Set(ir.columns.map((c) => c.id));
+  const adj: ColumnAdjacency = new Map();
+  for (const [role, targetRoles] of Object.entries(ROLE_TRANSITIONS)) {
+    const fromColumn = roles[role];
+    if (!fromColumn || !declared.has(fromColumn)) continue;
+    const targets: string[] = [];
+    for (const targetRole of targetRoles) {
+      const toColumn = roles[targetRole];
+      // Skip self-edges (merged roles resolve to the same column) and undeclared targets.
+      if (!toColumn || toColumn === fromColumn || !declared.has(toColumn)) continue;
+      if (!targets.includes(toColumn)) targets.push(toColumn);
+    }
+    // Merged roles write the same key twice; union rather than overwrite.
+    const existing = adj.get(fromColumn) ?? [];
+    adj.set(fromColumn, [...existing, ...targets.filter((t) => !existing.includes(t))]);
+  }
+  return adj;
+}
+
 /**
  * Resolve the full column adjacency for a workflow IR. The default workflow
  * reproduces `VALID_TRANSITIONS` exactly; custom workflows use order-derived
@@ -88,6 +166,8 @@ export function resolveColumnAdjacency(ir: WorkflowIr): ColumnAdjacency {
   if (isDefaultWorkflowColumns(v2)) {
     return defaultWorkflowAdjacency();
   }
+  const roleDerived = roleDerivedAdjacency(v2);
+  if (roleDerived) return roleDerived;
   return orderDerivedAdjacency(v2);
 }
 
@@ -98,7 +178,33 @@ export function resolveColumnAdjacency(ir: WorkflowIr): ColumnAdjacency {
  * legal targets").
  */
 export function resolveAllowedColumns(ir: WorkflowIr, fromColumn: string): string[] {
-  return resolveColumnAdjacency(ir).get(fromColumn) ?? [];
+  const adjacency = resolveColumnAdjacency(ir).get(fromColumn);
+  if (adjacency) return adjacency;
+
+  /*
+  FNXC:MergedPlanningColumn 2026-07-29-10:25 (U11 migration):
+  A card can outlive the column it is stored in — U11 removes `triage` from the default coding
+  workflow, so after upgrade every card still sitting there is in a column its own workflow no
+  longer declares. Adjacency is derived from the graph, so an undeclared source has none, and this
+  returned `[]`: EVERY move rejected with "Valid targets: none", including the one that would
+  rescue the card. `reconcileUndeclaredTaskColumns` re-homes such rows, but only when it runs; in
+  between, an operator dragging the card got a hard rejection with nothing actionable in it.
+
+  So an undeclared source column resolves to the workflow's own rebound target (hold -> intake ->
+  first declared column). This is an ESCAPE HATCH, not a relaxation: there is no adjacency to
+  violate from a column that is not in the graph, and every declared column keeps exactly the
+  targets its graph gives it — the `if (adjacency) return adjacency` above is unconditional.
+
+  Deliberately the rebound target ONLY, not "any declared column". A stranded card needs a way back
+  INTO the lifecycle, not a way to skip it; allowing any target would let a card jump from a removed
+  planning column straight to a review or complete column, which the ordinary adjacency rules exist
+  to prevent. An operator who wants it elsewhere moves it twice.
+
+  A workflow with no declared columns (v1 IR) has nothing to rebound to and still resolves to `[]`,
+  so callers keep their conservative rejection rather than being handed an invented target.
+  */
+  const rebound = resolveReboundTarget(ir);
+  return rebound ? [rebound] : [];
 }
 
 /** True when `toColumn` is a defined column of the workflow. */

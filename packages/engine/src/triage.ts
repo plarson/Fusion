@@ -9,6 +9,7 @@ import type {
   Agent,
   AgentPermissionPolicy,
   PermanentAgentGatingContext,
+  WorkflowIr,
 } from "@fusion/core";
 import {
   DUPLICATE_OF_METADATA_KEY,
@@ -33,6 +34,7 @@ import {
   resolveAgentMemoryInclusionMode,
   resolvePlanApprovalRequired,
   resolveWorkflowIrForTask,
+  resolveTaskLifecycleColumns,
   getStepParser,
   computePlanApprovalFingerprint,
   extractIntentSignature,
@@ -1392,15 +1394,95 @@ export class TriageProcessor {
    * union include cards before their planner writes status:"planning".
    */
   private async discoverReadyPlanningTasks(allTasks: Task[], now: number): Promise<Task[]> {
-    const eligibleTriageTasks = allTasks.filter(
-      (t) => t.column === "triage" && isTaskStillInPlanningStage(t)
+    /*
+    FNXC:MergedPlanningColumn 2026-07-28-15:10 (U11):
+    Planning discovery has TWO admission rules, and they were selected by hardcoded column id:
+    `triage` admitted any card still in the planning stage, `todo` admitted only a card whose
+    PROMPT.md still reads as a seed (a planned card in the hold column is waiting for CAPACITY,
+    not for planning, and re-specifying it would discard its approved spec).
+
+    Both now select by TRAIT, so a workflow that renames or merges its pre-implementation columns
+    keeps both rules. Deleting `triage` from the coding IRs — U11 — would otherwise leave the
+    intake rule matching nothing while the hold rule silently became the only one.
+
+    ORDER IS LOAD-BEARING. Under U11 one column carries BOTH `intake` and `hold`, so a card can
+    satisfy both rules. Hold is tested FIRST and the branches are mutually exclusive, for two
+    reasons: a card would otherwise appear in both lists and be dispatched twice for the same
+    planning run, and the hold rule is the NARROWER of the two — applying the intake rule to a
+    merged column would re-specify a card that has already been planned and is only waiting for a
+    slot. Narrower wins; nothing is admitted that both rules would not admit.
+
+    A card whose workflow cannot be resolved falls back to the legacy ids rather than being
+    dropped from discovery entirely — an unplannable card is worse than a conservatively
+    planned one, and R11 keeps `todo`/`triage` legal ids for stored rows and custom workflows.
+
+    FNXC:MergedPlanningColumn 2026-07-29-09:20 (PR #2515 review — greptile + coderabbit):
+    COST. Resolving a task's lifecycle columns needs its workflow-selection row, i.e. a store
+    round-trip. The first cut of this conversion awaited one for EVERY task on the board,
+    sequentially, before filtering anything — turning a pure in-memory filter into an O(board)
+    serial scan on the triage poll, which is the engine's hottest loop. It scaled with total board
+    size instead of with candidate count, so it was worst for exactly the operators with the
+    biggest boards.
+
+    Two changes, in order of importance:
+
+    1. FILTER FIRST. Every predicate that needs no store read — processing/live-planning
+       membership, pause, the terminal statuses, the recovery backoff, and each branch's own cheap
+       precondition — is applied BEFORE any resolution. Only survivors are resolved, so the cost is
+       O(candidates), and a board whose cards are overwhelmingly done/in-review/executing pays
+       almost nothing.
+    2. Resolve the survivors CONCURRENTLY under a bounded window rather than one await at a time,
+       so a genuine backlog of candidates costs one bounded batch instead of N serial round-trips.
+       Bounded rather than an unbounded Promise.all: this runs against the operator's live database
+       and a board-sized fan-out is its own denial of service.
+
+    The IR cache still collapses the parse cost — a board of 400 cards on three workflows reads
+    three IRs — and is now shared across the concurrent resolutions rather than a serial loop.
+    */
+    const irCache = new Map<string, WorkflowIr>();
+
+    /*
+    The store-free half of both admission rules. A card failing this can never be admitted by
+    EITHER branch, so it never justifies a workflow-selection read. Kept deliberately in sync with
+    the two filters below — anything cheap that appears there should appear here.
+    */
+    const couldBeCandidate = (t: Task): boolean => {
+      if (this.processing.has(t.id) || this.hasLivePlanningWork(t.id) || t.paused) return false;
+      if (t.status === "awaiting-approval" || t.status === "failed" || t.status === "stuck-killed") return false;
+      if (t.nextRecoveryAt && new Date(t.nextRecoveryAt).getTime() > now) return false;
+      const couldBeIntake = isTaskStillInPlanningStage(t) && !this.advancedRecoveryReservations.has(t.id);
+      const couldBeHold = t.status !== "planning";
+      return couldBeIntake || couldBeHold;
+    };
+
+    const candidates = allTasks.filter(couldBeCandidate);
+    const lifecycleByTaskId = new Map<string, { intake?: string; hold?: string }>();
+    const RESOLUTION_CONCURRENCY = 8;
+    for (let offset = 0; offset < candidates.length; offset += RESOLUTION_CONCURRENCY) {
+      const window = candidates.slice(offset, offset + RESOLUTION_CONCURRENCY);
+      const resolved = await Promise.all(
+        window.map((t) => resolveTaskLifecycleColumns(this.store, t.id, irCache)),
+      );
+      window.forEach((t, index) => {
+        lifecycleByTaskId.set(t.id, resolved[index] ?? { intake: "triage", hold: "todo" });
+      });
+    }
+
+    // An unresolved task id means the card was filtered out before resolution, so it is not a
+    // candidate and both predicates are correctly false for it.
+    const isAtHoldColumn = (t: Task): boolean => lifecycleByTaskId.get(t.id)?.hold === t.column;
+    const isAtIntakeColumn = (t: Task): boolean => lifecycleByTaskId.get(t.id)?.intake === t.column;
+
+    const eligibleTriageTasks = candidates.filter(
+      // `!isAtHoldColumn` keeps the two branches disjoint for a merged intake+hold column.
+      (t) => isAtIntakeColumn(t) && !isAtHoldColumn(t) && isTaskStillInPlanningStage(t)
         && !this.advancedRecoveryReservations.has(t.id)
         && !this.processing.has(t.id) && !this.hasLivePlanningWork(t.id) && !t.paused
         && t.status !== "awaiting-approval" && t.status !== "failed" && t.status !== "stuck-killed"
         && !(t.nextRecoveryAt && new Date(t.nextRecoveryAt).getTime() > now),
     );
-    const eligibleTodoTasksRaw = allTasks.filter(
-      (t) => t.column === "todo" && !this.processing.has(t.id) && !this.hasLivePlanningWork(t.id) && !t.paused
+    const eligibleTodoTasksRaw = candidates.filter(
+      (t) => isAtHoldColumn(t) && !this.processing.has(t.id) && !this.hasLivePlanningWork(t.id) && !t.paused
         && t.status !== "awaiting-approval" && t.status !== "failed" && t.status !== "stuck-killed"
         && t.status !== "planning"
         && !(t.nextRecoveryAt && new Date(t.nextRecoveryAt).getTime() > now),

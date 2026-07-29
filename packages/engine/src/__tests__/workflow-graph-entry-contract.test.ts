@@ -26,11 +26,33 @@ case that motivated it: behind (resume forward), at, and past each column, on th
 const codingIr = parseWorkflowIr(getBuiltinWorkflow("builtin:coding")!.ir as never);
 
 describe("workflow graph entry contract — resume at the card's own column", () => {
-  it("enters the planning prologue only for a card still in the planning lane", () => {
-    // Intake: nothing is behind it, so the run starts at the graph's own start node.
-    expect(resolveColumnResumeNode(codingIr, "triage")?.id).toBe("start");
-    // Planning lane: the specification phase is exactly what this card still needs.
-    expect(resolveColumnResumeNode(codingIr, "todo")?.id).toBe("plan");
+  /*
+  FNXC:MergedPlanningColumn 2026-07-28-17:40 (U11):
+  EXPECTATION CHANGED BY THE MERGE, recorded rather than relaxed. This asserted two entry points
+  because the default workflow had two pre-implementation columns; it now has one, so `triage`
+  resolves to undefined (a column the IR does not declare cannot be placed relative to any node)
+  and the single planning column enters at `start`.
+
+  The `undefined` half is NOT the whole story and is deliberately not left as the only assertion:
+  a card still stored in the removed `triage` column is rescued by `run()`'s start-node fallback,
+  and that rescue is asserted by driving the executor in the stranded-card suite at the bottom of
+  this file — verified to go red when the fallback is deleted. Asserting undefined here alone
+  would be compatible with those cards stranding.
+  */
+  it("enters the planning prologue for a card in the merged planning lane", () => {
+    const entry = resolveColumnResumeNode(codingIr, "todo");
+    expect(entry?.column).toBe("todo");
+    expect(entry?.id).toBe("start");
+
+    // …and `start` reaches the specification node in one unconditional hop, which is what makes
+    // entering there equivalent to entering at the specification node itself.
+    const successors = codingIr.edges.filter(
+      (edge) => edge.from === entry!.id
+        && (edge.condition === undefined || edge.condition === "success")
+        && edge.kind !== "rework",
+    );
+    expect(successors).toHaveLength(1);
+    expect(successors[0]!.to).toBe("plan");
   });
 
   it("never re-plans a card that already reached implementation", () => {
@@ -51,7 +73,14 @@ describe("workflow graph entry contract — resume at the card's own column", ()
 
   it("resolves the same way for the other built-in coding IRs", () => {
     expect(resolveColumnResumeNode(BUILTIN_STEPWISE_FINAL_REVIEW_CODING_WORKFLOW_IR, "in-progress")?.id).toBe("parse");
-    // The base IR names its planning seam `planning`; the contract is about columns, not ids.
+    /*
+    FNXC:MergedPlanningColumn 2026-07-28-17:10 (U11):
+    BUILTIN_CODING_WORKFLOW_IR is `builtin:legacy-coding`, NOT the default workflow — the catalog
+    maps `builtin:coding` to the stepwise-final-review IR. Legacy coding deliberately keeps the
+    six-column split shape (its purpose is being the old pipeline; R11 commits to legacy shapes
+    continuing to work), so it still answers `planning` here. The merged-column assertions live
+    with the DEFAULT lineage below.
+    */
     expect(resolveColumnResumeNode(BUILTIN_CODING_WORKFLOW_IR, "todo")?.id).toBe("planning");
     expect(resolveColumnResumeNode(BUILTIN_CODING_WORKFLOW_IR, "in-progress")?.id).toBe("execute");
   });
@@ -194,42 +223,37 @@ difference between proving something and appearing to:
    when the fallback is removed is verified, not assumed.
 */
 describe("workflow graph entry contract — merged intake+hold planning column (U11)", () => {
-  /**
-   * The U11 IR edit, as a transformation of a real workflow: `triage`'s traits merge into `todo`,
-   * `todo` becomes "Planning", `triage` is deleted, and every node that named `triage` is repointed.
-   * Applying this to the production IR is what makes the assertions below track production.
-   */
-  function mergeTodoIntoPlanning(source: WorkflowIr): WorkflowIr {
-    const ir = structuredClone(source) as WorkflowIr & {
-      columns: Array<{ id: string; name?: string; traits?: unknown[] }>;
-      nodes: Array<{ id: string; column?: string }>;
-    };
-    const triage = ir.columns.find((column) => column.id === "triage");
-    const todo = ir.columns.find((column) => column.id === "todo");
-    if (!triage || !todo) throw new Error("source IR is not the split-column shape this merge transforms");
+  /*
+  FNXC:MergedPlanningColumn 2026-07-28-17:30 (U11):
+  This block previously TRANSFORMED the production IR to preview the merged shape before it
+  landed. It has landed: `builtin:coding` (the stepwise-final-review lineage) now declares one
+  pre-implementation column. So the transformation is deleted and these assert the real thing.
 
-    todo.name = "Planning";
-    // intake first, then the existing hold/reset-on-entry — the union U11 declares.
-    todo.traits = [...(triage.traits ?? []), ...(todo.traits ?? [])];
-    ir.columns = ir.columns.filter((column) => column.id !== "triage");
-    for (const node of ir.nodes) {
-      if (node.column === "triage") node.column = "todo";
-    }
-    return ir as WorkflowIr;
-  }
+  The transform helper is not kept "just in case" — it would now be a no-op that quietly asserts
+  nothing, which is worse than no test. `builtin:legacy-coding` still carries the split shape and
+  is asserted separately above, so the split vocabulary has not lost coverage.
+  */
+  const mergedCodingIr = codingIr;
 
-  const mergedCodingIr = mergeTodoIntoPlanning(codingIr);
-
-  it("is a faithful merge of the production IR (guards the transformation itself)", () => {
-    // If this drifts, every assertion below is measuring the wrong thing.
+  it("declares ONE pre-implementation column carrying both intake and hold", () => {
+    // The shape U11 exists to produce, asserted on the real default workflow.
     expect(mergedCodingIr.columns.map((column) => column.id)).not.toContain("triage");
     expect(mergedCodingIr.nodes.every((node) => node.column !== "triage")).toBe(true);
+
     const planning = mergedCodingIr.columns.find((column) => column.id === "todo")!;
+    expect(planning.name).toBe("Planning");
     const traits = (planning.traits ?? []).map((trait) => (trait as { trait: string }).trait);
     expect(traits).toContain("intake");
     expect(traits).toContain("hold");
-    // Node COUNT is unchanged: this is a column merge, not a graph edit.
-    expect(mergedCodingIr.nodes.length).toBe(codingIr.nodes.length);
+
+    // Exactly one column carries each pre-implementation role — a second intake or hold column
+    // would reintroduce the two-stage shape under different ids.
+    const withTrait = (name: string) => mergedCodingIr.columns.filter(
+      (column) => (column.traits ?? []).some((trait) => (trait as { trait: string }).trait === name),
+    );
+    expect(withTrait("intake")).toHaveLength(1);
+    expect(withTrait("hold")).toHaveLength(1);
+    expect(withTrait("intake")[0]!.id).toBe(withTrait("hold")[0]!.id);
   });
 
   it("enters the specification phase for a card in the merged planning column", () => {
@@ -335,18 +359,9 @@ describe("workflow graph entry contract — a card stranded in a deleted column 
     } as unknown as WorkflowRuntimePrimitives;
   }
 
+  /** Production is already merged, so this is the real default IR — no transform needed. */
   function mergedIrWithoutTriage(): WorkflowIr {
-    const ir = structuredClone(codingIr) as WorkflowIr & {
-      columns: Array<{ id: string; name?: string; traits?: unknown[] }>;
-      nodes: Array<{ id: string; column?: string }>;
-    };
-    const triage = ir.columns.find((column) => column.id === "triage")!;
-    const todo = ir.columns.find((column) => column.id === "todo")!;
-    todo.name = "Planning";
-    todo.traits = [...(triage.traits ?? []), ...(todo.traits ?? [])];
-    ir.columns = ir.columns.filter((column) => column.id !== "triage");
-    for (const node of ir.nodes) if (node.column === "triage") node.column = "todo";
-    return ir as WorkflowIr;
+    return codingIr;
   }
 
   it("runs a card still stored in the DELETED triage column instead of stranding it", async () => {

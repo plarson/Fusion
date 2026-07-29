@@ -60,11 +60,41 @@ const RAW_BUILTIN_STEPWISE_CODING_WORKFLOW_IR: WorkflowIr = {
   version: "v2",
   name: "builtin-stepwise-coding",
   columns: [
-    { id: "triage", name: "Planning", traits: [{ trait: "intake" }] },
+    /*
+    FNXC:MergedPlanningColumn 2026-07-28-17:20 (U11 / R1, R2):
+    ONE pre-implementation column. Specification, Plan Review and the replan loop all run here, and
+    the card leaves only when the scheduler releases it against implementation capacity — so a card
+    being planned never holds an implementation slot. This is the DEFAULT lineage: `builtin:coding`
+    resolves to the final-review variant, which clones this IR.
+
+    The id stays `todo`; the DISPLAY name becomes "Planning". Deliberate, and the cheaper half of
+    the merge: `todo` was already the hold column, so every trait lookup, task row, stored
+    selection and the 121 `column === "todo"` guards still in the engine keep meaning exactly what
+    they meant, and no stored row needs re-homing. Promoting `triage` instead would have produced
+    the same board while making each of those guards workflow-DEPENDENT — still live for Coding
+    (Ideas), which keeps `todo` per R11, and silently dead for Coding. Harder to detect than dead.
+    `builtin:coding-ideas` already ships this same id-keeping merge.
+
+    `intake` must sit on THIS column rather than a separate one upstream: an intake-only column has
+    no releaser — the capacity sweep only releases from a `hold` column — so a card parked there
+    waits for a human forever. That is what reverted the earlier attempts (see
+    docs/solutions/architecture-patterns/workflow-node-column-placement-and-graph-entry-contract.md).
+
+    NOT applied to `builtin:legacy-coding` (BUILTIN_CODING_WORKFLOW_IR), which keeps the six-column
+    split shape on purpose: a workflow whose stated purpose is preserving the original pipeline
+    must not be silently reshaped, and R11 commits to legacy shapes continuing to work.
+
+    `todo` stays a legal column id for stored rows and user-authored workflows (R11, KTD-8). What
+    is deleted is Todo the STAGE, not the string.
+    */
     {
       id: "todo",
-      name: "Todo",
-      traits: [{ trait: "hold", config: { release: "capacity" } }, { trait: "reset-on-entry" }],
+      name: "Planning",
+      traits: [
+        { trait: "intake" },
+        { trait: "hold", config: { release: "capacity" } },
+        { trait: "reset-on-entry" },
+      ],
     },
     {
       id: "in-progress",
@@ -94,7 +124,14 @@ const RAW_BUILTIN_STEPWISE_CODING_WORKFLOW_IR: WorkflowIr = {
   // parses into task steps.
   artifacts: [{ key: "PROMPT.md", title: "Plan", producedBy: "planning", role: "step-source" }],
   nodes: [
-    { id: "start", kind: "start", column: "triage" },
+    /*
+    FNXC:MergedPlanningColumn 2026-07-28-17:20 (U11):
+    `start` moves into the merged planning column with the rest of the specification phase. Its
+    column is load-bearing: the graph entry contract resumes a continuation-less run at the first
+    node whose column is not BEHIND the card's, so a `start` left in an undeclared column would be
+    unplaceable.
+    */
+    { id: "start", kind: "start", column: "todo" },
     /*
     FNXC:PlanReviewStep 2026-07-26-17:10:
     PLAN-IN-PLACE: the whole specification phase — `plan`, `plan-review`, `plan-replan` — runs in the

@@ -11,6 +11,7 @@ import { BUILTIN_CODING_WORKFLOW_IR } from "../builtin-coding-workflow-ir.js";
 import { columnsWithFlag, columnHasFlag, resolveReboundTarget, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveLifecycleColumns, resolveTaskLifecycleColumns } from "../workflow-lifecycle-traits.js";
 import { BUILTIN_CODING_IDEAS_WORKFLOW_IR } from "../builtin-coding-ideas-workflow-ir.js";
 import type { WorkflowIr } from "../workflow-ir-types.js";
+import { getTraitRegistry } from "../trait-registry.js";
 
 describe("columnsWithFlag — builtin:coding trait→columnIds (R8)", () => {
   const ir = BUILTIN_CODING_WORKFLOW_IR;
@@ -271,5 +272,81 @@ describe("resolveTaskLifecycleColumns — U1 store-aware form", () => {
       getWorkflowDefinition: async () => ({ id: "wf-v1", ir: { version: "v1", name: "legacy", nodes: [], edges: [] } }),
     });
     await expect(resolveTaskLifecycleColumns(store, "T-1")).resolves.toBeUndefined();
+  });
+});
+
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-31-07:10 (the arity contract, pinned):
+`LifecycleColumns` names ONE column per role even when the workflow declares several — nothing
+validates that a trait appears at most once, and `resolveLifecycleColumns` takes the head of
+`columnsWithFlag`.
+
+This is asserted rather than left in the doc comment because two production bugs came from assuming
+otherwise (PR #2713): a task in a SECOND terminal column was rejected with a 409, and a task in a
+human-review lane split from the merge lane was classified as outside review entirely. Both read
+like ordinary conversions.
+
+The point of the pair below is the CONTRAST: the struct is safe for "where should this card go" and
+unsafe for "is this card already there". A reader who only sees the first assertion learns the wrong
+lesson.
+*/
+describe("LifecycleColumns arity — one id per role, even when several qualify", () => {
+  /*
+  FNXC:WorkflowLifecycleColumns 2026-07-31-07:40 (PR #2721 review — greptile, and the premise was
+  wrong):
+  Uses `complete`, NOT `intake`. My first version demonstrated the arity gap with two intake lanes
+  and bypassed typing with `as never` to build it — but `validateColumnTraits` raises
+  `multiple-intake-columns`, so that workflow shape is REJECTED by the product. The test would have
+  stayed green while documenting something that cannot exist, which is worse than not testing it.
+
+  `complete` genuinely repeats: there is no uniqueness rule for it, nor for `archived`, `hold`,
+  `countsTowardWip`, `mergeBlocker` or `humanReview`. Only `intake` is validated unique. That is the
+  real boundary, and it means `intake` comparisons are safe by equality while every other role's are
+  not — which narrows the call sites at risk rather than widening them.
+  */
+  const twoTerminalsIr: WorkflowIr = {
+    version: "v2",
+    name: "two-terminals",
+    columns: [
+      { id: "backlog", name: "Backlog", traits: [{ trait: "intake" }] },
+      { id: "building", name: "Building", traits: [{ trait: "wip" }] },
+      { id: "shipped", name: "Shipped", traits: [{ trait: "complete" }] },
+      { id: "released", name: "Released", traits: [{ trait: "complete" }] },
+    ],
+    nodes: [{ id: "start", kind: "start", column: "backlog" }, { id: "end", kind: "end", column: "shipped" }],
+    edges: [{ from: "start", to: "end" }],
+  } as WorkflowIr;
+
+  it("is a workflow the product actually ACCEPTS — the premise this rests on", () => {
+    /*
+    Asserted, not assumed. My first version of these cases used two INTAKE columns, which
+    `validateColumnTraits` rejects with `multiple-intake-columns` — so it documented a shape that
+    cannot exist while staying green. Proving the fixture is valid is what makes the arity gap below
+    a real hazard rather than a hypothetical one.
+    */
+    const violations = getTraitRegistry().validateColumnTraits(twoTerminalsIr.columns as never);
+    expect(violations.filter((v) => v.severity === "error")).toEqual([]);
+  });
+
+  it("reports only ONE complete column — the second is invisible to the struct", () => {
+    const lifecycle = resolveLifecycleColumns(twoTerminalsIr);
+    expect(lifecycle).toBeDefined();
+    expect(["shipped", "released"]).toContain(lifecycle!.complete);
+  });
+
+  it("so a MEMBERSHIP test against it misses the second column — use columnsWithFlag instead", () => {
+    const lifecycle = resolveLifecycleColumns(twoTerminalsIr)!;
+    const bothTerminals = columnsWithFlag(twoTerminalsIr, "complete");
+
+    // Both are genuinely terminal columns.
+    expect(bothTerminals).toHaveLength(2);
+    expect(bothTerminals).toEqual(expect.arrayContaining(["shipped", "released"]));
+
+    // Exactly one fails an equality check against the struct — the shipped-bug shape from PR #2713.
+    const missed = bothTerminals.find((id) => id !== lifecycle.complete)!;
+    expect(missed).toBeDefined();
+    expect(missed === lifecycle.complete).toBe(false);
+    // The membership form gets it right.
+    expect(bothTerminals.includes(missed)).toBe(true);
   });
 });

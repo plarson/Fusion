@@ -140,6 +140,34 @@ struct present) apart from "this workflow has no column vocabulary at all" (unde
 The first is a real workflow shape to honor; the second means the caller has no basis to
 decide and must skip-and-log rather than guess a legacy literal.
 */
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-31-07:00 (arity contract, after two production bugs):
+EACH FIELD IS **ONE** COLUMN, EVEN WHEN THE WORKFLOW DECLARES SEVERAL.
+
+Uniqueness is validated for exactly ONE trait. `TraitRegistry.validateColumnTraits` raises
+`multiple-intake-columns` when more than one column carries `intake` — and raises nothing for
+`hold`, `countsTowardWip`, `mergeBlocker`, `humanReview`, `complete` or `archived`. Those may
+legitimately repeat: a workflow can split `mergeBlocker` and `humanReview` across a merge lane and a
+separate sign-off lane, or declare two terminal columns. `columnsWithFlag` returns an array and
+`first()` below picks its head, so this struct names only one of each.
+
+So `intake` is safe to compare by equality; every other field is not.
+
+That makes these fields safe for ONE question and unsafe for another:
+
+  SAFE    "where should this card GO"      — a move target must be exactly one column
+  UNSAFE  "is this card ALREADY there"     — that is membership; use `columnsWithFlag(ir, flag)`
+                                             and test `.includes(task.column)`
+
+Two shipped bugs came from the unsafe use, both in PR #2713: a task in a second terminal column was
+rejected with a 409, and a task in a human-review lane split from the merge lane was classified as
+outside review entirely, suppressing comment re-engagement. Both read like ordinary conversions.
+
+Known call sites comparing `task.column` against these fields:
+  packages/engine/src/self-healing.ts     `columns.intake` SAFE (validated unique);
+                                          `columns.hold`   AT RISK — hold has no uniqueness rule
+  packages/core/src/builtin-workflows.ts  `lifecycle.intake` SAFE (validated unique)
+*/
 export interface LifecycleColumns {
   /** Where new cards land. */
   intake: string | undefined;

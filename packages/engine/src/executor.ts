@@ -2356,7 +2356,10 @@ export class TaskExecutor {
 
   private async finalizeAlreadyReviewedTask(taskId: string): Promise<"merged" | "blocked" | "missing"> {
     const latestTask = await this.store.getTask(taskId);
-    if (!latestTask || latestTask.column !== "in-review") {
+    /* FNXC:WorkflowLifecycleColumns 2026-08-01-17:55 (fleet): the board's own review lane. Spelled as the
+       literal, this reported "missing" — a word that reads as "the task is gone" — for a card sitting in
+       review on a renamed board, and the already-reviewed finalize never ran. */
+    if (!latestTask || latestTask.column !== (await this.resolveResumeLanes(taskId)).review) {
       return "missing";
     }
 
@@ -2426,7 +2429,11 @@ export class TaskExecutor {
       return true;
     }
 
-    if ((latestTask && latestTask.column !== "in-progress") || this.userCanceledTaskIds.has(taskId)) {
+    /* FNXC:WorkflowLifecycleColumns 2026-08-01-17:45 (fleet: wip-lane liveness family): "still executing"
+       is the board's WIP lane. With the literal a renamed board deferred EVERY completion handoff — the
+       card was never in `in-progress`, so this read "no longer active" for a card that was actively
+       executing, and the handoff was dropped with a log line. */
+    if ((latestTask && latestTask.column !== (await this.resolveResumeLanes(taskId)).wip) || this.userCanceledTaskIds.has(taskId)) {
       this.clearCompletedTaskWatchdog(taskId);
       executorLog.log(`${taskId}: completion handoff deferred — task no longer active (${context})`);
       await this.store.logEntry(
@@ -3357,7 +3364,8 @@ export class TaskExecutor {
       executorLog.warn(`${taskId}: failed to read latest task state for deferred approval resume: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
-    if (latestTask.paused || latestTask.userPaused || latestTask.column !== "in-progress") return false;
+    if (latestTask.paused || latestTask.userPaused
+      || latestTask.column !== (await this.resolveResumeLanes(taskId)).wip) return false;
     return this.dispatchUnpauseResume(latestTask);
   }
 
@@ -3604,7 +3612,11 @@ export class TaskExecutor {
         // Handle unpause of an in-progress task with no active session.
         // Approval can be decided while the old session is still unwinding;
         // remember that edge instead of losing the only task:updated event.
-        if (!task.paused && task.column === "in-progress" && this.approvalSuspended.has(task.id)) {
+        /* FNXC:WorkflowLifecycleColumns 2026-08-01-17:50 (fleet): both checks in this listener ask "is
+           this card still in the wip lane?"; one snapshot for the pair. With the literal neither fired on a
+           renamed board — an unpaused card with no active session was never resumed. */
+        const unpauseWipLane = (await this.resolveResumeLanes(task.id)).wip;
+        if (!task.paused && task.column === unpauseWipLane && this.approvalSuspended.has(task.id)) {
           if (
             this.executing.has(task.id)
             || this.activeSessions.has(task.id)
@@ -3622,7 +3634,7 @@ export class TaskExecutor {
         // dispatchUnpauseResume owns the terminal-failure and duplicate guards.
         if (
           !task.paused
-          && task.column === "in-progress"
+          && task.column === unpauseWipLane
           && !this.activeSessions.has(task.id)
           && !this.activeStepExecutors.has(task.id)
           && !this.activeWorkflowStepSessions.has(task.id)
@@ -4271,7 +4283,8 @@ export class TaskExecutor {
           return;
         }
 
-        if (!currentTask || currentTask.column !== "in-progress" || currentTask.paused) {
+        if (!currentTask || currentTask.paused
+          || currentTask.column !== (await this.resolveResumeLanes(taskId)).wip) {
           return;
         }
         if (!this.isTaskWorkComplete(currentTask)) {
@@ -4372,7 +4385,11 @@ export class TaskExecutor {
       the task back for remediation, so `in-review` must bounce back exactly like
       `in-progress` regardless of the column the completion race left it in.
       */
-      if (latestTask.column === "in-progress" || latestTask.column === "in-review") {
+      /* FNXC:WorkflowLifecycleColumns 2026-08-01-17:57 (fleet): both lanes from ONE snapshot — the comment
+         above says in-review must bounce EXACTLY like in-progress, so resolving them separately is how the
+         bounce ends up handling one lane and throwing on the other, which is the bug that comment is about. */
+      const bounceLanes = await this.resolveResumeLanes(taskId);
+      if (latestTask.column === bounceLanes.wip || latestTask.column === bounceLanes.review) {
         const originalExecutionStartedAt = latestTask.executionStartedAt;
         // Preserve step progress across the in-progress/in-review → todo hop:
         // moveTask's default reopen-to-todo path resets every step to
@@ -4473,7 +4490,12 @@ export class TaskExecutor {
         return;
       }
 
-      if (!currentTask || currentTask.paused || currentTask.column === "in-progress") {
+      /* FNXC:WorkflowLifecycleColumns 2026-08-01-17:48 (fleet): the INVERSE of the guard above — this one
+         SKIPS a card that is still executing. Note the direction: with the literal on a renamed board it
+         never matched, so a rerun could fire on a card mid-execution. A mechanical sweep of every
+         `!== "in-progress"` would fix the refusals and leave this admission in place. */
+      if (!currentTask || currentTask.paused
+        || currentTask.column === (await this.resolveResumeLanes(taskId)).wip) {
         return;
       }
 
@@ -4623,12 +4645,18 @@ export class TaskExecutor {
     return await this.getCompletedTaskFinalizationDecision(taskId, taskDone) === "finalize";
   }
 
-  private isTaskAlreadyCompleteForNonContinuableSession(task: Task, taskDone: boolean): boolean {
+  /*
+  FNXC:WorkflowLifecycleColumns 2026-08-01-20:35 (PR #2703 review — greptile P1):
+  The review lane arrives from the caller for the reason documented on `isBenignInReviewPauseAbort`: the
+  synchronous resolver returns the default workflow in PostgreSQL mode, so resolving it here would have
+  been a conversion that changes the census and not the behaviour.
+  */
+  private isTaskAlreadyCompleteForNonContinuableSession(task: Task, taskDone: boolean, reviewLane: string): boolean {
     // FNXC:Lifecycle 2026-07-16-21:40: FN-8141 — the step-status "already complete" branch
     // must not treat skip-bypass-tainted skips as completion; an accepted done / in-review
     // column are honest completion signals and stay unaffected.
     return taskDone
-      || task.column === "in-review"
+      || task.column === reviewLane
       || (this.isTaskWorkComplete(task) && !evaluateSkipBypassTaint(task).blocked);
   }
 
@@ -4638,7 +4666,8 @@ export class TaskExecutor {
     }
 
     const liveTask = await this.store.getTask(task.id);
-    if (!liveTask || !this.isTaskAlreadyCompleteForNonContinuableSession(liveTask, taskDone)) {
+    const nonContinuableLanes = await this.resolveResumeLanes(task.id);
+    if (!liveTask || !this.isTaskAlreadyCompleteForNonContinuableSession(liveTask, taskDone, nonContinuableLanes.review)) {
       return false;
     }
 
@@ -4652,7 +4681,19 @@ export class TaskExecutor {
 
     await this.persistTokenUsage(task.id);
 
-    if (liveTask.column === "in-review") {
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-08-02-05:50 (PR #2703 review — greptile P1, and it is the same split
+    I have been fixing all day, in code I wrote an hour earlier):
+    ONE SNAPSHOT. The eligibility check above already resolved this task's lanes
+    (`nonContinuableLanes`), and this branch resolved them AGAIN. A workflow selection or review-column
+    edit between the two makes eligibility accept the card on the old board while this branch reads the new
+    one — the card is then handed to `handoffTaskToReview`, reprocessing a row already in review.
+
+    Writing the second resolution was not carelessness about the rule; it is that the rule is invisible at
+    the call site. That is the argument for the structural ratchet in
+    `executor-graph-failure-lanes-resolved.test.ts` rather than for trying harder.
+    */
+    if (liveTask.column === nonContinuableLanes.review) {
       this.clearCompletedTaskWatchdog(task.id);
       this.signalTaskComplete(liveTask);
       return true;
@@ -5446,7 +5487,7 @@ export class TaskExecutor {
     source: { source: "graph-entry" | "workflow-step"; nodeId?: string },
   ): Promise<void> {
     const currentTask = await this.store.getTask(task.id).catch(() => null);
-    if (!currentTask || this.isRequiredArtifactRecoveryProtected(currentTask)) return;
+    if (!currentTask || await this.isRequiredArtifactRecoveryProtected(currentTask)) return;
     task = currentTask;
     const decision = computeRecoveryDecision({
       recoveryRetryCount: task.recoveryRetryCount,
@@ -5477,7 +5518,7 @@ export class TaskExecutor {
 
     if (!decision.shouldRetry) {
       const liveTask = await this.store.getTask(task.id).catch(() => null);
-      if (!liveTask || this.isRequiredArtifactRecoveryProtected(liveTask)) return;
+      if (!liveTask || await this.isRequiredArtifactRecoveryProtected(liveTask)) return;
       const error = `REQUIRED_ARTIFACT_RECOVERY_EXHAUSTED: ${artifactKeys.join(", ")} remained missing after ${MAX_RECOVERY_RETRIES} automatic planning retries.`;
       await this.store.logEntry(task.id, error, undefined, context);
       await this.store.updateTask(task.id, {
@@ -5499,7 +5540,7 @@ export class TaskExecutor {
     this.workflowLifecycleMovesInFlight.add(task.id);
     try {
       const liveTask = await this.store.getTask(task.id).catch(() => null);
-      if (!liveTask || this.isRequiredArtifactRecoveryProtected(liveTask)) return;
+      if (!liveTask || await this.isRequiredArtifactRecoveryProtected(liveTask)) return;
       await moveTaskToReplanColumn(this.store, { id: task.id, column: liveTask.column }, replanColumn);
     } finally {
       this.workflowLifecycleMovesInFlight.delete(task.id);
@@ -5513,15 +5554,29 @@ export class TaskExecutor {
     }, context);
   }
 
-  private isRequiredArtifactRecoveryProtected(task: Task): boolean {
+  /*
+  FNXC:WorkflowLifecycleColumns 2026-08-01-18:25 (fleet: made ASYNC to own its resolution):
+  This predicate protects a card from artifact-recovery replanning, and three of its conditions are
+  lifecycle columns: the terminal pair, and a review row whose auto-merge is off (a human owns it). As
+  literals they all read false on a renamed board — so a FINISHED card, or a review row a human was
+  holding, could be moved to the replan column and have its status rewritten to needs-replan.
+
+  ASYNC rather than lane parameters: all four callers already `await store.getTask` immediately before
+  calling this, so there is no new I/O ordering, and a parameter list would put the resolution in four
+  places that must agree. The archived half is why the SYNC planner-lane resolver was not an option — it
+  exposes no archived lane — and widening a shared resolver from inside a call-site sweep is scope creep
+  that makes a conversion unreviewable.
+  */
+  private async isRequiredArtifactRecoveryProtected(task: Task): Promise<boolean> {
+    const terminalColumns = await resolveTerminalColumnsFor(this.store, task.id);
+    const protectionReviewLane = (await this.resolveResumeLanes(task.id)).review;
     return Boolean(
       task.deletedAt
       || task.paused
       || task.userPaused === true
-      || task.column === "done"
-      || task.column === "archived"
+      || terminalColumns.includes(task.column)
       || task.mergeDetails?.mergeConfirmed === true
-      || (task.column === "in-review" && task.autoMerge === false),
+      || (task.column === protectionReviewLane && task.autoMerge === false),
     );
   }
 
@@ -9976,6 +10031,8 @@ export class TaskExecutor {
     task: Task,
     live: TaskDetail,
     result: WorkflowGraphTaskRunResult,
+    /** Shared per-recovery lane snapshot — see `resolveResumeLanes`. */
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
   ): Promise<boolean> {
     if (live.deletedAt) return false;
     if (live.paused || live.userPaused === true) return false;
@@ -9991,7 +10048,11 @@ export class TaskExecutor {
     not move those tasks backward or re-enqueue them. Mirrors the gating the in-review
     self-healing sweep (recoverMissingWorktreeReviewFailures) applies before the same recovery.
     */
-    if (live.column === "in-review") {
+    /* FNXC:WorkflowLifecycleColumns 2026-08-01-17:25 (fleet): FN-5147 — with the literal, a renamed board
+       skipped this auto-merge-off gate entirely, so an automatic recovery moved a human-review-terminal
+       card backward. #2689 converted the terminal guard at the top of this method; this is the other half
+       of the same decision. */
+    if (live.column === (await this.resolveResumeLanes(live.id, resumeLanesMemo)).review) {
       const settings = await this.store.getSettings();
       if (!allowsAutoMergeProcessing(live, settings)) return false;
     }
@@ -10184,6 +10245,9 @@ export class TaskExecutor {
     result: WorkflowGraphTaskRunResult,
     abortProvenance: PausedAbortProvenance | undefined,
     pausedAborted: boolean,
+    /** Shared per-recovery lane snapshot — see `resolveResumeLanes`; a fresh resolution here could disagree
+     *  with the one the rest of `handleGraphFailure` uses. */
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
   ): Promise<boolean> {
     /*
     FNXC:WorkflowLifecycle 2026-06-19-00:05:
@@ -10192,7 +10256,15 @@ export class TaskExecutor {
     if (!pausedAborted) return false;
     if (abortProvenance === "global-pause" || live.userPaused === true) return false;
     if (abortProvenance === "completion-finalize") return false;
-    if (live.column !== "in-review" || !this.isRetryableMergePauseAbortStatus(live.status) || live.error != null) return false;
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-08-01-17:10 (fleet: executor.ts review-lane classifiers, on top of #2689):
+    "IS THIS CARD IN THE REVIEW LANE?" from the task's own workflow. Five pause-abort classifiers asked it
+    as the default lineage's literal, and each refusal drops the card through to the operator-action park
+    these paths exist to avoid (FN-6796's benign in-review abort, the manual-merge-hold abort, the two
+    stale-replay handlers, this retryable merge abort). The literal made the recovery inert, silently.
+    */
+    if (live.column !== (await this.resolveResumeLanes(live.id, resumeLanesMemo)).review
+      || !this.isRetryableMergePauseAbortStatus(live.status) || live.error != null) return false;
     if (live.mergeDetails?.mergeConfirmed === true) return false;
     const failureValue = this.graphFailureValue(result);
     if (this.isTerminalMergeGraphFailureValue(failureValue)) return false;
@@ -10213,12 +10285,33 @@ export class TaskExecutor {
     return true;
   }
 
+  /*
+  FNXC:WorkflowLifecycleColumns 2026-08-01-20:30 (PR #2703 review — greptile P1, and it is the most
+  important finding in this sweep):
+
+  THE SYNCHRONOUS RESOLVER IS A NO-OP IN PRODUCTION. `resolvePlannerLanes` reads
+  `store.resolveTaskWorkflowIrSync`, whose selection reader is `getTaskWorkflowSelectionImpl` — and in
+  PostgreSQL mode that function returns `undefined` unconditionally ("Backend mode cannot synchronously
+  read PostgreSQL"). PostgreSQL is the shipped backend, so every sync-resolved conversion resolves the
+  DEFAULT workflow and answers with the legacy ids no matter what board the task is on.
+
+  That makes a sync conversion cosmetic: the census counts it as converted, `--strict` goes down by one,
+  and the guard behaves exactly as the literal did. Worse than leaving the literal, because the number
+  says the site is done.
+
+  THE FIX IS TO STOP BEING SYNCHRONOUS, not to keep the literal. Both of this file's sync classifiers
+  are called from async methods that have already awaited a store read, so the lane can be threaded in
+  from the caller's existing snapshot — no new I/O, no second resolution, and the two halves of the
+  decision provably read the same board.
+  */
   private isBenignInReviewPauseAbort(
     live: TaskDetail,
     result: WorkflowGraphTaskRunResult,
     abortProvenance: PausedAbortProvenance | undefined,
     pausedAborted: boolean,
     userCanceled: boolean,
+    /** The caller's already-resolved review lane — see the note above on the sync resolver. */
+    reviewLane: string,
   ): boolean {
     /*
     FNXC:WorkflowLifecycle 2026-06-20-00:00:
@@ -10230,7 +10323,15 @@ export class TaskExecutor {
     if (!pausedAborted) return false;
     if (!isGenericAbortProvenance(abortProvenance)) return false;
     if (userCanceled) return false;
-    if (live.column !== "in-review") return false;
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-08-01-20:40 (PR #2703 review — replaces my own earlier reasoning):
+    This comparison used the SYNC `resolvePlannerLanes`, which I justified as the right resolver for a
+    synchronous classifier. That justification was wrong in production: in PostgreSQL mode the sync
+    selection reader always returns undefined, so the sync resolver hands back the DEFAULT workflow's lanes
+    and the guard behaves exactly as the literal did. The lane now arrives from the caller's snapshot — see
+    the note on this method.
+    */
+    if (live.column !== reviewLane) return false;
     if (live.userPaused === true) return false;
     if (live.status != null || live.error != null) return false;
     if (live.mergeDetails?.mergeConfirmed === true) return false;
@@ -10255,6 +10356,9 @@ export class TaskExecutor {
     result: WorkflowGraphTaskRunResult,
     abortProvenance: PausedAbortProvenance | undefined,
     pausedAborted: boolean,
+    /** Shared per-recovery lane snapshot — see `resolveResumeLanes`; a fresh resolution here could disagree
+     *  with the one the rest of `handleGraphFailure` uses. */
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
   ): Promise<boolean> {
     /*
     FNXC:WorkflowLifecycle 2026-07-09-14:54:
@@ -10263,7 +10367,7 @@ export class TaskExecutor {
     if (!pausedAborted) return false;
     if (!isGenericAbortProvenance(abortProvenance)) return false;
     if (live.paused || live.userPaused === true) return false;
-    if (live.column !== "in-review") return false;
+    if (live.column !== (await this.resolveResumeLanes(live.id, resumeLanesMemo)).review) return false;
     if (live.mergeDetails?.mergeConfirmed === true) return false;
     if (this.isTerminalMergeGraphFailureValue(this.graphFailureValue(result))) return false;
     const failedNode = result.visitedNodeIds[result.visitedNodeIds.length - 1];
@@ -10288,6 +10392,9 @@ export class TaskExecutor {
     abortProvenance: PausedAbortProvenance | undefined,
     pausedAborted: boolean,
     userCanceled: boolean,
+    /** Shared per-recovery lane snapshot — see `resolveResumeLanes`; a fresh resolution here could disagree
+     *  with the one the rest of `handleGraphFailure` uses. */
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
   ): Promise<boolean> {
     /*
     FNXC:WorkflowLifecycle 2026-06-28-21:05:
@@ -10296,7 +10403,7 @@ export class TaskExecutor {
     if (!pausedAborted) return false;
     if (!isGenericAbortProvenance(abortProvenance) && abortProvenance !== "global-pause") return false;
     if (userCanceled) return false;
-    if (live.column !== "in-review") return false;
+    if (live.column !== (await this.resolveResumeLanes(live.id, resumeLanesMemo)).review) return false;
     if (live.paused || live.userPaused === true) return false;
     if (live.autoMerge === false) return false;
     if (live.mergeDetails?.mergeConfirmed === true) return false;
@@ -10360,6 +10467,9 @@ export class TaskExecutor {
     abortProvenance: PausedAbortProvenance | undefined,
     pausedAborted: boolean,
     userCanceled: boolean,
+    /** Shared per-recovery lane snapshot — see `resolveResumeLanes`; a fresh resolution here could disagree
+     *  with the one the rest of `handleGraphFailure` uses. */
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
   ): Promise<boolean> {
     /*
     FNXC:WorkflowLifecycle 2026-06-29-01:18:
@@ -10368,7 +10478,14 @@ export class TaskExecutor {
     if (!pausedAborted) return false;
     if (!isGenericAbortProvenance(abortProvenance) && abortProvenance !== "global-pause") return false;
     if (userCanceled) return false;
-    if (live.column !== "in-review") return false;
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-08-01-17:15 (fleet): ONE SNAPSHOT for the entry gate AND the deferred
+    recheck inside `scheduleRetry` below — the recheck is the second half of THIS decision ("is the card
+    still where it was when we admitted it?"), so resolving the board again inside the timeout callback
+    would let a workflow edit make the two halves disagree.
+    */
+    const replayLanes = await this.resolveResumeLanes(live.id, resumeLanesMemo);
+    if (live.column !== replayLanes.review) return false;
     if (live.paused || live.userPaused === true) return false;
     if (live.autoMerge === false) return false;
     if (live.mergeDetails?.mergeConfirmed === true) return false;
@@ -10435,7 +10552,7 @@ export class TaskExecutor {
             || resumeTask.userPaused
             || resumeTask.status != null
             || resumeTask.error != null
-            || resumeTask.column !== "in-review"
+            || resumeTask.column !== replayLanes.review
             || this.activeSessions.has(live.id)
             || this.activeStepExecutors.has(live.id)
             || this.activeWorkflowStepSessions.has(live.id)
@@ -10480,15 +10597,25 @@ export class TaskExecutor {
     if (userCanceled) return false;
     if (live.paused || live.userPaused === true) return false;
     if (live.status != null || live.error != null) return false;
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-08-01-17:20 (fleet: executor.ts — the split-snapshot defect):
+    THE LANES ARE RESOLVED HERE, AT THE TOP, because this method already resolved them — at the very END,
+    for its return value — while every eligibility check below compared against the default lineage's
+    literals. On a renamed board the four `in-review` gates all read false, so a card in review skipped the
+    global-pause recheck, the `autoMerge === false` refusal, the shared-branch-member arbitration and the
+    merge-confirmed refusal — and then the final line, which DOES resolve lanes, answered "re-entrant".
+    FN-7214's comment above says an auto-merge-off review row must stay terminal.
+    */
+    const resumeLanes = await this.resolveResumeLanes(live.id, resumeLanesMemo);
     if ((await resolveTerminalColumnsFor(this.store, live.id)).includes(live.column)) return false;
     if (result.interruptedAbortKind !== WORKFLOW_NODE_ENGINE_PAUSE_ABORT_KIND) return false;
     if (!result.interruptedNodeId) return false;
-    if (live.column === "in-review" && result.interruptedNodeId === "plan") return false;
+    if (live.column === resumeLanes.review && result.interruptedNodeId === "plan") return false;
     if (this.isMergeGraphFailure(result.interruptedNodeId)) return false;
     if (this.isTerminalMergeGraphFailureValue(this.graphFailureValue(result))) return false;
     if ((live.graphResumeRetryCount ?? 0) >= MAX_TRANSIENT_GRAPH_RESUME_RETRIES) return false;
     let settings: Settings | undefined;
-    if (abortProvenance === "global-pause" || live.column === "in-review") {
+    if (abortProvenance === "global-pause" || live.column === resumeLanes.review) {
       try {
         settings = await this.store.getSettings();
       } catch {
@@ -10496,14 +10623,13 @@ export class TaskExecutor {
       }
       if (settings.globalPause === true) return false;
     }
-    if (live.column === "in-review") {
+    if (live.column === resumeLanes.review) {
       if (live.autoMerge === false) return false;
       if (!settings) return false;
       const sharedBranchMember = await this.isLiveSharedBranchGroupMember(live);
       if (!sharedBranchMember && !allowsAutoMergeProcessing(live, settings)) return false;
       if (live.mergeDetails?.mergeConfirmed === true) return false;
     }
-    const resumeLanes = await this.resolveResumeLanes(live.id, resumeLanesMemo);
     return live.column === resumeLanes.hold
       || live.column === resumeLanes.review
       || live.column === resumeLanes.wip;
@@ -10760,6 +10886,15 @@ export class TaskExecutor {
       }
       const live = loadedLive;
       /*
+      FNXC:WorkflowLifecycleColumns 2026-08-01-18:40 (fleet: executor.ts handleGraphFailure):
+      ONE LANE SNAPSHOT FOR THE WHOLE METHOD, declared where `live` first exists. The three wip comparisons
+      below run BEFORE the re-entry classifiers' memo was created, so a snapshot declared beside that memo
+      is used-before-declared — which is how the two halves came to read different boards in the first
+      place. The memo is seeded from this snapshot so the classifiers still share it.
+      */
+      const resumeLanesMemo: { lanes?: { hold: string; wip: string; review: string } } = {};
+      const failureLanes = await this.resolveResumeLanes(live.id, resumeLanesMemo);
+      /*
       FNXC:Lifecycle 2026-07-16-21:22:
       FN-8141 follow-up 1 — an honest `fn_task_done(outcome="blocked")` park (status="failed",
       error "BLOCKED: <reason>", executor ~14657) must SURVIVE the same graph-teardown machinery
@@ -10831,7 +10966,7 @@ export class TaskExecutor {
       would otherwise retry the same stale worktree in place, and the terminal sink would park
       the task failed with the signature erased (FN-7996 looped dispatch→park all day).
       */
-      if (await this.routeUnusableWorktreeGraphFailureToRecovery(task, live, result)) {
+      if (await this.routeUnusableWorktreeGraphFailureToRecovery(task, live, result, resumeLanesMemo)) {
         await this.persistTokenUsage(task.id);
         return;
       }
@@ -10852,7 +10987,7 @@ export class TaskExecutor {
             void (async () => {
               try {
                 const resumeTask = await this.store.getTask(task.id);
-                if (this.isRequiredArtifactRecoveryProtected(resumeTask) || resumeTask.status === "failed") return;
+                if (await this.isRequiredArtifactRecoveryProtected(resumeTask) || resumeTask.status === "failed") return;
                 await this.execute(resumeTask);
               } catch (err) {
                 executorLog.error(`Failed required-artifact read retry for ${task.id}:`, err);
@@ -10927,8 +11062,11 @@ export class TaskExecutor {
       FNXC:WorkflowLifecycle 2026-06-18-12:00:
       FN-6647 closes the remaining durability gap by deriving already-finalized completion from the persisted task row: non-in-progress column, completed steps, no live pause/status/error, and the finalize-to-review log entry. The volatile `completionFinalizedTaskIds` marker still helps within one executor lifecycle, but teardown/restart loss must not reclassify a completed in-review row as a hard-cancel pause abort.
       */
+      /* FNXC:WorkflowLifecycleColumns 2026-08-01-17:32 (fleet): on a renamed board a completed,
+         already-finalized row read as still-in-wip, so FN-6644/FN-6647's suppression never fired and the
+         row was re-parked as an operator-action pause abort — the durability gap those tickets closed. */
       const alreadyFinalizedToReview = Boolean(
-        live.column !== "in-progress"
+        live.column !== failureLanes.wip
           && persistedCompletedProgress
           && live.status == null
           && live.error == null
@@ -10952,7 +11090,7 @@ export class TaskExecutor {
       const completionFinalized = completionFinalizeAborted || this.completionFinalizedTaskIds.has(task.id) || alreadyFinalizedToReview;
       const suppressFinalizedCompletionAbort = Boolean(
         completionFinalized
-          && live.column !== "in-progress"
+          && live.column !== failureLanes.wip
           && !live.userPaused
           // FN-6648: `paused !== true` intentionally dropped here too — the
           // suppression is already gated on `completionFinalized` (completed
@@ -10983,8 +11121,12 @@ export class TaskExecutor {
       FNXC:WorkflowLifecycleColumns 2026-07-31-01:05 (PR #2640 review, greptile P2): one lane
       snapshot for one recovery decision — see `resolveResumeLanes`. Eligibility and re-entry are two
       halves of the SAME decision and must not read different boards.
+
+      FNXC:WorkflowLifecycleColumns 2026-08-01-17:30 (fleet): the surrounding branches share it now too.
+      This method asked "still in the wip lane?" in three more places as the default lineage's id while
+      creating this memo for the classifiers — so the classifiers read the board and the branches around
+      them read the default names.
       */
-      const resumeLanesMemo: { lanes?: { hold: string; wip: string; review: string } } = {};
       if (genuinePauseAbort && await this.isReentrantPausedAbortedInFlightNode(live, result, abortProvenance, pausedAborted, this.userCanceledTaskIds.has(task.id), resumeLanesMemo)) {
         if (await this.reenterPausedAbortedWorkflowNode(live, result, abortProvenance, resumeLanesMemo)) {
           return;
@@ -11008,12 +11150,12 @@ export class TaskExecutor {
           return;
         }
       }
-      if (genuinePauseAbort && await this.isRetryableBenignMergePauseAbort(live, result, abortProvenance, pausedAborted)) {
+      if (genuinePauseAbort && await this.isRetryableBenignMergePauseAbort(live, result, abortProvenance, pausedAborted, resumeLanesMemo)) {
         if (await this.routeGraphMergeFailureToRetry(live, result, abortProvenance)) {
           return;
         }
       }
-      if (genuinePauseAbort && await this.isBenignManualMergeHoldPauseAbort(live, result, abortProvenance, pausedAborted)) {
+      if (genuinePauseAbort && await this.isBenignManualMergeHoldPauseAbort(live, result, abortProvenance, pausedAborted, resumeLanesMemo)) {
         /*
         FNXC:WorkflowLifecycle 2026-07-09-14:56:
         FN-7749 / Runfusion#1979: auto-merge-off manual merge hold is terminal-until-human-merged, not an executor failure. Preserve the `in-review` row for Merge & Close, do not invoke merge retry, and clear only stale pause-abort status/error so FN-5147's no-backward-move/no-reenqueue contract stays intact.
@@ -11030,7 +11172,7 @@ export class TaskExecutor {
         await this.persistTokenUsage(task.id);
         return;
       }
-      if (genuinePauseAbort && this.isBenignInReviewPauseAbort(live, result, abortProvenance, pausedAborted, this.userCanceledTaskIds.has(task.id))) {
+      if (genuinePauseAbort && this.isBenignInReviewPauseAbort(live, result, abortProvenance, pausedAborted, this.userCanceledTaskIds.has(task.id), failureLanes.review)) {
         this.clearPausedAborted(task.id);
         this.activeWorktrees.delete(task.id);
         const inReviewBenign = "Workflow graph run ended during engine pause/resume while already in-review — benign, in-review state preserved";
@@ -11039,10 +11181,10 @@ export class TaskExecutor {
         await this.persistTokenUsage(task.id);
         return;
       }
-      if (genuinePauseAbort && await this.handleStaleInReviewParsePauseAbortReplay(live, result, abortProvenance, pausedAborted, this.userCanceledTaskIds.has(task.id))) {
+      if (genuinePauseAbort && await this.handleStaleInReviewParsePauseAbortReplay(live, result, abortProvenance, pausedAborted, this.userCanceledTaskIds.has(task.id), resumeLanesMemo)) {
         return;
       }
-      if (genuinePauseAbort && await this.handleStaleInReviewPlanPauseAbortReplay(live, result, abortProvenance, pausedAborted, this.userCanceledTaskIds.has(task.id))) {
+      if (genuinePauseAbort && await this.handleStaleInReviewPlanPauseAbortReplay(live, result, abortProvenance, pausedAborted, this.userCanceledTaskIds.has(task.id), resumeLanesMemo)) {
         return;
       }
       if (genuinePauseAbort) {
@@ -11078,7 +11220,7 @@ export class TaskExecutor {
         // the human-readable provenance label is ever revised.
         const isEngineInternalAbort =
           pausedAborted && !live.paused && !live.userPaused && abortProvenance !== "global-pause";
-        if (live.column !== "in-progress") {
+        if (live.column !== failureLanes.wip) {
           // FN-6782: a pause/resume abort that has left the task back in `todo`
           // is benign — the work is simply re-queued for a fresh dispatch, not
           // stranded. Parking it `status: "failed"` (operator action required)
@@ -11438,7 +11580,7 @@ export class TaskExecutor {
       if (await this.routeRetryableRemediationGraphFailureToPreMergeFix(live, failedNode, failureValue)) {
         return;
       }
-      if (await this.routeGraphFailureToExecutionResume(live, failedNode ?? "unknown", failureValue)) {
+      if (await this.routeGraphFailureToExecutionResume(live, failedNode ?? "unknown", failureValue, resumeLanesMemo)) {
         return;
       }
       /*
@@ -11683,6 +11825,8 @@ export class TaskExecutor {
     live: TaskDetail,
     failedNode: string,
     failureValue: string | undefined,
+    /** Shared per-recovery lane snapshot — see `resolveResumeLanes`. */
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
   ): Promise<boolean> {
     /*
      * FNXC:WorkflowLifecycle 2026-06-29-11:08:
@@ -11712,7 +11856,19 @@ export class TaskExecutor {
     const implementationIncompleteMergeFailure = this.isMergeGraphFailure(failedNode) && failureValue === "implementation-incomplete";
     if (implementationIncompleteMergeFailure && !incompleteSteps) return false;
     const prematureMergeWithIncompleteSteps = implementationIncompleteMergeFailure && incompleteSteps;
-    if (live.column !== "in-review" && !(incompleteSteps && live.column === "todo") && !(prematureMergeWithIncompleteSteps && live.column === "in-progress")) return false;
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-08-01-17:40 (fleet: executor.ts — the REVERSE half-conversion):
+    THE DESTINATION WAS ALREADY RESOLVED HERE AND THE GATE WAS NOT. `resolveReboundColumnFor` below picks
+    the board's rebound column (U7), but this gate compared against three default-lineage literals — so on
+    a renamed board the router refused before ever reaching the resolved move. That is the mirror image of
+    the dangerous half-conversion: instead of admitting a card and sending it nowhere, it refuses a card
+    whose recovery was fully implemented, and nothing is logged as wrong. Same one-decision-two-boards
+    defect, opposite direction, and the silent one.
+    */
+    const resumeRouterLanes = await this.resolveResumeLanes(live.id, resumeLanesMemo);
+    if (live.column !== resumeRouterLanes.review
+      && !(incompleteSteps && live.column === resumeRouterLanes.hold)
+      && !(prematureMergeWithIncompleteSteps && live.column === resumeRouterLanes.wip)) return false;
 
     const message = incompleteSteps
       ? `Workflow graph failed at node '${failedNode}'${failureValue ? ` (${failureValue})` : ""} with incomplete steps — moved back to todo for execution resume`
@@ -12272,7 +12428,15 @@ export class TaskExecutor {
     // executor can still recover by falling through to the fresh-worktree
     // path below, but we emit a loud audit record so these states stop being
     // silent.
-    if (task.column === "in-progress" && task.mergeDetails?.mergeConfirmed === true) {
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-08-01-18:10 (fleet: execute() preflight): THREE DRIFT CHECKS, ONE
+    SNAPSHOT — merge-confirmed while still executing, stale mergeDetails, and in-wip with no worktree. None
+    fired on a renamed board, so every recovery they perform silently stopped happening. The third one's own
+    message says it "usually indicates a partial updateTask/moveTask sequence failed" — a diagnostic that
+    could never print on a renamed board.
+    */
+    const preflightWipLane = (await this.resolveResumeLanes(task.id)).wip;
+    if (task.column === preflightWipLane && task.mergeDetails?.mergeConfirmed === true) {
       if (await this.finalizeMergeConfirmedWorkflowGraphTask(task.id, "execute-preflight")) {
         this.executing.delete(task.id);
         executingTaskLock.release(task.id);
@@ -12281,7 +12445,7 @@ export class TaskExecutor {
       }
     }
 
-    if (task.column === "in-progress" && task.mergeDetails) {
+    if (task.column === preflightWipLane && task.mergeDetails) {
       executorLog.warn(`${task.id}: stale mergeDetails found while executing in-progress task — resetting merge state before continuing`);
       task = await this.cleanupMergeStateForReverification(
         task,
@@ -12289,7 +12453,7 @@ export class TaskExecutor {
       );
     }
 
-    if (task.column === "in-progress" && !task.worktree) {
+    if (task.column === preflightWipLane && !task.worktree) {
       executorLog.error(
         `${task.id}: drift detected — task is in-progress with no worktree. ` +
           `Recovering by creating a fresh worktree. This usually indicates a partial ` +
@@ -13228,8 +13392,13 @@ export class TaskExecutor {
               // was unwinding; continuing the cleanup would clobber a valid
               // recovery (see the analogous block in the outer finally for the
               // full reasoning).
+              /* FNXC:WorkflowLifecycleColumns 2026-08-01-18:05 (fleet: stuck-requeue family): "has a
+                 concurrent recovery already moved this card on?" — the pre-completion lanes are the board's
+                 wip and hold. With literals a renamed board always answered "moved on", the cleanup never
+                 ran, and the log line blamed a concurrent recovery that had not happened. */
               const latestTask = await this.store.getTask(task.id);
-              if (latestTask.column !== "in-progress" && latestTask.column !== "todo") {
+              const requeueLanes = await this.resolveResumeLanes(task.id);
+              if (latestTask.column !== requeueLanes.wip && latestTask.column !== requeueLanes.hold) {
                 executorLog.log(
                   `${task.id} stuck-requeue skipped — task is now in '${latestTask.column}' (recovered concurrently)`,
                 );
@@ -14035,7 +14204,9 @@ export class TaskExecutor {
               }
               const hasExplicitWorktreeBinding = typeof liveTask.worktree === "string" || liveTask.worktree === null;
               const hasExplicitBranchBinding = typeof liveTask.branch === "string" || liveTask.branch === null;
-              const worktreeContractIntact = liveTask.column === "in-progress"
+              /* FNXC:WorkflowLifecycleColumns 2026-08-01-18:15 (fleet): the contract holds while the card is
+                 in ITS board's wip lane; the literal made every renamed-board retry look reclaimed. */
+              const worktreeContractIntact = liveTask.column === (await this.resolveResumeLanes(task.id)).wip
                 && !liveTask.paused
                 && (!hasExplicitWorktreeBinding || liveTask.worktree === worktreePath)
                 && (!hasExplicitBranchBinding || (typeof liveTask.branch === "string" && liveTask.branch.length > 0));
@@ -14502,7 +14673,10 @@ export class TaskExecutor {
         this.clearPausedAborted(task.id);
         const latestTask = await this.store.getTask(task.id);
         if (
-          latestTask?.column === "todo" &&
+          /* FNXC:WorkflowLifecycleColumns 2026-08-01-18:18 (fleet): the HOLD lane — this recognises a card the
+             abort already parked with its progress preserved, and skipping the cleanup is what keeps that
+             progress. On a renamed board the cleanup ran anyway and discarded it. */
+          latestTask?.column === (await this.resolveResumeLanes(task.id)).hold &&
           latestTask.paused === true &&
           ((latestTask.currentStep ?? 0) > 0 || latestTask.steps?.some((step) => step.status === "done" || step.status === "in-progress"))
         ) {
@@ -15189,7 +15363,8 @@ export class TaskExecutor {
           let cleanupLockHeld = true;
           try {
             const latestTask = await this.store.getTask(task.id);
-            if (latestTask.column === "in-progress" || latestTask.column === "todo") {
+            const continuationLanes = await this.resolveResumeLanes(task.id);
+            if (latestTask.column === continuationLanes.wip || latestTask.column === continuationLanes.hold) {
               await this.store.updateTask(task.id, {
                 sessionFile: null,
                 status: null,
@@ -15241,7 +15416,8 @@ export class TaskExecutor {
           // all step progress reset, undoing valid completion. Skip the
           // entire cleanup if the column has moved on past in-progress/todo.
           const latestTask = await this.store.getTask(task.id);
-          if (latestTask.column !== "in-progress" && latestTask.column !== "todo") {
+          const outerRequeueLanes = await this.resolveResumeLanes(task.id);
+          if (latestTask.column !== outerRequeueLanes.wip && latestTask.column !== outerRequeueLanes.hold) {
             executorLog.log(
               `${task.id} stuck-requeue skipped — task is now in '${latestTask.column}' (recovered concurrently)`,
             );
@@ -20820,7 +20996,9 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
             `${taskId} force-requeue could not read latest task state: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
-        if (latestColumn && latestColumn !== "in-progress") {
+        /* FNXC:WorkflowLifecycleColumns 2026-08-01-17:52 (fleet): the board's wip lane; with the literal a
+           renamed board skipped every force-requeue as "recovered concurrently". */
+        if (latestColumn && latestColumn !== (await this.resolveResumeLanes(taskId)).wip) {
           executorLog.log(
             `${taskId} force-requeue skipped — task is now in '${latestColumn}' (recovered concurrently)`,
           );

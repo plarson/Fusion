@@ -1812,6 +1812,26 @@ async function resolveTerminalColumnsFor(store: TaskStore, taskId: string): Prom
   }
 }
 
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-30-15:20 (fleet — executor.ts cluster):
+The workflow's COMPLETE column, for the guards that ask "has this card finished?" and mean
+completion specifically — not the terminal PAIR. `resolveTerminalColumnsFor` above answers
+"done or archived"; these sites deliberately exclude archived, because an archived card is
+finished but not newly-completed, and treating the two alike would fire merge-confirmation
+handling for cards that were archived rather than merged.
+
+Same shape as the two helpers beside it: resolve from the task's own workflow, fall back to
+the legacy id. `resolveWorkflowIrForTask` does not throw on a missing definition — it returns
+the built-in default — so the catch covers hard failures only.
+*/
+async function resolveCompleteColumnFor(store: TaskStore, taskId: string): Promise<string> {
+  try {
+    return resolveCompleteColumn(await resolveWorkflowIrForTask(store, taskId)) ?? "done";
+  } catch {
+    return "done";
+  }
+}
+
 async function resolveReboundColumnFor(store: TaskStore, taskId: string): Promise<string> {
   try {
     return resolveReboundTarget(await resolveWorkflowIrForTask(store, taskId)) ?? "todo";
@@ -4392,7 +4412,7 @@ export class TaskExecutor {
         return "bounced";
       }
 
-      if (latestTask.column === "todo") {
+      if (latestTask.column === await resolveReboundColumnFor(this.store, taskId)) {
         await this.store.updateTask(taskId, { worktree: worktreePath });
         const pauseLabelBeforeResume = await this.getExecutionPauseLabel();
         if (pauseLabelBeforeResume) {
@@ -6398,7 +6418,7 @@ export class TaskExecutor {
           });
         }
         const live = await this.store.getTask(task.id).catch(() => task);
-        if ((live as TaskDetail).mergeDetails?.mergeConfirmed === true && (live as TaskDetail).column !== "done") {
+        if ((live as TaskDetail).mergeDetails?.mergeConfirmed === true && (live as TaskDetail).column !== await resolveCompleteColumnFor(this.store, task.id)) {
           await this.finalizeMergeConfirmedWorkflowGraphTask(task.id, "graph-completed");
         }
         await this.advanceNoMergeWorkflowToCompleteColumn(live as TaskDetail);
@@ -7878,7 +7898,7 @@ export class TaskExecutor {
     A prior review handoff can move a graph-native workflow into its merge column before this boundary projects successful node results onto the legacy checklist. Preserve the no-move behavior, but do not return until the projection has run.
     */
     const alreadyAtMergeColumn = live.column === targetColumn;
-    if (live.column === "done") return live;
+    if (live.column === await resolveCompleteColumnFor(this.store, live.id)) return live;
     if (live.paused || live.userPaused) return live;
 
     /*
@@ -9026,7 +9046,7 @@ export class TaskExecutor {
 
   private async finalizeMergeConfirmedWorkflowGraphTask(taskId: string, reason: string): Promise<boolean> {
     const live = await this.store.getTask(taskId).catch(() => null);
-    if (!live || live.mergeDetails?.mergeConfirmed !== true || live.column === "done") return false;
+    if (!live || live.mergeDetails?.mergeConfirmed !== true || live.column === await resolveCompleteColumnFor(this.store, live.id)) return false;
     /*
     FNXC:WorkflowMerge 2026-06-29-08:32:
     A workflow graph merge node can await a successful ProjectEngine merge request and return before the row reaches `done`. Merge confirmation is durable proof of landing; the executor must finalize that row from any non-terminal column instead of re-running parse or clearing mergeDetails.
@@ -9959,7 +9979,7 @@ export class TaskExecutor {
   ): Promise<boolean> {
     if (live.deletedAt) return false;
     if (live.paused || live.userPaused === true) return false;
-    if (live.column === "done" || live.column === "archived") return false;
+    if ((await resolveTerminalColumnsFor(this.store, live.id)).includes(live.column)) return false;
     // Pause/abort provenance owns aborted runs; a genuine abort never carries the
     // session-start refusal as its terminal node error in the same walk.
     if (this.pausedAborted.has(task.id)) return false;
@@ -10124,7 +10144,7 @@ export class TaskExecutor {
     */
     if (!await this.isPreMergeRemediationGraphNode(live.id, failedNode)) return false;
     if (live.deletedAt || live.paused || live.userPaused === true) return false;
-    if (live.column === "done" || live.column === "archived") return false;
+    if ((await resolveTerminalColumnsFor(this.store, live.id)).includes(live.column)) return false;
     if (!live.worktree) return false;
     const settings = await this.store.getSettings().catch(() => undefined);
     if (!settings || settings.globalPause === true || settings.enginePaused === true) return false;
@@ -10460,7 +10480,7 @@ export class TaskExecutor {
     if (userCanceled) return false;
     if (live.paused || live.userPaused === true) return false;
     if (live.status != null || live.error != null) return false;
-    if (live.column === "done" || live.column === "archived") return false;
+    if ((await resolveTerminalColumnsFor(this.store, live.id)).includes(live.column)) return false;
     if (result.interruptedAbortKind !== WORKFLOW_NODE_ENGINE_PAUSE_ABORT_KIND) return false;
     if (!result.interruptedNodeId) return false;
     if (live.column === "in-review" && result.interruptedNodeId === "plan") return false;
@@ -10689,7 +10709,7 @@ export class TaskExecutor {
     const message = `Workflow graph merge blocked at node '${failedNode}': implementation incomplete with no executable proof to resume — failing instead of retrying merge`;
     executorLog.warn(`${live.id}: ${message}`);
     await this.store.logEntry(live.id, message, undefined, this.getRunContextFor(live.id));
-    if (live.column !== "done" && live.column !== "archived" && live.error == null) {
+    if (!(await resolveTerminalColumnsFor(this.store, live.id)).includes(live.column) && live.error == null) {
       await this.store.updateTask(live.id, { error: message, status: "failed" }, this.getRunContextFor(live.id));
     }
     await this.persistTokenUsage(live.id);
@@ -10883,7 +10903,7 @@ export class TaskExecutor {
         await this.persistTokenUsage(task.id);
         return;
       }
-      if (live.mergeDetails?.mergeConfirmed === true && live.column !== "done") {
+      if (live.mergeDetails?.mergeConfirmed === true && live.column !== await resolveCompleteColumnFor(this.store, live.id)) {
         if (await this.finalizeMergeConfirmedWorkflowGraphTask(live.id, "graph-failure")) {
           await this.persistTokenUsage(task.id);
           return;
@@ -11069,7 +11089,7 @@ export class TaskExecutor {
           // dispatch starts clean, log, and return WITHOUT parking failed. The
           // operator-action failure is preserved only for genuinely stranded
           // non-todo columns (e.g. in-review), per FN-6478.
-          if (live.column === "todo") {
+          if (live.column === await resolveReboundColumnFor(this.store, task.id)) {
             this.clearPausedAborted(task.id);
             // FNXC:WorkflowLifecycle 2026-06-20-00:00: FN-6782 leak fix — a task
             // parked back to `todo` must not keep pinning its in-memory worktree
@@ -11136,7 +11156,7 @@ export class TaskExecutor {
                         resumeTask.deletedAt
                         || resumeTask.paused
                         || resumeTask.userPaused
-                        || resumeTask.column !== "todo"
+                        || resumeTask.column !== await resolveReboundColumnFor(this.store, task.id)
                       ) {
                         executorLog.log(
                           `${task.id}: skipping pause-abort auto-continue — task is now ${resumeTask.deletedAt ? "deleted" : resumeTask.paused || resumeTask.userPaused ? "paused" : `in '${resumeTask.column}'`} at retry fire time`,
@@ -11222,7 +11242,7 @@ export class TaskExecutor {
           benign completion note, and never emit the PAUSE_ABORT_PARK markers
           (so self-healing's recoverPausedAbortFailures has nothing to chase).
           */
-          if (live.column === "done" || live.column === "archived") {
+          if ((await resolveTerminalColumnsFor(this.store, live.id)).includes(live.column)) {
             this.clearPausedAborted(task.id);
             this.activeWorktrees.delete(task.id);
             const doneBenign = `Workflow graph run ended during ${pauseProvenance} after the task already completed ('${live.column}') — benign, no action needed`;
@@ -11359,8 +11379,7 @@ export class TaskExecutor {
         }
         const canTerminalizeExecuteLoop = live.userPaused !== true
           && live.paused !== true
-          && live.column !== "done"
-          && live.column !== "archived";
+          && !(await resolveTerminalColumnsFor(this.store, live.id)).includes(live.column);
         if (nextCount >= MAX_EXECUTE_REQUEUE_LOOP_CYCLES && canTerminalizeExecuteLoop) {
           const terminalError = `EXECUTION_DISPATCH_LOOP_EXHAUSTED: execute node re-queued task to todo ${nextCount} times with no forward progress (last value=${failureValue ?? "no-value"}). No further automatic retries will run. Manually retry, decompose, or rescope the task.`;
           await this.store.updateTask(task.id, {
@@ -11403,7 +11422,7 @@ export class TaskExecutor {
       if (mergeGraphFailure && !this.isTerminalMergeGraphFailureValue(failureValue) && await this.routeGraphMergeFailureToRetry(live, result, abortProvenance)) {
         return;
       }
-      if (mergeGraphFailure && this.isTerminalMergeGraphFailureValue(failureValue) && live.column !== "done" && live.column !== "archived") {
+      if (mergeGraphFailure && this.isTerminalMergeGraphFailureValue(failureValue) && !(await resolveTerminalColumnsFor(this.store, live.id)).includes(live.column)) {
         const message = `Workflow graph terminal merge failure at node '${failedNode ?? "unknown"}' (${failureValue}) — operator action required`;
         executorLog.warn(`${task.id}: ${message}`);
         await this.store.logEntry(task.id, message, undefined, this.getRunContextFor(task.id));
@@ -11677,7 +11696,7 @@ export class TaskExecutor {
      */
     if (live.deletedAt) return false;
     if (live.paused || live.userPaused === true) return false;
-    if (live.column === "done" || live.column === "archived") return false;
+    if ((await resolveTerminalColumnsFor(this.store, live.id)).includes(live.column)) return false;
     /*
      * FNXC:WorkflowCompletion 2026-07-01-16:26:
      * Backstop for issue #1863. The advisory completion-summary node must never
@@ -11729,7 +11748,7 @@ export class TaskExecutor {
     */
     if (live.deletedAt) return false;
     if (live.paused || live.userPaused === true) return false;
-    if (live.column === "done" || live.column === "archived") return false;
+    if ((await resolveTerminalColumnsFor(this.store, live.id)).includes(live.column)) return false;
     const hasImplementationProgress =
       (live.currentStep ?? 0) > 0
       || (live.steps ?? []).some((step) => step.status === "done" || step.status === "in-progress" || step.status === "skipped");
@@ -15147,7 +15166,7 @@ export class TaskExecutor {
         this.branchConflictErrorCount.delete(task.id);
       } else {
         const latestTask = await this.store.getTask(task.id);
-        if (latestTask.column === "done" || latestTask.column === "archived") {
+        if ((await resolveTerminalColumnsFor(this.store, task.id)).includes(latestTask.column)) {
           this.branchConflictErrorCount.delete(task.id);
         }
       }
@@ -16750,7 +16769,7 @@ export class TaskExecutor {
 
         const latestTask = await store.getTask(taskId);
         let latestColumn = latestTask.column;
-        if (latestColumn === "todo") {
+        if (latestColumn === await resolveReboundColumnFor(store, taskId)) {
           await store.logEntry(
             taskId,
             hardPauseActive

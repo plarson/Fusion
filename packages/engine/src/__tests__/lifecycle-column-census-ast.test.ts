@@ -326,3 +326,171 @@ describe("state, phase and result enums are not column guards", () => {
     expect(result.totals.column).toBe(1);
   });
 });
+
+/*
+FNXC:LifecycleColumnCensus 2026-08-01-01:30:
+
+A LEGACY LITERAL IN A FALLBACK BRANCH IS NOT BACKLOG. The converted shape is
+
+    if (flags) return flags.hold === true || flags.countsTowardWip === true;
+    return column === "todo" || column === "in-progress";      // reachable only without traits
+
+and that literal is CORRECT — it answers for callers with no resolved column metadata, which is the case
+`resolveLifecycleColumns` returns `undefined`-for-the-whole-struct to preserve. Telling a batch worker to
+"convert" it means telling them to delete the only answer available when traits are absent.
+
+MEASURED, which is why this is a class and not a preference: a proximity scan for "legacy literal near a
+role-resolved call" over the dashboard returned 19 hits and ZERO defects, all this shape. The same scan over
+the engine found two real defects (#2670, #2672) — and in BOTH the literal was in a SEPARATE STATEMENT beside
+resolved data, not in a fallback branch. That difference is structural, so the parser can see it; proximity
+cannot.
+
+Advisory only: `traitFallback` never changes `kind`, so a wrong hint cannot move the bar. Repo-wide it flags
+8 of 746 column guards — 8 and not 9 since the #2677 review: the `hold` hint was matching inside `threshold`,
+which had marked one live guard as already-converted.
+*/
+describe("a literal in a trait-fallback branch is flagged as such", () => {
+  const fallbacksIn = (source: string) => census(source).filter((f) => (f as { traitFallback?: boolean }).traitFallback).length;
+
+  it("flags the ternary form", () => {
+    const source = `export function isHold(flags: F | undefined, columnId: string) {
+      return flags ? flags.hold === true : columnId === "todo";
+    }`;
+
+    expect(fallbacksIn(source)).toBe(1);
+  });
+
+  it("flags the early-return form, which is how most of them are written", () => {
+    const source = [
+      "function mayEdit(column: string, flags?: F) {",
+      "  if (flags) return flags.hold === true || flags.countsTowardWip === true;",
+      `  return column === "todo" || column === "in-progress";`,
+      "}",
+    ].join("\n");
+
+    // Two literals in one return, both in the fallback.
+    expect(fallbacksIn(source)).toBe(2);
+  });
+
+  it("does NOT flag a literal in a separate statement beside resolved data — the #2670 / #2672 shape", () => {
+    /*
+    This is the distinction the whole class exists for. Both engine defects looked like this: resolved lane
+    data in scope, and a guard next to it still matching a name. Flagging these as fallbacks would have hidden
+    exactly the two bugs the scan found.
+    */
+    const source = [
+      "async function park(task: T) {",
+      "  const lanes = await resolveLifecycleColumns(ir);",
+      `  if (task.column === "done" || task.column === "archived") return false;`,
+      "  await move(task.id, lanes.hold);",
+      "}",
+    ].join("\n");
+
+    expect(fallbacksIn(source)).toBe(0);
+  });
+
+  it("does NOT flag a fallback branch whose test is itself a column-name check", () => {
+    // `if (column === "todo")` tests a NAME, not resolved data, so its else branch is not a trait fallback —
+    // otherwise any if/else over column names would launder itself.
+    const source = [
+      "function f(column: string) {",
+      `  if (column === "todo") return 1;`,
+      `  return column === "in-progress" ? 2 : 3;`,
+      "}",
+    ].join("\n");
+
+    expect(fallbacksIn(source)).toBe(0);
+  });
+
+  it("does NOT flag when the trait branch only returns CONDITIONALLY — a return token is not termination", () => {
+    /*
+    FNXC:LifecycleColumnCensus 2026-07-30-10:05 (PR #2677 review — greptile):
+    The detector used to search the branch for the word `return`. Here the branch contains one, but it is
+    nested under its own `if`, so with `flags` present control still falls through and the literal below
+    IS evaluated. That makes it a live guard, and flagging it as a fallback would quietly remove a real
+    guard from the backlog this census is trusted to report.
+    */
+    const source = [
+      "function mayEdit(column: string, flags?: F) {",
+      "  if (flags) {",
+      "    if (flags.hold === true) return true;",
+      "  }",
+      `  return column === "todo";`,
+      "}",
+    ].join("\n");
+
+    expect(fallbacksIn(source)).toBe(0);
+  });
+
+  it("still flags a trait branch that terminates on EVERY path", () => {
+    /* The paired positive: if/else where both arms return is genuine termination, so the literal below
+       really is the no-traits answer. "Not a bare return token" must not become "no early returns". */
+    const source = [
+      "function mayEdit(column: string, flags?: F) {",
+      "  if (flags) {",
+      "    if (flags.hold === true) return true;",
+      "    else return false;",
+      "  }",
+      `  return column === "todo";`,
+      "}",
+    ].join("\n");
+
+    expect(fallbacksIn(source)).toBe(1);
+  });
+
+  it("does NOT flag when the trait branch ends in a non-terminating statement after a nested return", () => {
+    /* Last-statement-wins: the block's final statement is a call, so the branch falls through. */
+    const source = [
+      "function mayEdit(column: string, flags?: F) {",
+      "  if (flags) {",
+      "    if (flags.hold === true) return true;",
+      "    log(flags);",
+      "  }",
+      `  return column === "todo";`,
+      "}",
+    ].join("\n");
+
+    expect(fallbacksIn(source)).toBe(0);
+  });
+
+  it("does NOT treat a hint embedded in a longer identifier as trait data", () => {
+    /*
+    FNXC:LifecycleColumnCensus 2026-07-30-10:40 (PR #2677 review — coderabbit):
+    `hold` is a hint, and it is a substring of `threshold`. A branch testing an unrelated
+    threshold was read as testing resolved trait data, which marks the live guard below it as an
+    already-converted fallback. `flags` inside `myflags` had the same problem.
+    */
+    for (const test of ["staleThreshold > 0", "opts.threshold != null", "household.size", "myflags"]) {
+      const source = [
+        "function f(column: string) {",
+        `  if (${test}) return 1;`,
+        `  return column === "todo";`,
+        "}",
+      ].join("\n");
+
+      expect(fallbacksIn(source)).toBe(0);
+    }
+  });
+
+  it("still sees the genuine trait forms the hints exist for", () => {
+    /* The paired positive: tightening the boundary must not stop matching real trait reads. */
+    for (const test of ["flags.hold === true", "flags?.hold", "lifecycleRoles.hold", "flags"]) {
+      const source = [
+        "function f(column: string, flags?: F) {",
+        `  if (${test}) return 1;`,
+        `  return column === "todo";`,
+        "}",
+      ].join("\n");
+
+      expect(fallbacksIn(source)).toBe(1);
+    }
+  });
+
+  it("leaves `kind` alone, so a wrong hint cannot move the bar", () => {
+    const source = `const x = flags ? flags.hold === true : columnId === "todo";`;
+    const finding = census(source)[0] as { kind: string; traitFallback?: boolean };
+
+    expect(finding.kind).toBe("column");
+    expect(finding.traitFallback).toBe(true);
+  });
+});

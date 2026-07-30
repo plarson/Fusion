@@ -914,6 +914,26 @@ export class Scheduler {
      * Also handles mission auto-advance: when a linked task completes,
      * update feature status and potentially activate next pending slice.
      */
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-30-20:10 (fleet — why the arms below are still literals):
+
+    The ten `from`/`to` comparisons here are real backlog, deliberately left counted. The blocker is
+    ordering, not effort: this handler is `async` but its PROLOGUE is not — there is no `await`
+    between this line and the terminal-blocker branch (~55 lines down), so the snapshot invalidation,
+    PR-monitor start/stop, mission hand-off and failed-task tracking all run in the SAME TICK as the
+    emitter. Hoisting a resolution to convert those arms turns the prologue into a microtask and
+    reorders this listener against every other synchronous `task:moved` subscriber. That is the
+    hazard `resolveTaskParkedColumnsSync` exists to avoid — verified, not assumed.
+
+    Lazy resolution inside a branch does not help (the CONDITION needs the lanes). A sync superset
+    prefilter does not either: it needs a predicate that cannot wrongly EXCLUDE on an unknown
+    vocabulary, and a renamed board's terminal id is unknown by construction.
+
+    Unblocking it means either auditing every `task:moved` emitter/subscriber for prologue-ordering
+    dependence and then converting all ten together, or — preferred, since it removes the class
+    rather than one instance — having the emitter carry the resolved lanes on the event payload so
+    no listener resolves at all.
+    */
     this.store.on("task:moved", async ({ task, from, to, source }) => {
       this.lastAutoClaimFingerprint.set(task.id, computeAutoClaimFingerprint(task));
       const parked = resolveTaskParkedColumnsSync(this.store, task.id);

@@ -16,7 +16,7 @@ import type { TaskStore, Task, TaskDetail, TaskTokenUsage, StepStatus, Settings,
 import { getUnmetSchedulingDependencies } from "./scheduler.js";
 import type { ImplementationExit, ImplementationExitReporter } from "./executor/implementation-exit.js";
 import { emitWorkflowLifecycleEvent } from "@fusion/core";
-import { RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, resolveWorkflowIrForTask, evaluateForeachMergeProof, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveReboundTarget, resolveLifecycleColumns, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, isLiveSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveMaxConsecutiveToolFailureRetries, resolveConsecutiveToolFailureRetryBackoffMs, resolveConsecutiveToolFailureThreshold, resolveExecutorEscalationTarget, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, DEFAULT_MAX_POST_REVIEW_FIXES, COMPLETION_SUMMARY_NODE_ID, upsertWorkflowStepResult, AWAITING_APPROVAL_PAUSE_REASON, THINKING_LEVELS, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AgentStore, resolveExecutorFallbackModel, resolveValidatorFallbackModel } from "@fusion/core";
+import { resolveTerminalColumns, RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, resolveWorkflowIrForTask, evaluateForeachMergeProof, resolveCompleteColumn, resolveMergeOrchestrationColumn, resolveReboundTarget, resolveLifecycleColumns, resolveColumnAgentBinding, resolveEffectiveAgent, instanceNodeId, getWorkflowExtensionRegistry, getBuiltinWorkflow, parseNoOpCompletionMarker, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, isLiveSharedBranchGroupMemberIntegration, resolveMaxAutoMergeRetries, resolveMaxConsecutiveToolFailureRetries, resolveConsecutiveToolFailureRetryBackoffMs, resolveConsecutiveToolFailureThreshold, resolveExecutorEscalationTarget, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, DEFAULT_MAX_POST_REVIEW_FIXES, COMPLETION_SUMMARY_NODE_ID, upsertWorkflowStepResult, AWAITING_APPROVAL_PAUSE_REASON, THINKING_LEVELS, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AgentStore, resolveExecutorFallbackModel, resolveValidatorFallbackModel } from "@fusion/core";
 import { finalizeProvenAutoMergeTask } from "./auto-merge-finalization.js";
 import { mergeEffectiveSettings } from "./effective-settings.js";
 import { generateFeatureVideo, type GenerateFeatureVideoOptions } from "./review-artifacts/feature-video.js";
@@ -1774,6 +1774,44 @@ clears. The move TARGET was converted here in U5b; the guards in front of it wer
 which is the half-conversion shape: the correct target reached through a check that could
 not see it. Each site now resolves once and uses the same value for both.
 */
+/**
+ * The task's terminal column pair, fail-soft to the legacy ids. Mirrors
+ * `resolveReboundColumnFor` below: one IR resolution on a rare guard path, and a
+ * resolution failure must keep today's behaviour rather than answer "not terminal".
+ */
+/** The terminal ids from before workflows owned the vocabulary. */
+const LEGACY_TERMINAL_COLUMNS: readonly string[] = ["done", "archived"];
+
+async function resolveTerminalColumnsFor(store: TaskStore, taskId: string): Promise<readonly string[]> {
+  /*
+  FNXC:WorkflowLifecycleColumns 2026-07-31-12:20 (PR #2568 review — greptile):
+  THE UNION IS DELIBERATE, and the `catch` alone was not enough.
+
+  `resolveWorkflowIrForTask` does NOT throw when a custom workflow definition is
+  missing, corrupt or unavailable — it returns the BUILT-IN IR. So the catch below
+  only covers hard failures, while the common degraded case hands back a
+  valid-looking default whose terminals are `done`/`archived`. A renamed board in
+  that state would resolve terminals that do not include its own terminal column,
+  and this guard would go inert exactly as it did before the conversion.
+
+  Unioning with the legacy pair closes that: a resolvable board contributes its real
+  terminals, and the legacy ids remain recognised whether they came from a genuine
+  default workflow or from a silent substitution.
+
+  Over-inclusion is the SAFE direction here, and that is why a union is acceptable
+  rather than sloppy. This guard answers "is the card already finished, so skip
+  parking?" — being too inclusive occasionally skips parking a card that was not
+  really terminal; being too exclusive MOVES a finished card out of its terminal
+  column, which is the failure the conversion exists to prevent.
+  */
+  try {
+    const resolved = resolveTerminalColumns(await resolveWorkflowIrForTask(store, taskId));
+    return [...new Set([...resolved, ...LEGACY_TERMINAL_COLUMNS])];
+  } catch {
+    return LEGACY_TERMINAL_COLUMNS;
+  }
+}
+
 async function resolveReboundColumnFor(store: TaskStore, taskId: string): Promise<string> {
   try {
     return resolveReboundTarget(await resolveWorkflowIrForTask(store, taskId)) ?? "todo";
@@ -4458,7 +4496,34 @@ export class TaskExecutor {
 
   private async parkCompletedBlockedTask(task: Task, completionBlocker: string, source: string, workComplete = this.isTaskWorkComplete(task)): Promise<boolean> {
     if (task.paused === true || task.userPaused === true) return false;
-    if (task.column === "done" || task.column === "archived") return false;
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-29-13:10:
+    Was the raw literal pair `column === "done" || column === "archived"`. On a renamed
+    board neither matched, so this "already finished, nothing to park" guard was INERT
+    and a completed card resting in the workflow's own terminal column fell through —
+    and the `column !== "todo"` branch below would then have MOVED it back out of that
+    terminal column. Resolved through core's shared `resolveTerminalColumns`, which owns
+    the per-role fallback (a partially-declared workflow keeps the legacy id for the
+    half it did not declare).
+    */
+    const terminalColumns = await resolveTerminalColumnsFor(this.store, task.id);
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-31-12:30 (PR #2568 review — greptile):
+    RE-READ AFTER THE AWAIT. The pause and column guards above ran against the `task`
+    snapshot the caller passed, and this conversion introduced the first `await`
+    between those guards and the writes below. Another dispatch or an operator action
+    can move or pause the card while the IR resolution is in flight, and the stale
+    snapshot would then let this method move a now-terminal task out of its terminal
+    column, or overwrite a pause an operator just applied.
+
+    Re-reading is cheap next to the resolution that precedes it, and it is the pause
+    check that matters most: a user pause landing during the await is precisely the
+    case where proceeding is least forgivable. Falling back to the passed snapshot on
+    a read failure keeps this no worse than before the await existed.
+    */
+    const liveTask = await this.store.getTask(task.id).catch(() => undefined) ?? task;
+    if (liveTask.paused === true || liveTask.userPaused === true) return false;
+    if (terminalColumns.includes(liveTask.column)) return false;
     if (!workComplete) return false;
 
     const message = `Completed work held — ${completionBlocker}; will advance to review when blocker clears`;
@@ -4466,8 +4531,14 @@ export class TaskExecutor {
     FNXC:WorkflowLifecycle 2026-07-12-23:13:
     FN-7926: completed work with a persistent `getTaskCompletionBlocker` result must not self-requeue through the execute node. Re-running implementation cannot clear dependency/blockedBy state, so it only feeds FN-7863's generic no-progress backstop and misclassifies good work as `EXECUTION_DISPATCH_LOOP_EXHAUSTED`. Park in a scheduler-skipped todo state, preserve worktree/branch/steps, and reset the FN-7863 signature so the backstop remains reserved for genuinely incomplete no-progress loops.
     */
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-31-17:10 (rebase merge, both sides kept):
+    main (#2644) resolved the literal `todo` into `reboundColumn`; this branch added the
+    post-await `liveTask` re-read. Taking either side alone loses the other — the
+    literal comes back, or the stale snapshot does.
+    */
     const reboundColumn = await resolveReboundColumnFor(this.store, task.id);
-    if (task.column !== reboundColumn) {
+    if (liveTask.column !== reboundColumn) {
       await this.store.moveTask(task.id, reboundColumn, {
         preserveProgress: true,
         preserveResumeState: true,

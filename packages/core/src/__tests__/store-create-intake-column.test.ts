@@ -231,24 +231,78 @@ pgTest("createTask intake-column wiring (Coding (Ideas))", () => {
     expect(prompt).not.toContain("## Steps");
   });
 
-  it("keeps generateSpecifiedPrompt for a direct create into todo (not bootstrap)", async () => {
+  /*
+  FNXC:MergedPlanningColumn 2026-07-30-10:45 (Phase B — task-creation.ts conversion):
+  EXPECTATION INVERTED BY THE MERGE, deliberately.
+
+  This asserted "a direct create into `todo` is NOT an intake create, so it keeps
+  generateSpecifiedPrompt". That was true while the default workflow's intake was `triage`. U11
+  merged Todo into Planning, so `todo` IS the default's intake column — and a card created there
+  with no spec MUST get the bootstrap seed, because triage admits a card for planning only when its
+  PROMPT.md reads as a seed. Keeping the old expectation would pin the FN-8587 stall: a boilerplate
+  spec that reads as "already planned" and is never planned.
+
+  The old behavior survived only by accident of resolution failing: the harness has no persisted
+  default-workflow row, so `resolvedEntryColumn` was undefined and the sole remaining clause was the
+  literal `task.column === "triage"`. Removing that literal is what surfaced it — which is the point
+  of the conversion.
+
+  Renamed and re-pointed rather than deleted: the case it still guards is that an EXPLICIT column on
+  a create is honoured and classified against the workflow's own intake, not silently overridden.
+  */
+  it("treats a direct create into the default workflow's intake column as an intake create", async () => {
     const store = h.store();
-    const task = await store.createTask({ description: "direct todo create", column: "todo" });
+    const task = await store.createTask({ description: "direct intake create", column: "todo" });
     expect(task.column).toBe("todo");
-    const prompt = await readFile(
-      join(h.rootDir(), ".fusion", "tasks", task.id, "PROMPT.md"),
-      "utf-8",
-    );
-    // A direct todo create is NOT an intake column, so it must NOT get the bootstrap stub.
-    expect(prompt).not.toBe(`# ${task.id}\n\n${task.description}\n`);
-    // FNXC:OriginalDescriptionInPrompt 2026-07-14-23:35:
-    // Non-AI specified prompts must surface the operator description near the top.
+    const prompt = await readFile(join(store.getTasksDir(), task.id, "PROMPT.md"), "utf-8");
+    // `todo` is the merged Planning column and therefore the intake column: bootstrap seed.
+    expect(prompt).toBe(buildBootstrapPrompt(task.id, task.title, task.description));
+  });
+
+  /*
+  FNXC:MergedPlanningColumn 2026-07-30-13:10 (PR #2613 review — greptile):
+  `isUnplannedStartCreate` must stay narrow. My conversion replaced `&& task.column === "todo"`
+  with "any column other than intake", which on a MANUAL-intake workflow classified a direct create
+  into `in-review` (or `done`) as an unplanned quick-add Start — handing it a bootstrap stub instead
+  of a specified prompt. Quick-add Start lands the card in the workflow's PLANNING column, so the
+  narrowing belongs on the hold column, resolved from the IR rather than named.
+  */
+  it("does not treat an Ideas create into a REVIEW column as an unplanned Start create", async () => {
+    const store = h.store();
+    const task = await store.createTask({
+      description: "direct ideas create past planning",
+      workflowId: "builtin:coding-ideas",
+      column: "in-review",
+    });
+    expect(task.column).toBe("in-review");
+    const prompt = await readFile(join(store.getTasksDir(), task.id, "PROMPT.md"), "utf-8");
+    expect(prompt).not.toBe(buildBootstrapPrompt(task.id, task.title, task.description));
+  });
+
+  it("still treats an Ideas quick-add Start create into the planning column as unplanned", async () => {
+    // The case `isUnplannedStartCreate` exists for (FN-8587): create+promote in one request, so the
+    // card never sat in the manual intake but has no spec.
+    const store = h.store();
+    const task = await store.createTask({
+      description: "ideas quick-add start",
+      workflowId: "builtin:coding-ideas",
+      column: "todo",
+    });
+    expect(task.column).toBe("todo");
+    const prompt = await readFile(join(store.getTasksDir(), task.id, "PROMPT.md"), "utf-8");
+    expect(prompt).toBe(buildBootstrapPrompt(task.id, task.title, task.description));
+  });
+
+  it("keeps generateSpecifiedPrompt for a direct create into a NON-intake column", async () => {
+    // The contract the old test was really protecting — an explicit column past intake is a
+    // specified create, not an unplanned one.
+    const store = h.store();
+    const task = await store.createTask({ description: "direct wip create", column: "in-progress" });
+    expect(task.column).toBe("in-progress");
+    const prompt = await readFile(join(store.getTasksDir(), task.id, "PROMPT.md"), "utf-8");
+    expect(prompt).not.toBe(buildBootstrapPrompt(task.id, task.title, task.description));
     expect(prompt).toContain("## Original Description");
-    expect(prompt).toContain("direct todo create");
-    const originalIdx = prompt.indexOf("## Original Description");
-    const missionIdx = prompt.indexOf("## Mission");
-    expect(originalIdx).toBeGreaterThan(-1);
-    expect(missionIdx).toBeGreaterThan(originalIdx);
+    expect(prompt).toContain("direct wip create");
   });
 
   /*

@@ -125,6 +125,12 @@ export class UsageLimitPauser {
     settings: Awaited<ReturnType<TaskStore["getSettings"]>>,
     agentType: string,
     preImplementationColumns?: ReadonlySet<string>,
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-31-22:10:
+    The WIP and REVIEW lanes of this task's own workflow, resolved by the caller from the same per-workflow
+    IR cache as `preImplementationColumns`. Optional so an unresolvable workflow keeps the legacy literals.
+    */
+    activeLanes?: { wip?: string; review?: string },
   ): boolean {
     /*
     FNXC:WorkflowLifecycleColumns 2026-07-29-15:20 (P0 audit after the Planning-column merge):
@@ -149,12 +155,36 @@ export class UsageLimitPauser {
           resolveValidatorSessionModel(task.validatorModelProvider, task.validatorModelId, settings).provider,
         ] : [])
       : agentType === "executor"
-        ? (task.column === "in-progress" ? [
+        /*
+        FNXC:WorkflowLifecycleColumns 2026-07-31-22:15:
+        THE EXECUTOR AND MERGER LANES ARE RESOLVED TOO. The note above describes exactly this failure for the
+        PLANNER lane and says it was fixed there — these two were left as literals, so the same silent hole
+        stayed open one lane over: on a renamed board an actively-executing card in the WIP column resolved NO
+        providers, so a provider rate limit never paused it and the engine kept hammering the limited provider
+        with that card.
+
+        MEASURED before the fix, renamed board (`building` = wip), executor limit on a peer card: only the
+        TRIGGERING task was paused, and that only because of the always-include-the-trigger fallback below.
+        The peer executing on the same rate-limited provider was left running.
+
+            FNXC:WorkflowLifecycleColumns 2026-07-31-23:10 (PR #2672 review, greptile P1):
+        THE FALLBACK IS PER ROLE, not per object. My first version keyed it on whether `activeLanes` existed
+        at all, so a workflow that RESOLVES but declares no wip (or no review) column suppressed the legacy
+        id and resolved no providers — reintroducing this very bug for the partial-vocabulary case. A missing
+        ROLE is not the same fact as a missing WORKFLOW, and only the second one means "no basis".
+
+        Falling back per role can only ADD pauses, for a card sitting in a legacy-named column on a board that
+        declares no such role — which is the safe direction here and the one the note above states: the cost
+        of a wrong include is pausing work that was fine.
+        */
+        ? (((activeLanes?.wip ?? "in-progress") === task.column) ? [
             resolveExecutorSessionModel(task.modelProvider, task.modelId, settings).provider,
             resolveValidatorSessionModel(task.validatorModelProvider, task.validatorModelId, settings).provider,
           ] : [])
         : agentType === "merger"
-          ? (task.column === "in-review" ? [resolveMergerSessionModel(settings, undefined, task).provider] : [])
+          ? (((activeLanes?.review ?? "in-review") === task.column)
+            ? [resolveMergerSessionModel(settings, undefined, task).provider]
+            : [])
           : [];
     const resolvedProviders = providersByActiveLane;
     return resolvedProviders.some((candidate) => candidate?.trim().toLowerCase() === provider);
@@ -206,6 +236,32 @@ export class UsageLimitPauser {
     */
     const irCache = new Map<string, WorkflowIr>();
     const preImplementationByTask = new Map<string, ReadonlySet<string>>();
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-31-22:20:
+    Resolved for EVERY agent type, because the executor and merger lanes need it and only the
+    pre-implementation lane is planner-only. Shares `irCache`, so this is still one IR read per WORKFLOW
+    across the whole fan-out — a task whose workflow cannot be resolved yields `undefined` and the callee
+    keeps the legacy literal for it.
+    */
+    const activeLanesByTask = new Map<string, { wip?: string; review?: string } | undefined>();
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-31-23:20 (PR #2672 review, greptile P2):
+    RESOLVE ONLY THE CANDIDATES. The first version resolved every task on the board before filtering, so a
+    rate limit on a 400-card board paid 400 resolutions to pause a handful — and terminal or paused cards,
+    which can never be affected, were resolved too. The cheap predicates run first now, so the resolution
+    cost tracks the number of plausible tasks rather than the size of the board.
+
+    KNOWN AND UNCHANGED: concurrent misses on the same workflow can still both read, because `irCache` fills
+    after the await. That is a property this path shares with the planner-lane resolution above it, and
+    serialising to fix it would trade a bounded duplicate read for latency on the pause — which is the
+    operation an operator is waiting on. Named rather than silently accepted.
+    */
+    const laneCandidates = tasks.filter((task) =>
+      task.paused !== true && task.column !== "done" && task.column !== "archived");
+    await Promise.all(laneCandidates.map(async (task) => {
+      const columns = await resolveTaskLifecycleColumns(this.store, task.id, irCache).catch(() => undefined);
+      activeLanesByTask.set(task.id, columns ? { wip: columns.wip, review: columns.review } : undefined);
+    }));
     if (agentType === PLANNER_AGENT_ROLE) {
       await Promise.all(tasks.map(async (task) => {
         const columns = await resolveTaskLifecycleColumns(this.store, task.id, irCache).catch(() => undefined);
@@ -232,7 +288,14 @@ export class UsageLimitPauser {
       && task.column !== "archived"
       && task.paused !== true
       && providerId !== "unknown"
-      && this.taskUsesProvider(task, providerId, settings, agentType, preImplementationByTask.get(task.id)));
+      && this.taskUsesProvider(
+        task,
+        providerId,
+        settings,
+        agentType,
+        preImplementationByTask.get(task.id),
+        activeLanesByTask.get(task.id),
+      ));
 
     // Always include the task that produced the 429 even if its actual provider
     // came from a runtime fallback not represented in persisted task settings.

@@ -88,6 +88,8 @@ const json = process.argv.includes("--json");
 const strict = process.argv.includes("--strict");
 const compare = process.argv.includes("--compare");
 const updateBaseline = process.argv.includes("--update-baseline");
+/* `--exact` keeps hard failure on a DROP, for the end state where the count is pinned. */
+const exact = process.argv.includes("--exact");
 
 if (json) {
   console.log(JSON.stringify({ scannedFiles: files.length, ...summary, byFile: summary.byFile }, null, 2));
@@ -141,21 +143,85 @@ if (compare) {
   What must NEVER happen is the other direction: a site the REGEX found and the parser missed means
   the parser has a hole, and then its number cannot be the bar. That is the failure this checks.
   */
-  const text = summarizeText(censusFilesText(files));
+  /*
+  FNXC:LifecycleColumnCensus 2026-07-30-11:30:
+  COMPARE SITES, NOT BUCKET TOTALS. This check used to compare the per-bucket counts and fail when
+  the regex's `column` total exceeded the parser's. That conflates the two things it most needs to
+  tell apart:
+
+    - the parser MISSED a site entirely            -> a real blind spot, the failure worth having;
+    - the parser saw it and classified it better   -> role, status, or deliberate instead of column.
+
+  The second is the parser's entire reason for existing, so the old form fired MORE the better the
+  parser got. It had been failing on `main` while reporting "the parser has a blind spot; its count
+  cannot be the bar" — and that message was false. MEASURED at the time of this change: 13 sites
+  diverged, and all 13 were seen by the parser (4 deliberate, 5 role, 4 status). Zero were missed.
+
+  The check now fails only on a site the regex found and the parser did not, which is what the note
+  above it always said the contract was.
+  */
+  const textFindings = censusFilesText(files);
+  const text = summarizeText(textFindings);
   console.log(`\n  text classifier:  ${JSON.stringify(text.totals)}`);
   console.log(`  AST classifier:   ${JSON.stringify(summary.totals)}`);
-  const regressions = ["column", "role", "status", "deliberate"].filter(
-    (kind) => text.totals[kind] > summary.totals[kind],
-  );
-if (regressions.length > 0) {
+
+  /*
+  FNXC:LifecycleColumnCensus 2026-07-30-13:05 (PR #2682 review — greptile):
+  A SITE KEY CAN REPEAT ON ONE LINE, so this counts occurrences instead of testing set membership.
+  `from === "todo" || to === "todo"` yields TWO findings sharing file:line:columnId; keyed by a Set,
+  one parser match would satisfy both regex findings and hide a genuine miss of the other. Receiver
+  is deliberately NOT part of the key — `c === "todo" || c === "todo"` would collapse again — so the
+  comparison is per-key COUNTS, which cannot be fooled by either shape.
+  */
+  const siteKey = (f) => `${f.file}:${f.line}:${f.columnId}`;
+  const astByKey = new Map();
+  for (const f of findings) {
+    const list = astByKey.get(siteKey(f)) ?? [];
+    list.push(f);
+    astByKey.set(siteKey(f), list);
+  }
+  const textByKey = new Map();
+  for (const f of textFindings) {
+    const list = textByKey.get(siteKey(f)) ?? [];
+    list.push(f);
+    textByKey.set(siteKey(f), list);
+  }
+
+  const missed = [];
+  for (const [key, list] of textByKey) {
+    const shortfall = list.length - (astByKey.get(key)?.length ?? 0);
+    for (let i = 0; i < shortfall; i += 1) missed.push(list[i]);
+  }
+
+  if (missed.length > 0) {
     console.error(
-      `\nlifecycle-column-census --compare: the regex found MORE than the parser for ${regressions.join(", ")}.\n` +
-      "The parser has a blind spot; its count cannot be the bar until this is closed.",
+      `\nlifecycle-column-census --compare: the regex found ${missed.length} site(s) the parser did not.\n` +
+      "The parser has a blind spot; its count cannot be the bar until this is closed.\n" +
+      missed.slice(0, 10).map((f) => `  ${f.file}:${f.line} (${f.columnId})`).join("\n"),
     );
     process.exit(1);
   }
-  const extra = summary.totals.column - text.totals.column;
-  console.log(`  parser is a superset (+${extra} column guards the regex cannot see).`);
+
+  /* Reclassifications are expected and are the parser's value-add, so they are reported, not failed. */
+  const byKind = {};
+  let reclassifiedCount = 0;
+  for (const [key, list] of textByKey) {
+    /* Pair occurrences positionally within a key; equal counts are guaranteed by the miss check above. */
+    const astList = astByKey.get(key) ?? [];
+    list.forEach((f, i) => {
+      const kind = astList[i]?.kind;
+      if (f.kind === "column" && kind !== undefined && kind !== "column") {
+        byKind[kind] = (byKind[kind] ?? 0) + 1;
+        reclassifiedCount += 1;
+      }
+    });
+  }
+  let parserOnly = 0;
+  for (const [key, list] of astByKey) parserOnly += Math.max(0, list.length - (textByKey.get(key)?.length ?? 0));
+  console.log(`  parser sees every site the regex does (+${parserOnly} sites the regex cannot see).`);
+  if (reclassifiedCount > 0) {
+    console.log(`  ${reclassifiedCount} the regex calls a column guard, the parser classifies as ${JSON.stringify(byKind)}.`);
+  }
 }
 
 if (!strict) process.exit(0);
@@ -298,7 +364,7 @@ The flag is an explicit operator action, so it re-records unconditionally and PR
 under `ACCEPTED RISES`. Silently swallowing a rise is the real danger; refusing to let anyone re-record is
 the same danger one step later, wearing a red check nobody trusts.
 */
-if (updateBaseline) {
+function writeBaseline() {
   writeFileSync(
     BASELINE_PATH,
     `${JSON.stringify({
@@ -312,6 +378,10 @@ if (updateBaseline) {
       queryByFile: Object.fromEntries(summary.queryByFile),
     }, null, 2)}\n`,
   );
+}
+
+if (updateBaseline) {
+  writeBaseline();
   if (regressions.length > 0) {
     console.log("\n  ACCEPTED RISES (a merge or a conversion added guards here — convert them or they stay in the bar):");
     for (const r of regressions) {
@@ -346,16 +416,88 @@ it. The `!deliberateTracked && updateBaseline` condition went with it: the uncon
 legacy-shape migration too.
 */
 if (stale.length > 0) {
-  console.error("\nlifecycle-column-census --strict: baseline is STALE — it allows more than the tree has\n");
-  for (const s of stale) {
-    console.error(`  ${s.file}: allows ${s.allowed}, tree has ${s.count}`);
+  /*
+  FNXC:LifecycleColumnCensus 2026-08-01-02-30 (coordinator item 2 — the ratchet must FOLLOW THE COUNT DOWN):
+  A DROP TIGHTENS THE BASELINE INSTEAD OF FAILING. The old behaviour failed hard, and the reasoning was sound
+  in isolation — a stale allowance is a hole, since those guards can return up to the old count while the
+  check stays green. What it missed is that the drop is almost never the author's to fix: eleven files dropped
+  during one merge wave, none of those PRs re-recorded, and none of their authors did anything wrong. Measured
+  three separate times since CI began gating this (`columnRoles.ts` 0->1, then `executor.ts` twice).
+
+  A PERMANENTLY-RED GATE IS A BIGGER HOLE THAN A STALE ALLOWANCE, because it gets ignored and then nothing is
+  guarded at all. So the ceiling now follows the count down automatically and says so, while the RISE check —
+  the actual purpose, "no new guards" — still fails hard and untouched.
+
+  THE RESIDUAL, named rather than glossed: in CI the write is discarded with the runner, so the committed
+  baseline stays stale until someone commits a tightened one. The exposure is bounded (regrowth only up to the
+  old count) and printed on every run, and it is strictly smaller than the exposure from a check people route
+  around. `--exact` keeps hard failure for the end state, when the count is meant to be pinned and any
+  divergence is a real event.
+  */
+  /*
+  FNXC:LifecycleColumnCensus 2026-07-30-12:10 (PR #2679 review — greptile P1):
+  A TOUCHED FILE MUST BE RE-RECORDED; AN UNTOUCHED ONE IS AUTO-TIGHTENED.
+
+  The residual named below is real: in CI the tightening write is discarded with the runner, so the
+  committed allowance stays stale and a later change can regrow guards up to it while the gate is
+  green. Naming that is not closing it.
+
+  This closes it where the regrowth would have to happen. Regrowing a guard means EDITING the file,
+  so requiring an exact baseline only for files the change TOUCHES makes the hole unreachable — while
+  the case this PR exists for stays green, because those authors did not touch the files that dropped
+  (eleven files dropped in one merge wave; none of those authors did anything wrong).
+
+  Falls back to the lenient path when no base ref resolves, so a detached or shallow checkout
+  degrades to the previous behaviour rather than failing closed on a git detail.
+  */
+  let touched = new Set();
+  /*
+  The touched set is overridable for the same reason BASELINE_PATH is: otherwise this branch can only
+  be tested against whatever the CURRENT branch happens to have changed, so the test's outcome would
+  depend on the diff of the PR running it. Production never sets it.
+  */
+  if (process.env.FUSION_CENSUS_TOUCHED_PATHS !== undefined) {
+    touched = new Set(process.env.FUSION_CENSUS_TOUCHED_PATHS.split(",").map((f) => f.trim()).filter(Boolean));
+  } else {
+    try {
+      const base = process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : "origin/main";
+      touched = new Set(
+        execSync(`git diff --name-only ${base}...HEAD`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+          .split("\n").map((f) => f.trim()).filter(Boolean),
+      );
+    } catch {
+      /* No usable base ref — leave `touched` empty so every entry takes the lenient path. */
+    }
   }
-  console.error(
-    "\nA stale allowance is a hole: those guards can be reintroduced later and this check stays\n" +
-    "green. Re-record the baseline in the SAME PR that lowered the count:\n\n" +
-    "  node scripts/lifecycle-column-census.mjs --strict --update-baseline\n",
+
+  const staleTouched = stale.filter((entry) => touched.has(entry.file));
+  if (staleTouched.length > 0) {
+    console.error(
+      "\nlifecycle-column-census --strict: this change TOUCHES files whose guard count dropped, so the\n"
+      + "baseline must be re-recorded in this change — otherwise the allowance stays open for regrowth.\n",
+    );
+    for (const entry of staleTouched) {
+      console.error(`  ${entry.file}: allows ${entry.allowed}, tree has ${entry.count}`);
+    }
+    console.error("\nRe-record it:\n\n  node scripts/lifecycle-column-census.mjs --strict --update-baseline\n");
+    process.exit(1);
+  }
+
+  const lines = stale.map((entry) => `  ${entry.file}: allows ${entry.allowed}, tree has ${entry.count}`);
+  if (exact) {
+    console.error("\nlifecycle-column-census --strict --exact: baseline is STALE — it allows more than the tree has\n");
+    for (const line of lines) console.error(line);
+    console.error("\nRe-record it:\n\n  node scripts/lifecycle-column-census.mjs --strict --update-baseline\n");
+    process.exit(1);
+  }
+  writeBaseline();
+  console.log("\nlifecycle-column-census --strict: baseline TIGHTENED — the tree has fewer guards than it allowed\n");
+  for (const line of lines) console.log(line);
+  console.log(
+    "\nThe baseline file has been rewritten downward. COMMIT IT so the allowance cannot be regrown into;\n"
+    + "in CI this write is discarded with the runner, which is why the gate is green and not silent.\n",
   );
-  process.exit(1);
+  process.exit(0);
 }
 
 console.log("\nlifecycle-column-census --strict: every file matches its baseline exactly.");

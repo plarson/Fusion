@@ -35,6 +35,8 @@ import {
   resolvePlanApprovalRequired,
   resolveWorkflowIrForTask,
   resolveLifecycleColumns,
+  resolveWorkflowIrForTaskWithProvenance,
+  workflowHasColumn,
   getStepParser,
   computePlanApprovalFingerprint,
   extractIntentSignature,
@@ -1156,7 +1158,71 @@ export class TriageProcessor {
        the literal. Converting only the `todo` sites left this one rejecting every
        card whose workflow renames its planner column, so the release below was
        unreachable for exactly the workflows the conversion was for. */
-    if (task.column !== resolvePlannerLanes(this.store, task.id).intake || !recoverableStatus) {
+    /*
+    FNXC:RecoverApprovedIntakePostU11 2026-07-29-23:10 (U11 #2515 audit):
+    ADDITIVE: the resolved intake lane OR the legacy `triage` id.
+
+    Resolving the lane (above) fixed recovery for renamed and merged workflows and
+    silently broke it for cards still SITTING in `triage` — the migration population
+    U11's re-homing has not reached yet. A default-workflow card there resolves
+    intake to `todo`, fails this gate, and its approved spec is discarded: the
+    stale-planning sweep clears the status, ordinary discovery re-plans from scratch,
+    and a fresh LLM pass is burned on the path FN-1312 built to avoid exactly that.
+
+    Trading "cannot recover post-U11 cards" for "cannot recover pre-U11 cards" is not
+    a fix. `triage` stays a legal column id for stored rows (R11), so accepting both
+    is compatibility, not a second source of truth — once a row is re-homed the
+    resolved lane is what matches.
+    */
+    const lanes = resolvePlannerLanes(this.store, task.id);
+    /*
+    FNXC:RecoverApprovedIntakePostU11 2026-07-30-00:50 (PR #2593 review — greptile P1):
+    The legacy acceptance is SCOPED to an ORPHANED `triage` row — one whose workflow
+    does not declare a `triage` column at all. A custom workflow is free to name a
+    non-intake lane `triage` (its review or wip column), and accepting a
+    planning-status card from there would finalize its plan and move it to the hold
+    lane, bypassing whatever transition that custom column represents.
+
+    Unqualified `|| task.column === "triage"` could not tell those two apart. This
+    can: the migration case is precisely "the row sits in a column its workflow no
+    longer has", which is also exactly what `reconcileUndeclaredTaskColumns` is about
+    to re-home. If the workflow DOES declare `triage`, its declared role governs and
+    only the resolved intake lane is accepted.
+    */
+    /*
+    FNXC:RecoverApprovedIntakePostU11 2026-07-30-00:20 (PR #2593 review — greptile, PG defaults):
+    THE SYNC READER CANNOT BE USED HERE, and it is production that breaks. `resolveTaskWorkflowIrSync`
+    returns `WorkflowIr`, never undefined: in backend/PostgreSQL mode it "cannot synchronously read
+    PostgreSQL, so return undefined and let the sync readers fall back to their defaults"
+    (`workflow-definitions.ts`). So the value arriving here was the DEFAULT coding IR, which post-U11
+    declares no `triage` column — making `declaresLegacyTriage` false for every task under PG and the
+    scoping this guard exists for unable to fire at all. A custom workflow that legitimately names a
+    non-intake lane `triage` would have had its planning-status card accepted and finalized, which is
+    the precise regression the earlier review asked me to prevent.
+
+    The provenance API is the fix, not a bigger try/catch: `source: "selection"` is verified by IR
+    identity, so it is only reported when the store really resolved the task's own workflow. Anything
+    else — PG's sync gap, no selection, a missing or malformed definition, a throwing lookup — is
+    `"default"`, and we then FAIL CLOSED by assuming the workflow declares `triage` and declining to
+    widen. Declining costs a deferred recovery that the next sweep retries; widening wrongly
+    finalizes a plan in someone's custom lane.
+    */
+    const resolved = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id);
+    const declaresLegacyTriage = resolved.source === "selection"
+      ? workflowHasColumn(resolved.ir, "triage")
+      : true;
+    /*
+    FNXC:RecoverApprovedIntakePostU11 2026-07-29-23:55 DELIBERATE-LITERAL: the migration arm only.
+    The census flagged this as a NEW guard, correctly — it is a literal, and it is new. It is also
+    irreducible: the condition is "this row sits in a column its workflow no longer declares", so
+    there is no trait to resolve and no IR that can answer it. Resolving `triage` from the workflow
+    is what the `!declaresLegacyTriage` half already does, and it is what makes this the orphan case
+    rather than a blanket acceptance. Same class as the markers in `replan-target.ts` and
+    `hold-release.ts`; retires with the U11 migration window, when no row can rest in `triage`.
+    */
+    const inPlannerColumn = task.column === lanes.intake
+      || (task.column === "triage" && !declaresLegacyTriage);
+    if (!inPlannerColumn || !recoverableStatus) {
       return false;
     }
 

@@ -35,6 +35,7 @@ import { useTaskDiffStats } from "../hooks/useTaskDiffStats";
 import { useAgentsMapCache } from "../hooks/useAgentsMapCache";
 import { useLiveTimeTicker } from "../hooks/useLiveTimeTicker";
 import { isTaskStuck } from "../utils/taskStuck";
+import { isFieldEditableColumnRole } from "../utils/columnRoles";
 import { hasPendingAutomaticRecovery, isTaskManuallyRetryable } from "../utils/taskRecovery";
 import { getRevertOfId, isTaskReverted } from "../utils/taskRevert";
 import { getStalledReviewSignal } from "../utils/taskStalledReview";
@@ -310,7 +311,6 @@ function isSameAgentIdentity(
 
 // Issue 1403: widened to ColumnId so `.has(task.column)` accepts custom column ids
 // (which are not members and correctly resolve to false).
-const EDITABLE_COLUMNS: Set<ColumnId> = new Set<ColumnId>(["triage", "todo"]);
 
 const ACTIVE_MERGE_STATUSES = new Set(
   [...ACTIVE_STATUSES].filter((status) => ["merging", "merging-pr", "merging-fix", "reviewing", "landing"].includes(status)),
@@ -1018,6 +1018,11 @@ function TaskCardComponent({
   than scattered through the file. When flags are present — which is every card on a
   loaded board whose column its workflow declares — the traits decide and the U11 merge
   is a non-event. The fallback retires with the load window, not with this change.
+
+  FNXC:WorkflowLifecycleColumns 2026-07-29-23:40 DELIBERATE-LITERAL: the fallback arm only.
+  The trait path above is the live answer; this arm runs ONLY when the board has no resolved flags,
+  and in that state there is nothing to resolve FROM. Deleting it does not remove a guard, it picks a
+  different guess ("not intake") and silently drops planning affordances during first paint.
   */
   const isIntakeColumn = taskColumnFlags
     ? taskColumnFlags.intake === true
@@ -1513,7 +1518,15 @@ function TaskCardComponent({
   const isDraggable = !disableDrag && !queued && !isPaused && !isEditing && !isArchived && !isCoarsePointer; // Disable drag during edit/archived, host embedding, or touch
 
   // Check if this card can be edited inline
-  const canEdit = EDITABLE_COLUMNS.has(task.column) && !isAgentActive && !isPaused && !queued && onUpdateTask;
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-31-00:15 (U12 — R8 drift conversion):
+  THE ASYMMETRY: this read a hardcoded `{triage, todo}` set with no trait path, while
+  TaskDetailModal resolved the SAME affordance from column traits (U10/R8). So on a renamed board an
+  operator could edit a task's title in the detail modal but the pencil was missing from its card,
+  and after #2515 the `triage` half was dead weight. `taskColumnFlags` was already in scope here —
+  the card simply never asked.
+  */
+  const canEdit = isFieldEditableColumnRole(taskColumnFlags, task.column) && !isAgentActive && !isPaused && !queued && onUpdateTask;
   const githubTrackedIssue = task.githubTracking?.issue;
   const hasGithubTrackingLink = Boolean(githubTrackedIssue);
   const isGitHubImportedTask = task.sourceType === "github_import";
@@ -2504,6 +2517,11 @@ function TaskCardComponent({
       the single fallback documented at the role helpers above.
       */
       const targetFlags = taskMoveColumns?.find((candidate) => candidate.id === column)?.flags;
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-07-29-23:40 DELIBERATE-LITERAL: the fallback arm only. Guessing "not
+      pre-implementation" here skips the preserve-progress PROMPT, and losing completed steps is
+      unrecoverable — the safe degraded answer is the legacy one. Reason in full above.
+      */
       const targetIsPreImplementation = targetFlags
         ? targetFlags.intake === true || targetFlags.hold === true
         : column === "todo" || column === "triage";

@@ -194,3 +194,135 @@ describe("sibling detection uses the enclosing expression, not a line window", (
     expect(result.role).toBe(0);
   });
 });
+
+/*
+FNXC:LifecycleColumnCensus 2026-07-29-20:10 (query-filter category):
+
+A guard is not the only way a legacy column id decides behaviour. `listTasks({ column: "todo" })`
+is a SOURCE QUERY — it selects the rows a sweep considers at all — so on a board that renamed or
+merged that column it returns nothing, and a sweep whose per-task predicate WAS correctly converted
+still does nothing while looking converted. `self-healing.ts:2849` names the pairing in prose and
+#2560 had to repair exactly that combination.
+
+The comparison walk cannot see these: a PropertyAssignment is not a BinaryExpression. So they were
+invisible to both the census and its ratchet, and the class could grow silently.
+
+These cases pin the three decisions that make the category meaningful: it is counted, it is counted
+SEPARATELY from the backlog, and an IR node definition is not mistaken for a query.
+*/
+describe("query-filter category", () => {
+  it("counts a legacy column id used as a source-query filter", () => {
+    const result = summarize(census(`await store.listTasks({ column: "todo", slim: true });`));
+    expect(result.properties.query).toBe(1);
+    expect(result.queryByColumnId).toEqual({ todo: 1 });
+  });
+
+  it("keeps queries OUT of the guard backlog, which is the completion bar", () => {
+    /* The load-bearing decision. Folding these into `totals.column` would move a number the
+       program is actively driving to zero, and would make every fleet PR's before/after
+       arithmetic disagree with the bar. */
+    const result = summarize(census(`await store.listTasks({ column: "triage" });`));
+    expect(result.totals.column).toBe(0);
+    expect(result.byColumnId).toEqual({});
+    expect(result.byFile).toEqual([]);
+    expect(result.properties.query).toBe(1);
+  });
+
+  it("does NOT count a workflow IR node definition as a query", () => {
+    /* `column:` on a graph node declares WHERE the node lives — the lineage describing itself,
+       not a lookup, and not convertible. Told apart structurally (an `id`/`kind` sibling) rather
+       than by filename, so a definition written anywhere is classified the same way. */
+    const result = summarize(census(`const ir = { nodes: [{ id: "review", kind: "review", column: "in-review" }] };`));
+    expect(result.properties.query).toBe(0);
+    expect(result.properties.definition).toBe(1);
+    expect(result.totals.column).toBe(0);
+  });
+
+  it("still counts a comparison in the same file, so the two instruments are independent", () => {
+    /* Without this, a bug that routed comparisons into the query bucket would look like a clean
+       pass on both numbers. */
+    const result = summarize(census(`
+      const rows = await store.listTasks({ column: "todo" });
+      if (task.column === "todo") { act(); }
+    `));
+    expect(result.properties.query).toBe(1);
+    expect(result.totals.column).toBe(1);
+  });
+
+  it("honours a DELIBERATE-LITERAL marker on a query filter", () => {
+    const result = summarize(census(`
+      /* ${DELIBERATE_MARKER}: reviewed — this lineage genuinely declares todo. */
+      const rows = await store.listTasks({ column: "todo" });
+    `));
+    expect(result.properties.query).toBe(0);
+    expect(result.totals.deliberate).toBe(1);
+  });
+
+  it("ignores a column property whose value is not a legacy id", () => {
+    const result = summarize(census(`await store.listTasks({ column: "backlog" });`));
+    expect(result.properties.query).toBe(0);
+  });
+});
+
+/*
+FNXC:LifecycleColumnCensus 2026-07-29-21:05 (the `outcome` receiver):
+
+`outcome` names a RESULT enum, not a column. The live instance is
+`deterministicReconcile.outcome === "archived"` — the verdict of a duplicate reconciliation, which
+merely shares a word with a column id.
+
+This is pinned because losing it is not hypothetical: the shipped classifier counted these five
+sites, the baseline recorded by the SAME PR did not, and that gap kept `--strict` RED on main from
+#2633 until it was restored. A silent one-word regression in a token list took the ratchet offline
+without failing anything, which is the same class of defect the ratchet exists to catch.
+*/
+describe("outcome is a result enum, not a column", () => {
+  it("does not count `outcome === \"<column id>\"` as a guard", () => {
+    const result = summarize(census(`if (reconcile.outcome === "archived") { return; }`));
+    expect(result.totals.column).toBe(0);
+    expect(result.totals.role).toBe(1);
+  });
+
+  it("still counts a real column comparison in the same file", () => {
+    /* Guards the exclusion from being written too broadly — a rule that swallowed the neighbouring
+       column guard would look identical on the count above. */
+    const result = summarize(census(`
+      if (reconcile.outcome === "archived") { return; }
+      if (task.column === "archived") { hide(); }
+    `));
+    expect(result.totals.column).toBe(1);
+    expect(result.totals.role).toBe(1);
+  });
+});
+
+/*
+FNXC:LifecycleColumnCensus 2026-07-29-21:50 (state/phase/result enums are not columns):
+
+Four measured sites compared a state, phase, or result enum against a word that happens to be a
+column id. The fleet would have been sent to convert them and found nothing to convert.
+
+Classified by the SIBLING vocabulary, never by the receiver's name — and that distinction is load-
+bearing rather than stylistic. `state` looks like exactly this class and is NOT: in
+`comments-ops.ts` it holds `await getLiveTaskColumn(...)`, a real column. A name-based rule would
+have silently deleted a genuine guard from the backlog while appearing to clean it up.
+*/
+describe("state, phase and result enums are not column guards", () => {
+  it.each([
+    ["step state", `stepState === "done" ? a : stepState === "active" ? b : c`],
+    ["agent state", `agentState === "done" || agentState === "busy" || agentState === "ready"`],
+    ["tui phase", `phase === "done" || phase === "pushing" || phase === "confirm"`],
+    ["result kind", `kind === "done" || kind === "stopped" || kind === "exhausted"`],
+  ])("does not count %s as a guard", (_label, source) => {
+    expect(totals(source).column).toBe(0);
+  });
+
+  it("STILL counts a column held in a variable called `state`", () => {
+    /* The case that makes a receiver-name rule wrong. This is the real shape from
+       comments-ops.ts, and it must stay in the backlog. */
+    const result = summarize(census(`
+      const state = await getLiveTaskColumn(db, id, projectId);
+      if (state === "archived") throw new Error("read-only");
+    `));
+    expect(result.totals.column).toBe(1);
+  });
+});

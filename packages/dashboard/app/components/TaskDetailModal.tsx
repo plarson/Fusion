@@ -25,6 +25,7 @@ import { resolveTaskSessionAdvisorEnabled } from "../../../core/src/session-advi
 import { classifyDependencyStatuses, formatDependencyStatusLabel } from "@fusion/core/dependency-status";
 import { isNearDuplicateCanonicalInactive } from "../../../core/src/near-duplicate-canonical";
 import { getRevertOfId, findOpenUndoTaskForSource } from "../utils/taskRevert";
+import { isFieldEditableColumnRole } from "../utils/columnRoles";
 import { resolveEffectiveAutoMerge } from "../../../core/src/task-merge";
 import { uploadAttachment, deleteAttachment, updateTask, repairOverlapBlocker, pauseTask, unpauseTask, fetchTaskDetail, fetchTaskVerificationRequest, fetchSettings, fetchTaskEffectiveSettings, fetchGlobalSettings, requestSpecRevision, rebuildTaskSpec, approvePlan, rejectPlan, refineTask, fetchWorkflowResults, assignTask, fetchAgents, fetchAgent, refreshPrStatus, fetchBoardWorkflows, updateTaskCustomFields, summarizeTitle, fetchWorkflowSettingValues, nudgeOverseer, stopOverseer, explainOverseer, fetchModels, fetchNodes, api } from "../api";
 import type { RevertTaskOptions, RevertTaskResult, ModelInfo, NodeInfo } from "../api";
@@ -663,7 +664,6 @@ function getProvenanceLabel(task: Task | TaskDetail, options: ProvenanceLabelOpt
 
 // #1403: widened to ColumnId so `.has(task.column)` accepts custom column ids
 // (non-members correctly resolve to false → not editable).
-const EDITABLE_COLUMNS: Set<ColumnId> = new Set<ColumnId>(["triage", "todo"]);
 
 /*
 FNXC:WorkflowResolvedColumns 2026-07-27-15:30 (U10 / R8):
@@ -676,11 +676,13 @@ before the board-workflows payload resolves and for a column the workflow does n
 where the traits are unknown rather than known-false.
 */
 function isTaskFieldEditableColumn(column: ColumnId, flags?: TaskContextMenuColumnFlags): boolean {
-  if (!flags) return EDITABLE_COLUMNS.has(column);
-  if (flags.complete || flags.archived || flags.countsTowardWip || flags.mergeBlocker || flags.humanReview) {
-    return false;
-  }
-  return flags.intake === true || flags.hold === true;
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-31-00:15 (U12): body moved UNCHANGED to
+  `isFieldEditableColumnRole`, so this and TaskCard cannot drift apart again. TaskCard implemented the
+  same affordance with the raw id set and no trait path, which is how a renamed board lost inline
+  editing on the card while this surface kept it.
+  */
+  return isFieldEditableColumnRole(flags, column);
 }
 const GITHUB_TRACKING_EDITABLE_COLUMNS: Set<ColumnId> = new Set<ColumnId>(["triage", "todo", "in-progress", "in-review", "ideas"]);
 const CODING_IDEAS_WORKFLOW_ID = "builtin:coding-ideas";
@@ -2536,6 +2538,11 @@ export function TaskDetailContent({
         ids when the destination has no resolved metadata.
         */
         const targetFlags = workflowMoveMetadata?.moveColumns?.find((candidate) => candidate.id === column)?.flags;
+        /*
+        FNXC:WorkflowLifecycleColumns 2026-07-29-23:40 DELIBERATE-LITERAL: the fallback arm only. Same reasoning as
+        the TaskCard site: a wrong guess skips the preserve-progress prompt and discards steps with
+        no way back. Reason in full above.
+        */
         const targetIsPreImplementation = targetFlags
           ? targetFlags.intake === true || targetFlags.hold === true
           : column === "todo" || column === "triage";
@@ -3040,6 +3047,10 @@ export function TaskDetailContent({
   The INTAKE lane's approval hold. `task.column === "triage"` is deleted by U11, which
   would silently drop the Approve/Reject controls from a parked planning card — the
   operator sees a task stuck "awaiting approval" with no way to answer it.
+
+  FNXC:WorkflowLifecycleColumns 2026-07-29-23:40 DELIBERATE-LITERAL: the fallback arm only.
+  Reachable only with no resolved flags; guessing "not intake" hides Approve/Reject from a parked
+  planning card, which is an operator dead end. Retires with the pre-load window.
   */
   const isIntakeColumn = workflowMoveMetadata?.currentColumnFlags
     ? workflowMoveMetadata.currentColumnFlags.intake === true

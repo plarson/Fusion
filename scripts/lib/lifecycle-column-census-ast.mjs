@@ -42,6 +42,19 @@ export const LEGACY_COLUMN_IDS = ["triage", "todo", "in-progress", "in-review", 
 /** Receiver names that denote an agent role / lane rather than a task column. */
 export const ROLE_RECEIVER_TOKENS = [
   "role", "agentType", "agent", "lane", "capability", "sessionPurpose", "surface", "purpose", "agentRole",
+  /*
+  FNXC:LifecycleColumnCensus 2026-07-29-20:50 (restores the pinned baseline):
+  `outcome` names a RESULT enum, not a column. The one live instance is
+  `deterministicReconcile.outcome === "archived"` — the verdict of a duplicate reconciliation, which
+  happens to share a word with a column id.
+
+  This is not a preference: the shipped classifier counted it, the pinned baseline did not, and that
+  single site is the entire 22-vs-23 gap that has kept `--strict` RED on main since #2633 merged.
+  So the baseline was recorded by a classifier that excluded it, and the exclusion was lost before
+  the code shipped. Restoring it makes the instrument agree with its own pin rather than raising the
+  pin to match a miscount — which would have quietly conceded a guard that does not exist.
+  */
+  "outcome",
 ];
 
 /*
@@ -51,7 +64,28 @@ merger` and `StepStatus` is `pending | in-progress | done | skipped`; the member
 column ids. This is the signal that caught `sessionPurpose` and `surface`, which a name list missed.
 */
 const ROLE_ONLY_VALUES = new Set(["executor", "reviewer", "merger"]);
-const STATUS_ONLY_VALUES = new Set(["pending", "skipped"]);
+const STATUS_ONLY_VALUES = new Set([
+  "pending", "skipped",
+  /*
+  FNXC:LifecycleColumnCensus 2026-07-29-21:40 (widen the sibling vocabulary, not the name list):
+  Members of state/phase/result enums that are NEVER column ids. Each earns its place by a measured
+  site whose siblings prove the vocabulary:
+
+    stepState   { active, done }                                        DashboardLoader.tsx:123
+    agentState  { busy, ready, starting, done }                         TaskDetailModal.tsx:339
+    phase       { confirm, pushing, done }                              dashboard-tui/app.tsx:3139
+    kind        { exhausted, existing, invalid-deleted, missing,        async-mission-store.ts:1175
+                  nonterminal, stopped, done }
+
+  Deliberately extending the VALUE vocabulary rather than the receiver-name list, because names are
+  unreliable here and provably so: `state` looked like the same class but holds
+  `await getLiveTaskColumn(...)` — a real column, correctly counted. A name rule would have deleted
+  that guard from the backlog. The sibling signal is the mechanism that already caught
+  `sessionPurpose` and `surface`.
+  */
+  "active", "busy", "ready", "starting", "confirm", "pushing",
+  "exhausted", "existing", "invalid-deleted", "missing", "nonterminal", "stopped",
+]);
 
 export const DELIBERATE_MARKER = "DELIBERATE-LITERAL";
 
@@ -144,6 +178,52 @@ function hasDeliberateMarker(sourceFile, node) {
   return false;
 }
 
+/*
+FNXC:LifecycleColumnCensus 2026-07-29-19:20 (query-filter category):
+
+A guard is not the only way a legacy column id decides behaviour. `listTasks({ column: "todo" })`
+is a SOURCE QUERY: it selects the rows a sweep will consider, and on a board that renamed or merged
+that column it returns nothing — so a sweep whose per-task predicate was correctly converted still
+does nothing, and looks converted while being dead. `self-healing.ts:2849` names the pairing in
+prose, and #2560 had to repair exactly that combination after a converted predicate was left with a
+literal query. One measured consequence: `recoverStuckMergeDeadlocks` cannot see a renamed board at
+all (proven on a live store: the renamed rows exist and none appear in its three-literal union).
+
+The comparison walk cannot see these — a PropertyAssignment is not a BinaryExpression — so they
+were invisible to the census and to its ratchet, meaning the class could grow silently.
+
+COUNTED SEPARATELY, deliberately. `totals.column` and the per-column/per-file backlog are left
+byte-identical, so the completion bar ("triage guards to 0") keeps its existing meaning and the
+pinned baseline does not move. This adds a second, independently pinned number.
+
+DEFINITIONS ARE NOT QUERIES. Workflow IR graph nodes carry `column:` to declare where a node lives
+(`{ id: "review", kind: "...", column: "in-review" }`), which is the lineage DEFINING itself — the
+builtin IR files hold ~32 of these. Converting one would be nonsense. They are told apart
+structurally rather than by filename: a definition's object literal also carries `id:` or `kind:`,
+a query's does not.
+*/
+function classifyColumnProperty(node) {
+  const object = node.parent;
+  if (!object || !ts.isObjectLiteralExpression(object)) return "query";
+  const hasDefinitionSibling = object.properties.some(
+    (property) =>
+      property !== node
+      && ts.isPropertyAssignment(property)
+      && ts.isIdentifier(property.name)
+      && (property.name.text === "id" || property.name.text === "kind"),
+  );
+  return hasDefinitionSibling ? "definition" : "query";
+}
+
+/** True for a `column: "<legacy id>"` property assignment. */
+function columnPropertyLiteral(node) {
+  if (!ts.isPropertyAssignment(node)) return undefined;
+  const name = ts.isIdentifier(node.name) || ts.isStringLiteral(node.name) ? node.name.text : undefined;
+  if (name !== "column") return undefined;
+  if (!ts.isStringLiteral(node.initializer)) return undefined;
+  return LEGACY_COLUMN_IDS.includes(node.initializer.text) ? node.initializer.text : undefined;
+}
+
 /** Parse one file and classify every comparison against a legacy column id. */
 export function findComparisons(filePath, source) {
   const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -169,6 +249,16 @@ export function findComparisons(filePath, source) {
         });
       }
     }
+    const columnProperty = columnPropertyLiteral(node);
+    if (columnProperty) {
+      findings.push({
+        file: filePath,
+        line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+        columnId: columnProperty,
+        receiver: "column",
+        kind: hasDeliberateMarker(sourceFile, node) ? "deliberate" : classifyColumnProperty(node),
+      });
+    }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
@@ -182,7 +272,25 @@ export function summarize(findings) {
   const byColumnId = {};
   const byFile = new Map();
 
+  /*
+  Kept OUT of `totals` on purpose. `totals` is a published shape: the baseline file, the reporter,
+  and other workers' in-flight PRs all read it, and the completion bar is defined against
+  `totals.column`. Growing that object would move a number people are mid-way through driving to
+  zero. The property-assignment counts are a second, independent instrument and live beside it.
+  */
+  const properties = { query: 0, definition: 0 };
+  const queryByFile = new Map();
+  const queryByColumnId = {};
+
   for (const finding of findings) {
+    if (finding.kind === "query" || finding.kind === "definition") {
+      properties[finding.kind] += 1;
+      if (finding.kind === "query") {
+        queryByColumnId[finding.columnId] = (queryByColumnId[finding.columnId] ?? 0) + 1;
+        queryByFile.set(finding.file, (queryByFile.get(finding.file) ?? 0) + 1);
+      }
+      continue;
+    }
     totals[finding.kind] += 1;
     if (finding.kind !== "column") continue;
     byColumnId[finding.columnId] = (byColumnId[finding.columnId] ?? 0) + 1;
@@ -193,6 +301,9 @@ export function summarize(findings) {
     totals,
     byColumnId,
     byFile: [...byFile].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])),
+    properties,
+    queryByColumnId,
+    queryByFile: [...queryByFile].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])),
   };
 }
 

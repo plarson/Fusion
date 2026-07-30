@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, resolveWorkflowIrForTask, resolveReboundTarget, resolveLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult } from "@fusion/core";
+import { resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveReboundTarget, resolveLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult } from "@fusion/core";
 import { finalizePlanningSegment } from "@fusion/core";
 import type { MeshLeaseManager } from "./mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
@@ -810,6 +810,9 @@ function hasTerminalInvalidDoneTransition(task: Pick<Task, "error">): boolean {
   const error = task.error ?? "";
   return error.includes("Invalid transition:") && error.includes("→ 'done'");
 }
+
+/** Sentinel for a workflow selection whose READ failed, distinct from "no selection". */
+const UNREADABLE_WORKFLOW_SELECTION = "\u0000unreadable-workflow-selection";
 
 export class SelfHealingManager extends SelfHealingGitEvidence {
   // ── Auto-unpause state ──────────────────────────────────────────────
@@ -6364,6 +6367,41 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    * it only ever touches a row whose column is UNDECLARED, never one the operator merely disagrees
    * with, and it leaves operator parks (`userPaused`) alone.
    */
+  /** The task's persisted workflow selection id, or undefined when it has none (which
+   *  legitimately resolves to the default workflow). A sentinel marks an unreadable
+   *  selection, which is itself grounds not to guess. */
+  private async readTaskWorkflowSelectionForRebound(taskId: string): Promise<string | undefined> {
+    try {
+      const selection = this.store.getTaskWorkflowSelectionAsync
+        ? await this.store.getTaskWorkflowSelectionAsync(taskId)
+        : this.store.getTaskWorkflowSelection?.(taskId);
+      return selection?.workflowId ?? undefined;
+    } catch {
+      return UNREADABLE_WORKFLOW_SELECTION;
+    }
+  }
+
+  /** True when the workflow id resolves to a definition (built-in or stored). */
+  private async canResolveWorkflowDefinition(workflowId: string): Promise<boolean> {
+    if (workflowId === UNREADABLE_WORKFLOW_SELECTION) return false;
+    /*
+    FNXC:WorkflowColumns 2026-07-29-00:00 (PR #2600 review — greptile):
+    EXISTENCE, not prefix. `isBuiltinWorkflowId` accepts any `builtin:`-prefixed string, so
+    a stale selection like `builtin:removed-workflow` passed this proof — and an unknown
+    built-in id resolves to the default coding IR, meaning the card was still re-homed
+    against a workflow that is not its own. That is the exact hole this guard was added to
+    close, reproduced by the guard itself. `getBuiltinWorkflow` returns the definition or
+    undefined, so it answers "does this exist" rather than "is it spelled like a built-in".
+    */
+    if (getBuiltinWorkflow(workflowId)) return true;
+    if (isBuiltinWorkflowId(workflowId)) return false;
+    try {
+      return Boolean(await this.store.getWorkflowDefinition(workflowId));
+    } catch {
+      return false;
+    }
+  }
+
   async reconcileUndeclaredTaskColumns(): Promise<number> {
     try {
       const pageSize = 500;
@@ -6378,11 +6416,40 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           try {
             ir = await resolveWorkflowIrForTask(this.store, task.id);
           } catch {
-            continue; // An unresolvable workflow is its own fault path; do not guess a column.
+            continue; // Defensive only — see the note below; the resolver does not reject.
           }
           if (!ir || workflowHasColumn(ir, task.column)) continue;
           const target = resolveReboundTarget(ir);
           if (!target || target === task.column) continue;
+
+          /*
+          FNXC:WorkflowColumns 2026-07-29-00:00 (U12 — the guard above could not fire):
+          PROVE the resolved IR belongs to THIS task before moving its card.
+
+          The `catch` above was dead code. `resolveWorkflowIrById` catches every failure and
+          returns `defaultCodingWorkflowIr()`, and `resolveWorkflowIrForTask` does the same
+          for a failed selection read — so the resolver never rejects, and its comment ("do
+          not guess a column") described protection that did not exist. A card whose
+          workflow could not be loaded was judged against the DEFAULT workflow and re-homed
+          to the DEFAULT's rebound target: the sweep guessed, using a workflow that is not
+          the card's own, which is the one outcome the guard was written to prevent. Found
+          while trying to make a test of that guard fail (PR #2543) and being unable to.
+
+          The check runs HERE, not at resolution, for two reasons: it costs one definition
+          read only for a card otherwise about to be MOVED (rare — a healthy board reaches
+          this line for nobody), and it keeps the fix inside the sweep rather than changing a
+          resolver whose soft-failure many other callers depend on.
+
+          A task with NO selection legitimately resolves to the default workflow, so only a
+          selection naming a workflow we cannot load counts as unresolvable.
+          */
+          const selectionForProof = await this.readTaskWorkflowSelectionForRebound(task.id);
+          if (selectionForProof && !(await this.canResolveWorkflowDefinition(selectionForProof))) {
+            log.warn(
+              `reconcileUndeclaredTaskColumns: skipping ${task.id} — its workflow '${selectionForProof}' could not be loaded, so any rebound target would be a guess`,
+            );
+            continue;
+          }
 
           try {
             await this.store.moveTask(task.id, target as Task["column"], {

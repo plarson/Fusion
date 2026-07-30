@@ -23,14 +23,14 @@ assertions exact rather than inferred from absence of change.
 
 MECHANISM COVERAGE, measured rather than claimed. Deleting the user-pause guard fails 2
 cases; deleting the already-declared short-circuit fails 2 cases. The
-unresolvable-workflow case was REWRITTEN after PR #2543 review: chasing per-task isolation
-proved the sweep's unresolvable-workflow guard is UNREACHABLE (the IR resolver never
-rejects), so the case now asserts what actually happens — resolution falls back to the
-default workflow and the card is re-homed on a guess — plus the isolation property the
-review asked for. See the note at that case.
+unloadable-workflow case asserts the guard that now EXISTS: the sweep proves the resolved
+IR belongs to the task before moving its card. Before that fix the resolver never rejected
+and the card was re-homed against the DEFAULT workflow — a guess. See the note at that
+case.
 */
 import { describe, expect, it, vi } from "vitest";
 import type { Task, WorkflowIr } from "@fusion/core";
+import { getBuiltinWorkflow } from "@fusion/core";
 import { SelfHealingManager } from "../self-healing.js";
 
 /** A workflow declaring `intake` + `hold` + `done`, with NO `todo` column. A card stored
@@ -140,45 +140,55 @@ describe("reconcileUndeclaredTaskColumns (U12 — R7)", () => {
   });
 
   /*
-  FNXC:WorkflowColumns 2026-07-29-00:00 (PR #2543 review — CodeRabbit, and a real finding):
-  THE SWEEP'S "UNRESOLVABLE WORKFLOW" GUARD CANNOT FIRE. Chasing the review's request to
-  prove per-task isolation, I could not make the case fail under any mutation — including
-  simulating a whole-sweep abort. The reason is upstream: `resolveWorkflowIrById` catches
-  EVERY failure and returns `defaultCodingWorkflowIr()`, and `resolveWorkflowIrForTask`
-  does the same for a failed selection read. So `resolveWorkflowIrForTask` never rejects,
-  the sweep's `try/catch` around it is unreachable, and its comment — "do not guess a
-  column" — describes protection that does not exist.
+  FNXC:WorkflowColumns 2026-07-29-00:00 (U12 — the guard now EXISTS):
+  A card whose workflow cannot be loaded is SKIPPED, and its neighbour is still repaired.
 
-  What ACTUALLY happens to a card whose workflow cannot be read: it is judged against the
-  DEFAULT workflow. If its column is not one the default declares, the sweep re-homes it
-  to the default's rebound target — i.e. it guesses, using a workflow that is not the
-  card's own. That is the exact outcome the guard was written to prevent.
+  History, because it matters for reading this file: the sweep's `catch` around IR
+  resolution was dead code. `resolveWorkflowIrById` swallows every failure and returns
+  `defaultCodingWorkflowIr()`, so the resolver never rejected and a card with an
+  unloadable workflow was judged against the DEFAULT and re-homed to the DEFAULT's
+  rebound target — the sweep guessed with someone else's workflow, the exact outcome the
+  guard's comment claimed to prevent. Discovered by being unable to make a test of that
+  guard fail (PR #2543); the protection is added in this change.
 
-  This test now asserts the real behaviour rather than the intended behaviour, because a
-  test asserting the intent would pass for the wrong reason and hide the gap. The fix
-  belongs upstream (the resolver needs to signal failure, or the sweep needs to detect
-  "I was handed the default IR but this task selects something else") and is a behaviour
-  change, not test work — flagged in the PR body rather than smuggled in here.
-
-  The per-task isolation the review asked for IS pinned: two stranded cards, one with an
-  unreadable workflow, and the sweep must still process both rather than dying on the
-  first.
+  Both halves are asserted deliberately: the unloadable card must NOT move (no guessing),
+  and the neighbour MUST move (one bad card cannot disable the sweep for everyone else —
+  the per-task isolation property, which a single-task fixture cannot distinguish from a
+  whole-sweep abort).
   */
-  it("resolves an unreadable workflow to the DEFAULT and keeps processing other cards", async () => {
-    const unreadable = task({ id: "FN-3", column: "custom-lane" as Task["column"] });
+  it("skips a card whose workflow cannot be loaded, and still repairs its neighbour", async () => {
+    const unloadable = task({ id: "FN-3", column: "custom-lane" as Task["column"] });
     const neighbour = task({ id: "FN-3b", column: "todo" });
-    const store = makeStore([unreadable, neighbour], { unresolvableWorkflowFor: "FN-3" });
+    const store = makeStore([unloadable, neighbour], { unresolvableWorkflowFor: "FN-3" });
 
-    const rehomed = await manager(store).reconcileUndeclaredTaskColumns();
+    expect(await manager(store).reconcileUndeclaredTaskColumns()).toBe(1);
+    expect(store.moveTask).toHaveBeenCalledTimes(1);
+    expect(store.moveTask.mock.calls[0]![0]).toBe("FN-3b");
 
-    /*
-    Both cards move: the neighbour correctly (its own workflow lacks `todo`), and FN-3 on a
-    GUESS against the default workflow. A failure here of `2 -> 0` would mean the resolver
-    exception aborted the whole sweep, which is the isolation property under test.
-    */
-    expect(rehomed).toBe(2);
-    expect(store.moveTask.mock.calls.map((call) => call[0]).sort()).toEqual(["FN-3", "FN-3b"]);
+    // No guess: the card stays exactly where it was.
+    expect(unloadable.column).toBe("custom-lane");
     expect(neighbour.column).toBe("triage");
+  });
+
+  /*
+  FNXC:WorkflowColumns 2026-07-29-00:00 (PR #2600 review — greptile):
+  A STALE BUILT-IN id must not pass the resolvability proof. `isBuiltinWorkflowId` is a
+  PREFIX check, so `builtin:removed-workflow` satisfied it — and an unknown built-in id
+  resolves to the default coding IR, so the card was still re-homed against a workflow that
+  is not its own. The guard reproduced the hole it was added to close.
+
+  REVERT CHECK: restore the prefix check (`isBuiltinWorkflowId(...) => true`) and this
+  fails — the card is re-homed to the default's target instead of being left alone.
+  */
+  it("skips a card selecting a built-in workflow that no longer exists", async () => {
+    const stale = task({ id: "FN-9", column: "custom-lane" as Task["column"] });
+    const store = makeStore([stale]);
+    // Prefix-valid, existence-invalid.
+    store.getTaskWorkflowSelectionAsync = vi.fn(async () => ({ workflowId: "builtin:removed-workflow" }));
+
+    expect(await manager(store).reconcileUndeclaredTaskColumns()).toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(stale.column).toBe("custom-lane");
   });
 
   it("is idempotent: a second run does not move the card again", async () => {
@@ -213,5 +223,70 @@ describe("reconcileUndeclaredTaskColumns (U12 — R7)", () => {
     expect(store.moveTask.mock.calls[0]![0]).toBe("FN-6");
     expect(healthy.column).toBe("in-progress");
     expect(paused.column).toBe("todo");
+  });
+});
+
+/*
+FNXC:WorkflowColumns 2026-07-29-00:00 (PR #2600 review — greptile):
+"PLUGIN-GATED WORKFLOWS PASS PROOF" — checked, and the guard is CORRECT as written.
+
+The claim was that `getBuiltinWorkflow` finds a plugin-gated built-in's static definition
+even when the store would reject it, so the guard returns true while the resolver falls
+back to the default IR and the sweep guesses anyway.
+
+The second half does not hold. `resolveWorkflowIrById`'s built-in branch reads
+`getBuiltinWorkflow(workflowId)` and RETURNS ITS IR WITHOUT EVER CALLING THE STORE — a
+store rejection is unreachable for a built-in id. So a plugin-gated selection resolves to
+that workflow's OWN IR whether or not its plugin is installed, and there is no guess for
+the guard to have prevented.
+
+That is not a coincidence to leave undefended: the guard is right precisely BECAUSE it
+uses the same lookup the resolver uses. If someone later routes built-in resolution
+through the store, the guard and the resolver diverge and this coupling is what breaks
+first. Hence a test rather than a reply.
+
+The genuinely unresolvable built-in case — `builtin:`-prefixed but NOT in the registry,
+where `getBuiltinWorkflow` returns undefined and the resolver DOES fall back to the
+default — is the hole the parent commit closed, and is covered below it.
+*/
+describe("plugin-gated built-in selections (PR #2600 review)", () => {
+  it("resolves through the static registry, so a store rejection cannot force a guess", () => {
+    // Precondition: the static lookup still finds the plugin-gated built-in. If this ever
+    // returns undefined the case below is vacuous, so assert it rather than assume it.
+    expect(getBuiltinWorkflow("builtin:compound-engineering")).toBeDefined();
+  });
+
+  /*
+  THE FIXTURE IS THE ARGUMENT. `builtin:compound-engineering` declares `triage`; the
+  post-#2515 DEFAULT lineage does not (its columns are todo, in-progress, in-review, done,
+  archived) — both measured, not assumed.
+
+  So a card resting in `triage` separates the two worlds cleanly:
+    - resolver uses CE's own IR   -> `triage` is DECLARED   -> left alone  (asserted here)
+    - resolver fell back to default -> `triage` is UNDECLARED -> re-homed  (greptile's claim)
+  This case therefore FAILS in exactly the world the review describes, which is the only
+  way to answer "the guard passes proof it should not" with evidence instead of assertion.
+  */
+  it("leaves a plugin-gated card in a column ITS OWN workflow declares, even when the store rejects it", async () => {
+    const card = task({ id: "FN-9", column: "triage" });
+    const store = makeStore([card]);
+    // The plugin is unavailable: every store-side definition read fails.
+    store.getTaskWorkflowSelectionAsync = vi.fn(async () => ({ workflowId: "builtin:compound-engineering" }));
+    store.getWorkflowDefinition = vi.fn(async () => {
+      throw new Error("plugin fusion-plugin-compound-engineering is not installed");
+    });
+
+    const rehomed = await manager(store).reconcileUndeclaredTaskColumns();
+
+    expect(rehomed).toBe(0);
+    expect(store.moveTask).not.toHaveBeenCalled();
+    expect(card.column).toBe("triage");
+    /*
+    And the mechanism, pinned directly: the IR came from the static registry, so the
+    store was never asked. This is the coupling the guard depends on — if built-in
+    resolution is ever routed through the store, this assertion breaks first and names
+    the reason.
+    */
+    expect(store.getWorkflowDefinition).not.toHaveBeenCalled();
   });
 });

@@ -10032,7 +10032,7 @@ export class TaskExecutor {
     live: TaskDetail,
     result: WorkflowGraphTaskRunResult,
     /** Shared per-recovery lane snapshot — see `resolveResumeLanes`. */
-    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string; wipDeclared: boolean } },
   ): Promise<boolean> {
     if (live.deletedAt) return false;
     if (live.paused || live.userPaused === true) return false;
@@ -10247,7 +10247,7 @@ export class TaskExecutor {
     pausedAborted: boolean,
     /** Shared per-recovery lane snapshot — see `resolveResumeLanes`; a fresh resolution here could disagree
      *  with the one the rest of `handleGraphFailure` uses. */
-    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string; wipDeclared: boolean } },
   ): Promise<boolean> {
     /*
     FNXC:WorkflowLifecycle 2026-06-19-00:05:
@@ -10358,7 +10358,7 @@ export class TaskExecutor {
     pausedAborted: boolean,
     /** Shared per-recovery lane snapshot — see `resolveResumeLanes`; a fresh resolution here could disagree
      *  with the one the rest of `handleGraphFailure` uses. */
-    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string; wipDeclared: boolean } },
   ): Promise<boolean> {
     /*
     FNXC:WorkflowLifecycle 2026-07-09-14:54:
@@ -10394,7 +10394,7 @@ export class TaskExecutor {
     userCanceled: boolean,
     /** Shared per-recovery lane snapshot — see `resolveResumeLanes`; a fresh resolution here could disagree
      *  with the one the rest of `handleGraphFailure` uses. */
-    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string; wipDeclared: boolean } },
   ): Promise<boolean> {
     /*
     FNXC:WorkflowLifecycle 2026-06-28-21:05:
@@ -10469,7 +10469,7 @@ export class TaskExecutor {
     userCanceled: boolean,
     /** Shared per-recovery lane snapshot — see `resolveResumeLanes`; a fresh resolution here could disagree
      *  with the one the rest of `handleGraphFailure` uses. */
-    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string; wipDeclared: boolean } },
   ): Promise<boolean> {
     /*
     FNXC:WorkflowLifecycle 2026-06-29-01:18:
@@ -10583,7 +10583,7 @@ export class TaskExecutor {
     abortProvenance: PausedAbortProvenance | undefined,
     pausedAborted: boolean,
     userCanceled: boolean,
-    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string; wipDeclared: boolean } },
   ): Promise<boolean> {
     /*
     FNXC:WorkflowLifecycle 2026-06-28-18:32:
@@ -10660,8 +10660,8 @@ export class TaskExecutor {
   */
   private async resolveResumeLanes(
     taskId: string,
-    memo?: { lanes?: { hold: string; wip: string; review: string } },
-  ): Promise<{ hold: string; wip: string; review: string }> {
+    memo?: { lanes?: { hold: string; wip: string; review: string; wipDeclared: boolean } },
+  ): Promise<{ hold: string; wip: string; review: string; wipDeclared: boolean }> {
     /*
     FNXC:WorkflowLifecycleColumns 2026-07-31-01:00 (PR #2640 review, greptile P2):
     ONE RESOLUTION PER RECOVERY, and the reason is correctness as much as I/O. Eligibility and
@@ -10679,11 +10679,34 @@ export class TaskExecutor {
         hold: lifecycle?.hold ?? "todo",
         wip: lifecycle?.wip ?? "in-progress",
         review: lifecycle?.review ?? "in-review",
+        /*
+        FNXC:WorkflowLifecycleColumns 2026-07-30-15:30 (PR #2760 review — greptile P1):
+        Whether the resolved IR actually DECLARES an implementation lane, which the `?? "in-progress"`
+        default above destroys. Callers that must not act without a real implementation lane read this
+        instead of comparing against the default.
+
+        THREE states, not two, and conflating the last two is a regression:
+          a. wip declared                        -> true
+          b. lifecycle lanes declared, wip NOT   -> FALSE; the workflow genuinely has no implementation
+                                                   lane, so there is nowhere to resume TO
+          c. NO lifecycle lane declared at all   -> true; this is a v1 workflow upgraded in place. Its
+                                                   synthesized columns carry `traits: []`, so
+                                                   `resolveLifecycleColumns` returns `{}` — measured, not
+                                                   assumed — and treating that as "no wip lane" would
+                                                   terminalize every legacy custom workflow's
+                                                   graph-failure recovery instead of resuming it.
+
+        The discriminator is whether the IR expresses lifecycle intent AT ALL. An untraited legacy board
+        expresses none, so the legacy trio is the honest answer and today's behaviour is preserved.
+        */
+        wipDeclared: lifecycle?.wip !== undefined
+          || (lifecycle?.hold === undefined && lifecycle?.review === undefined),
       };
       if (memo) memo.lanes = lanes;
       return lanes;
     } catch {
-      const lanes = { hold: "todo", wip: "in-progress", review: "in-review" };
+      // IR unavailable: we cannot know, so keep the legacy board's assumption and today's behaviour.
+      const lanes = { hold: "todo", wip: "in-progress", review: "in-review", wipDeclared: true };
       if (memo) memo.lanes = lanes;
       return lanes;
     }
@@ -10693,7 +10716,7 @@ export class TaskExecutor {
     live: TaskDetail,
     result: WorkflowGraphTaskRunResult,
     abortProvenance: PausedAbortProvenance | undefined,
-    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string; wipDeclared: boolean } },
   ): Promise<boolean> {
     const nodeId = result.interruptedNodeId ?? result.visitedNodeIds[result.visitedNodeIds.length - 1] ?? "unknown";
     const priorRetries = live.graphResumeRetryCount ?? 0;
@@ -10892,7 +10915,7 @@ export class TaskExecutor {
       is used-before-declared — which is how the two halves came to read different boards in the first
       place. The memo is seeded from this snapshot so the classifiers still share it.
       */
-      const resumeLanesMemo: { lanes?: { hold: string; wip: string; review: string } } = {};
+      const resumeLanesMemo: { lanes?: { hold: string; wip: string; review: string; wipDeclared: boolean } } = {};
       const failureLanes = await this.resolveResumeLanes(live.id, resumeLanesMemo);
       /*
       FNXC:Lifecycle 2026-07-16-21:22:
@@ -11826,7 +11849,7 @@ export class TaskExecutor {
     failedNode: string,
     failureValue: string | undefined,
     /** Shared per-recovery lane snapshot — see `resolveResumeLanes`. */
-    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string } },
+    resumeLanesMemo?: { lanes?: { hold: string; wip: string; review: string; wipDeclared: boolean } },
   ): Promise<boolean> {
     /*
      * FNXC:WorkflowLifecycle 2026-06-29-11:08:
@@ -11866,6 +11889,19 @@ export class TaskExecutor {
     defect, opposite direction, and the silent one.
     */
     const resumeRouterLanes = await this.resolveResumeLanes(live.id, resumeLanesMemo);
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-30-14:20:
+    A workflow that declares NO implementation lane has nowhere to resume TO, so this router must not
+    claim the card — the graph failure has to reach the terminalize branch and be visible.
+
+    Without this, a card resting in such a workflow's HOLD lane with incomplete steps matched the
+    second arm above (`incompleteSteps && live.column === lanes.hold`), the router rehomed it and
+    returned true, and the failure was swallowed: `status` and `error` both stayed null. The operator
+    saw a card that had silently stopped. That is the exact shape the sibling branch below already
+    guards with `wipColumn !== undefined` before claiming a card "already advanced"; this is the same
+    fail-closed rule on the opposite path, which was failing OPEN.
+    */
+    if (!resumeRouterLanes.wipDeclared) return false;
     if (live.column !== resumeRouterLanes.review
       && !(incompleteSteps && live.column === resumeRouterLanes.hold)
       && !(prematureMergeWithIncompleteSteps && live.column === resumeRouterLanes.wip)) return false;

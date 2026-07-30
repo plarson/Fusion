@@ -101,10 +101,54 @@ describe("resume lanes come from the task's own workflow", () => {
     // renamed board answered "not a safe resume state" and the re-entry never fired.
     const h = harness(RENAMED_IR);
 
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-30-14:35:
+    `wipDeclared` reports whether the resolved IR actually DECLARES an implementation lane, which the
+    `?? "in-progress"` default destroys. The resume router needs it: a workflow with no wip column has
+    nowhere to resume TO, so claiming the card there swallowed a graph failure silently.
+    */
     await expect(h.lanes("FN-1")).resolves.toEqual({
       hold: "queued",
       wip: "building",
       review: "checking",
+      wipDeclared: true,
+    });
+  });
+
+  /*
+  FNXC:WorkflowLifecycleColumns 2026-07-30-15:30 (PR #2760 review — greptile P1):
+  The regression this nearly shipped. A v1 workflow upgraded in place synthesizes its columns with
+  `traits: []`, so `resolveLifecycleColumns` returns `{}` and NO lane is declared. A naive
+  `wipDeclared = lifecycle?.wip !== undefined` reads that as "this workflow has no implementation
+  lane" and the resume router declines — terminalizing every legacy custom workflow's graph-failure
+  recovery instead of resuming it.
+
+  Measured, not assumed: parsing a v1 IR yields
+  `[{id:"triage",traits:[]},{id:"todo",traits:[]},{id:"in-progress",traits:[]},...]`.
+
+  So `wipDeclared` is TRUE when the IR expresses no lifecycle intent at all, and false only when it
+  declares lanes and omits wip — the case in executor-execution-policy-renamed-columns.
+  */
+  it("treats an untraited (v1-upgraded) board as HAVING an implementation lane", async () => {
+    const untraited = {
+      version: "v2",
+      id: "WF-legacy",
+      nodes: [],
+      edges: [],
+      columns: [
+        { id: "triage", name: "triage", traits: [] },
+        { id: "todo", name: "todo", traits: [] },
+        { id: "in-progress", name: "in-progress", traits: [] },
+        { id: "in-review", name: "in-review", traits: [] },
+      ],
+    } as unknown as WorkflowIr;
+    const h = harness(untraited);
+
+    await expect(h.lanes("FN-1")).resolves.toEqual({
+      hold: "todo",
+      wip: "in-progress",
+      review: "in-review",
+      wipDeclared: true,
     });
   });
 
@@ -113,10 +157,20 @@ describe("resume lanes come from the task's own workflow", () => {
     // and the default lineage behaves exactly as before.
     const h = harness(undefined);
 
+    /*
+    `wipDeclared` is TRUE here, and the distinction is worth stating: "no workflow resolves" does not
+    mean "no columns" — `resolveWorkflowIrForTask` falls back to the DEFAULT coding lineage, which
+    declares `in-progress`. So the legacy trio is a real declaration on that lineage, not an invented
+    lane, and a resume there is legitimate.
+
+    The case `wipDeclared` exists to catch is different: an IR that resolves and declares NO wip column
+    at all (see the no-wip workflow in executor-execution-policy-renamed-columns).
+    */
     await expect(h.lanes("FN-1")).resolves.toEqual({
       hold: "todo",
       wip: "in-progress",
       review: "in-review",
+      wipDeclared: true,
     });
   });
 
@@ -127,10 +181,16 @@ describe("resume lanes come from the task's own workflow", () => {
       throw new Error("workflow store unavailable");
     };
 
+    /*
+    IR UNAVAILABLE is deliberately different from "resolved, declares no wip": we cannot know, so this
+    keeps the legacy board's assumption and today's routing behaviour rather than failing closed on an
+    infrastructure error.
+    */
     await expect(h.lanes("FN-1")).resolves.toEqual({
       hold: "todo",
       wip: "in-progress",
       review: "in-review",
+      wipDeclared: true,
     });
   });
 });

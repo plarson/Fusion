@@ -126,6 +126,8 @@ import { createTaskBackendImpl, _createTaskInternalBackendImpl, createTaskImpl, 
 import { getTaskImpl, listTasksImpl, searchTasksImpl, listTasksModifiedSinceImpl, getTaskVerificationRequestAsyncImpl } from "./task-store/reads.js";
 import { updateTaskUnlockedImpl } from "./task-store/task-update.js";
 import { __setTaskActivityLogLimitsForTesting } from "./task-store/comments.js";
+import { resolveReviewColumns } from "./workflow-lifecycle-traits.js";
+import { resolveWorkflowIrForTask } from "./workflow-ir-resolver.js";
 // FNXC:RuntimeBackendAsync 2026-06-24-10:15:
 // Async helper imports for backend-mode (AsyncDataLayer/PostgreSQL) delegation.
 // persistence/allocator/settings/search/lifecycle/merge/archive helpers preserve
@@ -749,7 +751,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     return reconcileStaleSymbolLocksAsync(this);
   }
 
-  /** FNXC:SymbolLock 2026-07-31-10:00: FN-8306 resolves only durable task declarations; PROMPT is never re-read here. */
+  /** FNXC:SymbolLock 2026-07-30-10:00: FN-8306 resolves only durable task declarations; PROMPT is never re-read here. */
   async resolveTaskSymbols(taskId: string): Promise<TaskSymbolResolution> {
     try {
       return resolveTaskSymbolsForTask(await this.getTask(taskId));
@@ -1383,8 +1385,38 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       const dir = this.taskDir(id);
       const task = await this.readTaskJson(dir);
 
-      if (task.column !== "in-review") {
-        throw new Error(`Cannot bypass review lane for ${id}: task is in '${task.column}', must be in 'in-review'`);
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-07-30-01:10 (PR #2709 review — greptile):
+      THE MESSAGE MUST NAME THE COLUMN THE CHECK ACTUALLY USED. The guard was converted to the
+      resolved review lane while the rejection still said `in-review`, so on a custom board an
+      operator was told to move the card to a column their board does not have — through both the
+      CLI and the dashboard, with no way to discover the real answer from the error.
+
+      Wrong guidance is worse than an unconverted guard: an inert guard fails visibly, while this
+      one refuses correctly and then sends the operator somewhere that does not exist. Resolved once
+      into a local so the check and the message cannot drift apart again.
+      */
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-07-30-16:05 (PR #2718 review — greptile, on the guard I
+      converted in #2709):
+      EVERY REVIEW LANE, because `.review` is the single `mergeOrchestration` column. A board hosting
+      review on a `humanReview`- or `mergeBlocker`-only lane failed this check, so `TaskContextMenu`
+      offered "Bypass failed review" (it asks by ROLE) and the store refused it — the operator's only
+      escape from a stranded failed pre-merge step returned a conflict.
+
+      THE BROAD SET IS RIGHT HERE, and that is a decision rather than a default: this guard REFUSES or
+      PERMITS an operator action and moves nothing, so admitting every lane where review happens cannot
+      send a card anywhere the engine disagrees with. #2750 documents the split — a caller that admits
+      and then MOVES wants the narrow single lane instead.
+
+      The message names the lanes the check actually used, keeping #2709's fix: telling an operator to
+      move to a column their board does not have is worse than refusing.
+      */
+      const reviewIr = await resolveWorkflowIrForTask(this, task.id).catch(() => undefined);
+      const reviewColumns = reviewIr === undefined ? ["in-review"] : resolveReviewColumns(reviewIr);
+      if (!reviewColumns.includes(task.column)) {
+        const named = reviewColumns.length > 0 ? reviewColumns.map((c: string) => `'${c}'`).join(" or ") : "a review lane";
+        throw new Error(`Cannot bypass review lane for ${id}: task is in '${task.column}', must be in ${named}`);
       }
       if (task.paused) {
         throw new Error(`Cannot bypass review lane for ${id}: task is paused`);
@@ -2399,7 +2431,7 @@ Issue #2149 requires read-only type filtering to occur in the file-store before 
   the three U5 reconciliation guards (now unconditional) and the three v1-IR
   rollback-compat persistence sites (now unconditional, same stored bytes).
 
-  FNXC:WorkflowColumns 2026-07-31-04:00 (U12): `isWorkflowColumnsCompatibilityFlagEnabled` is now
+  FNXC:WorkflowColumns 2026-07-30-04:00 (U12): `isWorkflowColumnsCompatibilityFlagEnabled` is now
   DELETED TOO. Its last two readers were the move path — `moves.ts` and the preflight in
   `workflow-task-create-ops.ts` — and both were un-gated in one commit because the preflight computes
   what `moves.ts` consumes.

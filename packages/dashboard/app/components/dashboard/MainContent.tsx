@@ -390,6 +390,7 @@ export function MainContent({
                 nearDuplicateCanonicalInactive={typeof task.sourceMetadata?.nearDuplicateOf === "string"
                   ? isNearDuplicateCanonicalInactive(pluginContextTasks.find((candidate) => candidate.id === task.sourceMetadata?.nearDuplicateOf))
                   : undefined}
+                dependencyTasks={pluginContextTasks}
               />
             ),
             addToast,

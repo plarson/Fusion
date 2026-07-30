@@ -29,6 +29,11 @@
       "source": "./src/task-delete-attribution.ts",
       "import": "./dist/task-delete-attribution.js"
     },
+    "./dependency-status": {
+      "types": "./src/dependency-status.ts",
+      "source": "./src/dependency-status.ts",
+      "import": "./dist/dependency-status.js"
+    },
     "./detect-content-language": {
       "types": "./src/detect-content-language.ts",
       "source": "./src/detect-content-language.ts",

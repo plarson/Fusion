@@ -55,8 +55,20 @@ function createMockStore(overrides: Record<string, unknown> = {}): TaskStore & E
     */
     refreshDatabaseHealth: vi.fn(),
     refreshDatabaseHealthAsync: vi.fn(async () => undefined),
+    // The aggregate runtime's shared surfacing cycle snapshots the board once
+    // even when this suite stubs every surfacing consumer. Keep the fixture
+    // production-shaped so the lazy promise settles without unhandled errors.
+    listTasks: vi.fn(async () => []),
     ...overrides,
   }) as unknown as TaskStore & EventEmitter;
+}
+
+function dbCorruptionAuditCount(store: TaskStore): number {
+  const audit = store.recordRunAuditEvent as ReturnType<typeof vi.fn>;
+  const calls = audit.mock.calls as Array<[{ mutationType?: string }]>;
+  return calls.filter(
+    ([event]) => event?.mutationType === "task:auto-db-corruption-detected",
+  ).length;
 }
 
 const BATCH1_METHODS = [
@@ -160,7 +172,7 @@ describe("FN-5284: self-healing DB corruption surfacing", () => {
 
     expect(notifierModule.getActiveNotificationService).not.toHaveBeenCalled();
     expect(notifierModule.sendNtfyNotification).not.toHaveBeenCalled();
-    expect(store.recordRunAuditEvent).not.toHaveBeenCalled();
+    expect(dbCorruptionAuditCount(store)).toBe(0);
   });
 
   it("dispatches a notification and records an audit event on first corruption detection", async () => {
@@ -243,7 +255,7 @@ describe("FN-5284: self-healing DB corruption surfacing", () => {
     await (manager as any).runMaintenance();
 
     expect(dispatch).toHaveBeenCalledTimes(1);
-    expect(store.recordRunAuditEvent).toHaveBeenCalledTimes(1);
+    expect(dbCorruptionAuditCount(store)).toBe(1);
   });
 
   it("re-notifies after corruption clears and is detected again", async () => {
@@ -286,7 +298,7 @@ describe("FN-5284: self-healing DB corruption surfacing", () => {
       metadata: expect.objectContaining({ errors: ["second error"] }),
     }));
     expect(dispatch).toHaveBeenCalledTimes(2);
-    expect(store.recordRunAuditEvent).toHaveBeenCalledTimes(2);
+    expect(dbCorruptionAuditCount(store)).toBe(2);
   });
 
   it("records an audit even when no notification channel is active", async () => {

@@ -3,6 +3,7 @@ import {
   STALE_HIGH_FANOUT_BLOCKER_AGE_THRESHOLD_MS,
   type Task,
 } from "./types.js";
+import { isDependencySchedulingSatisfied } from "./dependency-status.js";
 
 export interface BlockerEscalation {
   blockerId: string;
@@ -140,8 +141,10 @@ export function computeBlockerFanoutMap(
     const active = roles ? !roles.isTerminal : !terminalColumns.has(task.column);
     const isTodo = roles ? roles.isHold : task.column === holdColumn;
 
-    for (const depId of task.dependencies ?? []) {
+    for (const depId of new Set(task.dependencies ?? [])) {
       if (!depId) continue;
+      const dependency = taskById.get(depId);
+      if (isDependencySchedulingSatisfied(dependency)) continue;
       const entry = ensureEntry(depId);
       entry.dependentIds.push(task.id);
       entry.dependencyDependentIds.push(task.id);

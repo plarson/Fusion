@@ -58,13 +58,14 @@ describe("createPlanningBoardTools", () => {
           dependencies: [],
         },
       ]) as TaskStore["listTasks"],
+      getTask: vi.fn(async (id: string) => ({ id, column: "todo", title: id, description: id, dependencies: [] })) as TaskStore["getTask"],
     });
 
     const taskList = createPlanningBoardTools(store).find((tool) => tool.name === "fn_task_list");
     expect(taskList).toBeDefined();
     await expect(taskList!.execute("c1", {})).resolves.not.toThrow();
     const result = await taskList!.execute("c1", {});
-    expect(result.content[0]?.text).toBe("FN-1 (todo): Task one [deps: FN-0]");
+    expect(result.content[0]?.text).toBe("FN-1 (todo): Task one [active deps: FN-0]");
 
     const emptyStore = createStoreMock({ listTasks: vi.fn(async () => []) as TaskStore["listTasks"] });
     const emptyResult = await createPlanningBoardTools(emptyStore)
@@ -75,13 +76,16 @@ describe("createPlanningBoardTools", () => {
 
   it("fn_task_show returns full details and not-found fallback", async () => {
     const store = createStoreMock({
-      getTask: vi.fn(async (id: string) => ({
-        id,
-        column: "in-progress",
-        description: "Detailed task",
-        dependencies: ["FN-5", "FN-6"],
-        prompt: "# Prompt body",
-      })) as TaskStore["getTask"],
+      getTask: vi.fn(async (id: string) => {
+        const byId: Record<string, unknown> = {
+          "FN-10": { id, column: "in-progress", description: "Detailed task", dependencies: ["FN-801", "FN-803", "FN-819", "FN-807"], prompt: "# Prompt body" },
+          "FN-801": { id: "FN-801", column: "done", description: "Done dep", dependencies: [] },
+          "FN-803": { id: "FN-803", column: "todo", description: "Todo dep", dependencies: [] },
+          "FN-819": { id: "FN-819", column: "archived", description: "Archived dep", dependencies: [] },
+          "FN-807": { id: "FN-807", column: "in-progress", description: "Live dep", dependencies: [] },
+        };
+        return byId[id] as Awaited<ReturnType<TaskStore["getTask"]>>;
+      }) as TaskStore["getTask"],
     });
 
     const taskGet = createPlanningBoardTools(store).find((tool) => tool.name === "fn_task_show");
@@ -90,7 +94,7 @@ describe("createPlanningBoardTools", () => {
     expect(result.content[0]?.text).toContain("ID: FN-10");
     expect(result.content[0]?.text).toContain("Column: in-progress");
     expect(result.content[0]?.text).toContain("Description: Detailed task");
-    expect(result.content[0]?.text).toContain("Dependencies: FN-5, FN-6");
+    expect(result.content[0]?.text).toContain("Dependencies: active deps: FN-803, FN-807; resolved deps: FN-801 (done/resolved), FN-819 (archived/resolved)");
     expect(result.content[0]?.text).toContain("PROMPT.md:");
     expect(result.content[0]?.text).toContain("# Prompt body");
 

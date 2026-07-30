@@ -12320,10 +12320,7 @@ export class TaskExecutor {
       reviewAddressingActivated = true;
       // Check dependencies
       const allTasks = await this.store.listTasks({ slim: true, includeArchived: false });
-      const unmetDeps = task.dependencies.filter((depId) => {
-        const dep = allTasks.find((t) => t.id === depId);
-        return dep && dep.column !== "done" && dep.column !== "in-review" && dep.column !== "archived";
-      });
+      const unmetDeps = getUnmetSchedulingDependencies(task, allTasks);
 
       if (unmetDeps.length > 0) {
         executorLog.log(`${task.id} blocked by: ${unmetDeps.join(", ")} — deferring`);

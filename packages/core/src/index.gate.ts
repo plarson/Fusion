@@ -995,6 +995,7 @@ export type { PiExtensionEntry, PiExtensionSettings, PiExtensionSource } from ".
 export { canTransition, getValidTransitions, resolveDependencyOrder } from "./board.js";
 export { computeBlockerFanoutMap, BLOCKER_ESCALATION_COLUMNS, isStaleBlockedByBlocker } from "./blocker-fanout.js";
 export type { BlockerFanoutEntry, BlockerEscalation, ComputeBlockerFanoutOptions } from "./blocker-fanout.js";
+export * from "./dependency-status.js";
 export {
   computeCapacityRisk,
   DEFAULT_CAPACITY_RISK_TODO_THRESHOLD,

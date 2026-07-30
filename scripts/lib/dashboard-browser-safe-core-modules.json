@@ -61,6 +61,11 @@
       "verifiedAt": "2026-07-26"
     },
     {
+      "module": "dependency-status",
+      "reason": "2026-07-28: Dependency classification and labels are pure browser-safe task presentation logic; the only import is an erased Task type.",
+      "verifiedAt": "2026-07-28"
+    },
+    {
       "module": "live-agent-count",
       "reason": "2026-07-21: FN-8453 shares pure workflow-trait-based Running and Waiting predicates with dashboard capacity indicators; its dependency graph has no Node-only modules.",
       "verifiedAt": "2026-07-21"

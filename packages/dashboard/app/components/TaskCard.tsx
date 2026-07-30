@@ -13,6 +13,7 @@ import {
   TASK_PRIORITIES,
   getErrorMessage,
 } from "@fusion/core";
+import { classifyDependencyStatuses, formatDependencyStatusLabel } from "@fusion/core/dependency-status";
 import { resolveEffectiveAutoMerge } from "../../../core/src/task-merge";
 // FNXC:PlannerOversight 2026-07-04-00:00: the dashboard's vite alias for "@fusion/core"
 // resolves only to ../core/src/types.ts (see packages/dashboard/vite.config.ts), so this
@@ -613,6 +614,8 @@ interface TaskCardProps {
   disableDrag?: boolean;
   /** Downstream fan-out entry for this task, computed at board-level. */
   fanout?: BlockerFanoutEntry;
+  /** Board-visible tasks used to classify dependency badges as active vs resolved. */
+  dependencyTasks?: readonly Pick<Task, "id" | "column">[];
   /** Whether GitHub CLI auth is available for creating PRs from task cards. */
   prAuthAvailable?: boolean;
   /** Project default auto-merge setting; per-task overrides are applied via resolveEffectiveAutoMerge. */
@@ -676,6 +679,16 @@ function areTaskStepsEqual(previous: Task["steps"], next: Task["steps"]): boolea
 function areTaskDependenciesEqual(previous: string[], next: string[]): boolean {
   if (previous.length !== next.length) return false;
   return previous.every((dependency, index) => dependency === next[index]);
+}
+
+function areDependencyTasksEqual(
+  previous?: readonly Pick<Task, "id" | "column">[],
+  next?: readonly Pick<Task, "id" | "column">[],
+): boolean {
+  if (!previous && !next) return true;
+  if (!previous || !next) return false;
+  if (previous.length !== next.length) return false;
+  return previous.every((task, index) => task.id === next[index]?.id && task.column === next[index]?.column);
 }
 
 function areTaskWorkflowStepIdsEqual(previous?: string[], next?: string[]): boolean {
@@ -832,6 +845,7 @@ function areTaskCardPropsEqual(previous: TaskCardProps, next: TaskCardProps): bo
     previous.fanout?.escalation?.blockingAgeMs === next.fanout?.escalation?.blockingAgeMs &&
     areTaskDependenciesEqual(previous.fanout?.dependentIds ?? [], next.fanout?.dependentIds ?? []) &&
     areTaskDependenciesEqual(previous.fanout?.staleBlockedByDependentIds ?? [], next.fanout?.staleBlockedByDependentIds ?? []) &&
+    areDependencyTasksEqual(previous.dependencyTasks, next.dependencyTasks) &&
     previousTask.id === nextTask.id &&
     previousTask.title === nextTask.title &&
     previousTask.description === nextTask.description &&
@@ -976,6 +990,7 @@ function TaskCardComponent({
   lastFetchTimeMs,
   disableDrag,
   fanout,
+  dependencyTasks,
   prAuthAvailable,
   autoMergeEnabled = false,
   mergeStrategy = "direct",
@@ -2027,6 +2042,15 @@ function TaskCardComponent({
     return (next?.id ?? "todo") as ColumnId;
   }, [taskMoveColumns, task.column]);
   const shouldRenderActionRow = Boolean(onPromote) || showCreatePrQuickAction || showAddressPrFeedbackAction || showStartAction;
+  /*
+  FNXC:DependencyStatus 2026-06-26-07:17:
+  Classify each declared dependency (active vs done/archived/in-review vs missing) so the
+  card dependency badges render shared status labels instead of a raw id list. Falls back to
+  [task] when the board-visible dependencyTasks are unavailable so a lone card still renders.
+  */
+  const dependencyStatuses = useMemo(() => (
+    classifyDependencyStatuses(task.dependencies ?? [], dependencyTasks ?? [task]).statuses
+  ), [dependencyTasks, task]);
 
   const enterEditMode = useCallback((e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -3997,16 +4021,22 @@ function TaskCardComponent({
         <div className="card-meta">
           {task.dependencies && task.dependencies.length > 0 && (
             <div className="card-dep-list">
-              {task.dependencies.map((depId) => (
-                <span
-                  key={depId}
-                  className="card-dep-badge clickable"
-                  onClick={(e) => void handleDepClick(e, depId)}
-                  title={t("tasks.viewDependency", "Click to view {{depId}}", { depId })}
-                >
-                  <Link size={12} style={{ verticalAlign: "middle" }} /> {depId}
-                </span>
-              ))}
+              {dependencyStatuses.map((status) => {
+                const statusLabel = formatDependencyStatusLabel(status);
+                const isActive = status.kind === "active";
+                return (
+                  <span
+                    key={status.id}
+                    className="card-dep-badge clickable"
+                    onClick={(e) => void handleDepClick(e, status.id)}
+                    title={isActive
+                      ? t("tasks.viewActiveDependency", "Click to view active blocker {{depId}}", { depId: status.id })
+                      : t("tasks.viewHistoricalDependency", "Click to view resolved dependency metadata {{depId}}", { depId: status.id })}
+                  >
+                    <Link size={12} style={{ verticalAlign: "middle" }} /> {statusLabel}
+                  </span>
+                );
+              })}
             </div>
           )}
           {(task.overlapBlockedBy || task.blockedBy) && (

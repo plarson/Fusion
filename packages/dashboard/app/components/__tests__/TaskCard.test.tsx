@@ -7232,6 +7232,27 @@ describe("TaskCard memo comparator provenance behavior", () => {
     ).toBe(false);
   });
 
+  it("returns false when dependency task status changes", () => {
+    const task = makeTask({ dependencies: ["FN-002"] });
+
+    expect(
+      __test_areTaskCardPropsEqual(
+        {
+          task,
+          onOpenDetail: noop,
+          addToast: noop,
+          dependencyTasks: [makeTask({ id: "FN-002", column: "todo" })],
+        } as any,
+        {
+          task,
+          onOpenDetail: noop,
+          addToast: noop,
+          dependencyTasks: [makeTask({ id: "FN-002", column: "done" })],
+        } as any,
+      ),
+    ).toBe(false);
+  });
+
   it("returns false when board context-menu action handlers change", () => {
     const task = makeTask();
     const actionHandler = vi.fn();
@@ -8047,6 +8068,36 @@ describe("TaskCard custom field badges (U13/KTD-14)", () => {
     );
     expect(screen.queryByTestId("card-field-badges")).toBeNull();
   });
+  it("labels dependency badges as active or resolved from board task status", () => {
+    const task = makeTask({
+      id: "FN-823",
+      column: "todo",
+      dependencies: ["FN-801", "FN-803", "FN-819", "FN-807"],
+      blockedBy: "FN-803",
+    });
+
+    render(
+      <TaskCard
+        task={task}
+        dependencyTasks={[
+          makeTask({ id: "FN-801", column: "done" }),
+          makeTask({ id: "FN-803", column: "todo" }),
+          makeTask({ id: "FN-819", column: "archived" }),
+          makeTask({ id: "FN-807", column: "in-progress" }),
+        ]}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    const badges = Array.from(document.querySelectorAll(".card-dep-badge")).map((badge) => badge.textContent ?? "");
+    expect(badges.some((text) => text.includes("FN-803"))).toBe(true);
+    expect(badges.some((text) => text.includes("FN-807"))).toBe(true);
+    expect(badges.some((text) => text.includes("FN-801") && text.includes("done/resolved"))).toBe(true);
+    expect(badges.some((text) => text.includes("FN-819") && text.includes("archived/resolved"))).toBe(true);
+    expect(screen.queryByText(/not current blocker/)).toBeNull();
+  });
+
 });
 
 /*

@@ -141,6 +141,7 @@ export default defineConfig({
       Ordered before the `@fusion/core` entry because Vite matches aliases in order and the broader key would otherwise swallow this subpath — the exact failure this line was added to fix (`"FUSION_CLIENT_HEADER" is not exported by ../core/src/types.ts`).
       */
       "@fusion/core/task-delete-attribution": resolve(__dirname, "../core/src/task-delete-attribution.ts"),
+      "@fusion/core/dependency-status": resolve(__dirname, "../core/src/dependency-status.ts"),
       "@fusion/core/detect-content-language": resolve(__dirname, "../core/src/detect-content-language.ts"),
       "@fusion/core": resolve(__dirname, "../core/src/types.ts"),
       "@fusion/dashboard/app/components/TaskCard": resolve(__dirname, "app/components/TaskCard.tsx"),

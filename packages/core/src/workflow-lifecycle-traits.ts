@@ -34,6 +34,57 @@ function columnsOf(ir: WorkflowIr): WorkflowIrColumn[] {
  * trait→columnIds expansion. Deterministic (declared column order). Empty for a
  * column-less IR or when no column carries the flag.
  */
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-30-21:15 (a DECLARATION is not a GUARD — I conflated them and
+published the mistake, so it is written down here):
+
+The census counts COMPARISONS against a legacy column id. It does not count a workflow DECLARING a
+column with that id, and the two answer different questions:
+
+    triage column guards in the tree            0     (no code compares against the literal)
+    `triage` declared by the default lineage    yes   (builtin-coding-workflow-ir.ts:49, the intake lane)
+
+Both are true at once. "The backlog reached zero for `triage`" means nothing in the code branches on
+that NAME any more; it does not mean the column stopped existing, and a reader who takes it that way
+will conclude a resolver's `?? "triage"` fallback is dead when it is the default board's actual intake
+answer.
+
+I asserted the stronger version in a review audit and it was wrong. One grep of
+`builtin-coding-workflow-ir.ts` would have caught it, which is the cheap check worth doing before any
+claim about what a lineage contains.
+*/
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-30-19:20 (an EMPTY result has TWO meanings — measured, not assumed):
+
+Everything below returns nothing for a column set that carries no traits, and there are two very
+different reasons a board can look like that:
+
+  DECLARED AND EMPTY   a v2 workflow the operator wrote that genuinely has no complete lane. "No such
+                       lane" is the right answer, and a guard should act on it.
+
+  SYNTHESIZED          a v1 graph upgraded to v2. `synthesizeDefaultColumns` (workflow-ir.ts) emits
+                       `{ id, name: id, traits: [] }` for the five default ids — placement only, by
+                       design, with the real trait set living in BUILTIN_CODING_WORKFLOW_IR. Those
+                       columns ARE the legacy lanes; the traits were simply never expressed.
+
+MEASURED on such an IR:
+    resolveLifecycleColumns  ->  {}                      (every role undefined)
+    resolveReviewColumns     ->  []
+    columnsWithFlag(wip)     ->  []
+    resolveTerminalColumns   ->  ["done","archived"]     (its own legacy fallback saves it)
+
+CONSEQUENCE FOR CONVERTED GUARDS. A consumer that reads "resolved and empty" as "this board declares
+no such lane" is CORRECT for the first case and WRONG for the second — on a v1-upgraded board it
+withdraws every role at once. Callers that kept a `length > 0 ? resolved : legacy` guard are unaffected.
+
+I introduced that reading deliberately in #2731/#2733/#2734 to fix the opposite bug (a legacy fallback
+masking a genuinely absent lane), and it is right for hand-written v2. This note exists because it is
+NOT right for the upgrade path, and the difference is invisible at the call site — both arrive here as
+an empty array.
+
+The root fix would be for the upgrade to carry the real traits rather than placeholders; that changes
+behaviour for every persisted v1 workflow, so it is flagged here rather than made in passing.
+*/
 export function columnsWithFlag(ir: WorkflowIr, flag: keyof TraitFlags): string[] {
   const registry = getTraitRegistry();
   return columnsOf(ir)

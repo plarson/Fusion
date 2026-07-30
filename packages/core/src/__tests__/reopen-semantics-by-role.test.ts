@@ -30,7 +30,10 @@ import { __resetTraitRegistryForTests } from "../trait-registry.js";
 import { registerBuiltinTraits } from "../builtin-traits.js";
 import {
   __resetDefaultWorkflowHooksForTests,
+  applyCompletionTimingEffects,
   applyDefaultWorkflowMoveEffects,
+  applyInReviewEnterEffects,
+  applyTimingEffects,
   isReopenIntoPlanning,
   registerDefaultWorkflowHooks,
   type DefaultWorkflowMoveContext,
@@ -239,5 +242,202 @@ describe("the store's reopen check and the hooks' cannot disagree", () => {
       "shipped->backlog",
       "shipped->queued",
     ]);
+  });
+});
+
+/*
+FNXC:WorkflowResolvedColumns 2026-07-31-04:40 (fleet phase — the same safety argument, applied to TIMING):
+The header of this file explains why the reopen predicates had to stop naming the default lineage: these
+hooks run on the flag-ON path for EVERY workflow, because the trait registry resolves each hook by trait
+id, not by workflow. The timing, completion and in-review hooks had the same defect and were not part of
+that conversion.
+
+What it costs on a renamed board, none of it throwing:
+  - `applyTimingEffects` accrues `cumulativeActiveMs` while a card sits in the WIP lane. With the lane
+    named, the exit test never fires, so NO active time is accrued and every duration display —
+    `productivity-analytics.ts`, `task-timing.ts` — reads zero.
+  - `applyCompletionTimingEffects` never stamps `executionCompletedAt`, so a finished card looks
+    unfinished to anything reading that field.
+  - `applyInReviewEnterEffects` returns early, so the recovery counters it clears stay set.
+
+THE HOOKS ARE CALLED DIRECTLY here, not through `applyDefaultWorkflowMoveEffects`. I wrote it through the
+dispatcher first and all three cases failed on the DEFAULT lineage too: the dispatcher resolves hooks by
+TRAIT, and neither test IR declares the `timing` trait, so those hooks never ran at all. Going through the
+dispatcher would have tested the trait registry's wiring, not this conversion — and would have looked like
+a conversion bug.
+
+REVERT CHECK, measured (all three run): restoring the `in-progress` literals leaves `cumulativeActiveMs`
+undefined on the renamed board; restoring the `done` literal leaves `executionCompletedAt` unset;
+restoring the `in-review` literal leaves `recoveryRetryCount` at 3. Every case runs on BOTH lineages, and
+the default one passes either way — which is the point of running it.
+*/
+describe("timing, completion and in-review effects are keyed on ROLES", () => {
+  const LINEAGES = [
+    { label: "default", ir: DEFAULT_IR, wip: "in-progress", review: "in-review", complete: "done" },
+    { label: "renamed", ir: RENAMED_IR, wip: "building", review: "checking", complete: "shipped" },
+  ] as const;
+
+  it("accrues active time leaving the WIP lane on both lineages", () => {
+    for (const { label, ir, wip, review } of LINEAGES) {
+      const ctx = makeCtx(ir, wip, review, {
+        task: {
+          id: "FN-2",
+          column: review,
+          columnMovedAt: "2026-07-30T00:05:00.000Z",
+          executionStartedAt: "2026-07-30T00:00:00.000Z",
+          steps: [],
+          dependencies: [],
+          workflowStepResults: [],
+        } as unknown as Task,
+      });
+      applyTimingEffects(ctx);
+      expect(ctx.task.cumulativeActiveMs, `${label} lineage accrued no active time`).toBe(5 * 60_000);
+    }
+  });
+
+  it("stamps executionCompletedAt on entry to the complete lane on both lineages", () => {
+    for (const { label, ir, review, complete } of LINEAGES) {
+      const ctx = makeCtx(ir, review, complete);
+      applyCompletionTimingEffects(ctx);
+      expect(ctx.task.executionCompletedAt, `${label} lineage did not stamp completion`).toBe(
+        ctx.task.columnMovedAt,
+      );
+    }
+  });
+
+  it("clears the recovery counters on entry to the review lane on both lineages", () => {
+    for (const { label, ir, wip, review } of LINEAGES) {
+      const ctx = makeCtx(ir, wip, review, {
+        task: {
+          id: "FN-3",
+          column: review,
+          columnMovedAt: "2026-07-30T00:00:00.000Z",
+          recoveryRetryCount: 3,
+          steps: [],
+          dependencies: [],
+          workflowStepResults: [],
+        } as unknown as Task,
+      });
+      applyInReviewEnterEffects(ctx);
+      expect(ctx.task.recoveryRetryCount, `${label} lineage kept its recovery counter`).toBeUndefined();
+    }
+  });
+});
+
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-30-09:05 (PR #2734 review — greptile):
+SECONDARY LANES. `LifecycleColumns` names one column per role by design (#2721 pinned that), so a
+workflow declaring `countsTowardWip` on two columns had a second WIP lane the hooks did not recognise.
+
+The timing consequence is the concrete one: a move BETWEEN two WIP lanes looked like an exit from WIP
+followed by a re-entry, so `cumulativeActiveMs` closed and reopened a segment the card never left.
+*/
+describe("timing hooks honour EVERY lane carrying the role", () => {
+  const ctx = (fromColumn: string, toColumn: string, sets?: { wip?: readonly string[] }) => {
+    const task = {
+      id: "FN-1",
+      columnMovedAt: "2026-07-30T10:00:00.000Z",
+      executionStartedAt: "2026-07-30T09:00:00.000Z",
+      cumulativeActiveMs: 0,
+    } as never as { cumulativeActiveMs?: number };
+    return {
+      task,
+      ctx: {
+        task,
+        fromColumn,
+        toColumn,
+        movedAt: "2026-07-30T10:00:00.000Z",
+        lifecycleColumns: { wip: "building", complete: "shipped" },
+        lifecycleColumnSets: sets,
+        resetSteps: () => {},
+      } as never,
+    };
+  };
+
+  it("does NOT close the active segment when a card moves between two WIP lanes", () => {
+    const { task, ctx: c } = ctx("building", "building-two", { wip: ["building", "building-two"] });
+
+    applyTimingEffects(c);
+
+    // Still inside WIP, so no segment was accrued on the way out.
+    expect(task.cumulativeActiveMs).toBe(0);
+  });
+
+  it("DOES close it when the card genuinely leaves every WIP lane", () => {
+    const { task, ctx: c } = ctx("building", "signoff", { wip: ["building", "building-two"] });
+
+    applyTimingEffects(c);
+
+    expect(task.cumulativeActiveMs).toBeGreaterThan(0);
+  });
+
+  it("runs the review enter-effects for a humanReview-ONLY lane", () => {
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-30-15:10 (PR #2734 review — greptile, on my own code):
+    The producer built this set from `mergeOrchestration` alone, so a workflow hosting review on a
+    `humanReview`- or `mergeBlocker`-only lane skipped `applyInReviewEnterEffects` entirely — the
+    recovery counters it clears stayed set for a card plainly in review.
+
+    Fixed by using core's `resolveReviewColumns` (#2730) rather than a fifth inline union. That is the
+    BROAD set, which is right here: these hooks ASK the question and move nothing on the answer. A
+    caller that admits and then MOVES wants the narrow single lane — #2750 documents the split.
+    */
+    const task = {
+      id: "FN-HR",
+      column: "signoff",
+      columnMovedAt: "2026-07-30T00:00:00.000Z",
+      recoveryRetryCount: 3,
+      steps: [],
+      dependencies: [],
+      workflowStepResults: [],
+    } as unknown as Task;
+
+    applyInReviewEnterEffects({
+      task,
+      fromColumn: "building",
+      toColumn: "signoff",
+      movedAt: "2026-07-30T00:00:00.000Z",
+      lifecycleColumns: { wip: "building" },
+      lifecycleColumnSets: { review: ["signoff"] },
+      resetSteps: () => {},
+    } as never);
+
+    expect(task.recoveryRetryCount).toBeUndefined();
+  });
+
+  it("treats an EMPTY set as 'no lane carries this role', not as a missing answer", () => {
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-30-10:40 (PR #2734 review — greptile):
+    `lifecycleColumnSets` is populated only when the caller resolved an IR, so an empty array means the
+    board was READ and declares no WIP lane. The first version guarded on `length > 0` and fell back to
+    the singular id and then the legacy name, so a traitless column merely NAMED `in-progress` accrued
+    timing as though it were the WIP lane.
+
+    Undefined means "could not read"; empty means "read, and the answer is none". Same distinction as
+    #2731's `?? {}` and #2733's refusal to invent a complete column — which I applied in both of those
+    and then got wrong here.
+    */
+    const { task, ctx: c } = ctx("in-progress", "signoff", { wip: [] });
+    /*
+    The singular role must be ABSENT for this to discriminate. With `lifecycleColumns.wip` set, the
+    buggy fallback lands on that name and answers false anyway — my first version of this case did
+    exactly that and passed with the defect in place. Only when the singular is absent does the bug
+    reach the LEGACY name and treat a traitless `in-progress` column as WIP.
+    */
+    (c as unknown as { lifecycleColumns: Record<string, unknown> }).lifecycleColumns = { complete: "shipped" };
+
+    applyTimingEffects(c);
+
+    // No WIP lane exists, so leaving `in-progress` is not leaving WIP and nothing accrues.
+    expect(task.cumulativeActiveMs).toBe(0);
+  });
+
+  it("falls back to the singular role when no set is supplied", () => {
+    /* Additive: a caller that does not pass sets keeps exactly the previous behaviour. */
+    const { task, ctx: c } = ctx("building", "signoff");
+
+    applyTimingEffects(c);
+
+    expect(task.cumulativeActiveMs).toBeGreaterThan(0);
   });
 });

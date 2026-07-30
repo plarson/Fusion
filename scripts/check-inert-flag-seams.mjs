@@ -101,13 +101,6 @@ const ALLOWED_OMISSIONS = new Map([
       + "wrapper; the two moves.ts callers supply. So the automatic handoff-to-review path resolves "
       + "the review column and the manual re-enqueue path does not." },
   ],
-  [
-    "packages/core/src/task-store/branch-group-ops.ts::isNearDuplicateCanonicalInactive",
-    { count: 1, reason: "TEMPORARY: core-owned; reported on #2783. Unlike the TaskDetailModal site this one is genuinely "
-      + "wireable — `clearNearDuplicateReferencesToImpl` is async and already holds `store` and "
-      + "`canonicalId`, so the canonical's own flags are one await away. Its five sibling call sites "
-      + "already supply, so on a renamed board this is the single path that answers from legacy ids." },
-  ],
 ]);
 
 /*

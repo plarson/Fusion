@@ -32,6 +32,7 @@ export default defineConfig({
       transitively — this project aliases `@fusion/dashboard`, and `app/api/client.ts` imports the
       browser-safe delete-attribution leaf.
       */
+      "@fusion/core/dependency-status": fileURLToPath(new URL("../../packages/core/src/dependency-status.ts", import.meta.url)),
       "@fusion/core/task-delete-attribution": fileURLToPath(new URL("../../packages/core/src/task-delete-attribution.ts", import.meta.url)),
       "@fusion/core": fileURLToPath(new URL("../../packages/core/src/index.ts", import.meta.url)),
       "@fusion/plugin-sdk": fileURLToPath(new URL("../../packages/plugin-sdk/src/index.ts", import.meta.url)),

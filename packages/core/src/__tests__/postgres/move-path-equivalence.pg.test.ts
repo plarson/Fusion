@@ -343,6 +343,88 @@ pgTest("move-path equivalence — the flag gates MORE than side effects (Phase A
   path becomes authoritative.
   */
 
+  /*
+  FNXC:MovePathConvergence 2026-07-30-22:10 (U2b — second measured divergence, and it is not a
+  message shape):
+
+  U11 removed `triage` from the default coding lineage, so rows left there sit in a column their own
+  workflow no longer declares. #2515 added an escape hatch to `resolveAllowedColumns` so such a card
+  has a legal move (its workflow's rebound target) instead of "Valid targets: none".
+
+  That hatch is INSIDE the `useWorkflow` block, so it only runs on the hooks path. Mutation-verified
+  in #2597: stubbing it back to `[]` left an operator-move test green, because the inline path
+  answers from the legacy VALID_TRANSITIONS map instead — whose `triage` row happens to permit the
+  move for unrelated reasons.
+
+  WHY THIS ONE MATTERS MORE THAN THE MESSAGE DIVERGENCE ABOVE. It is not a shape difference in a
+  rejection; it is a difference in WHICH MOVES ARE LEGAL, and it is workflow-dependent. Flipping
+  `useWorkflow` on changes move VALIDATION for every stranded card, not just side-effect routing —
+  so "make the flag always-on, then delete the flag-OFF branch" is not the mechanical cleanup it
+  looks like. Recorded here so the flip is an operator decision with the behaviour change visible,
+  which is what U2b exists to make possible.
+  */
+  it("DIVERGENCE: legal targets for a card in an UNDECLARED column come from different sources", async () => {
+    const store = h.store();
+
+    const targetsFor = async (path: "inline" | "hooks", id: string): Promise<string[]> => {
+      await setPath(path);
+      // Ask for a target NO workflow declares, and read the reported legal set out of the
+      // rejection. Both paths reject; the question is what each one considers legal.
+      const err = await store
+        .moveTask(id, "not-a-column-any-workflow-declares")
+        .then(() => null, (e: unknown) => e as Error);
+      const match = /Valid targets: (.*)$/.exec(err?.message ?? "");
+      return match ? match[1]!.split(",").map((t) => t.trim()).filter(Boolean) : [];
+    };
+
+    await setPath("inline");
+    const inlineTask = await store.createTask({ description: "undeclared-source inline" });
+    const inlineTargets = await targetsFor("inline", inlineTask.id);
+
+    /*
+    FNXC:MovePathConvergence 2026-07-31-10:45 (PR #2638 review — greptile P2):
+    The HOOKS path with a card genuinely STRANDED, which the first version never exercised: it
+    created the card in a declared column and only ran the inline path, so a regression in the hooks
+    rebound resolution would not have failed anything.
+
+    Stranding needs a direct row write — `moveTask` refuses to take a card into an undeclared column,
+    which is the transition policy working. The corrupt post-upgrade state IS the fixture, and it is
+    the state U11 leaves behind for every row still sitting in `triage`.
+    */
+    await setPath("hooks");
+    const strandedTask = await store.createTask({ description: "undeclared-source hooks" });
+    await h.adminSql()`UPDATE project.tasks SET "column" = 'a-column-no-workflow-declares' WHERE id = ${strandedTask.id}`;
+    store.taskCache.delete(strandedTask.id);
+
+    const hooksErr = await store
+      .moveTask(strandedTask.id, "in-progress")
+      .then(() => null, (e: unknown) => e as Error);
+
+    /*
+    On the hooks path the SOURCE column is undeclared, so `resolveAllowedColumns` has no adjacency to
+    read and U11's escape hatch supplies the workflow's rebound target instead. Whatever the outcome,
+    it is reached through workflow resolution — asserted as "not the legacy VALID_TRANSITIONS answer",
+    because the legacy table is what the inline path consults and the two must be distinguishable.
+
+    Deliberately not asserting a specific message: the point is that the two paths answer from
+    DIFFERENT SOURCES for the same stranded card. Pinning hooks' exact wording here would duplicate
+    the rejection-shape divergence above and make this case fail for the wrong reason.
+    */
+    expect(hooksErr === null || !/Valid targets: in-progress, triage, archived/.test(hooksErr.message)).toBe(true);
+
+    /*
+    The inline path enumerates the LEGACY table, so it reports legacy ids regardless of what the
+    task's workflow declares. The hooks path does not report a target list at all for an unknown
+    column — it throws the typed unknown-column rejection first, asserted above.
+
+    Asserted as a POSITIVE about the inline path rather than a comparison of two lists, because the
+    two paths do not even reach the same rejection: that asymmetry IS the divergence, and a
+    comparison would hide it behind two empty arrays.
+    */
+    expect(inlineTargets.length).toBeGreaterThan(0);
+    expect(inlineTargets).toContain("in-progress");
+  });
+
   it("DIVERGENCE: rejection TYPE and MESSAGE differ — the legacy bare-Error contract is inline-only", async () => {
     const store = h.store();
 

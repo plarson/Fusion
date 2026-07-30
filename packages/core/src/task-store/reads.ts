@@ -163,6 +163,7 @@ async function resolveReviewColumnForTask(
   }
 }
 
+
 export async function getTaskImpl(store: TaskStore, id: string, options?: { activityLogLimit?: number; includeDeleted?: boolean }): Promise<TaskDetail> {
     return store.withTaskLock(id, async () => {
       // FNXC:RuntimePersistenceAsync 2026-06-24-10:50:
@@ -559,11 +560,13 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
     apply to any row, so this resolves for every row on the page.
     */
     const reviewColumnByTaskId = new Map<string, string>();
+    const lifecycleByTaskId = new Map<string, Awaited<ReturnType<typeof resolveTaskLifecycleColumns>>>();
     {
       const irCache = new Map<string, WorkflowIr>();
       for (const pgRow of pageRows) {
         const row = store.pgRowToTaskRow(pgRow);
         reviewColumnByTaskId.set(row.id, await resolveReviewColumnForTask(store, row.id, irCache));
+        lifecycleByTaskId.set(row.id, await resolveTaskLifecycleColumns(store, row.id, irCache));
         if (store.rowToTask(row).paused !== true) continue;
         holdColumnByTaskId.set(row.id, await resolveHoldColumnForTask(store, row.id, irCache));
       }
@@ -618,6 +621,20 @@ export async function listTasksModifiedSinceImpl(store: TaskStore, since: string
           task.ageStaleness = getTaskAgeStalenessSignal(task, {
             now,
             thresholds: staleThresholds,
+            /*
+            FNXC:WorkflowLifecycleColumns 2026-07-31-09:00 (fleet — the omitted sibling site):
+            THE MODIFIED-SINCE PASS NEEDS THE LANES TOO. #2746 threaded `lifecycle` into the list
+            pass above and left this one on the defaults, so a renamed board still produced no
+            age-staleness badge for any card arriving through the incremental refresh — which is the
+            path a live board actually uses after first load.
+
+            This is the third occurrence of one specific mistake in this one file: the helper gains a
+            resolved-role parameter and one of the two hydration sites is missed. The notes above
+            record it for `holdColumn` (PR #2470) and then for `reviewColumn` ("same defect, same
+            file, one role over"). Pinned now by reads-age-staleness-lane-hydration.test.ts, which
+            asserts BOTH sites pass it rather than trusting the next reader to notice.
+            */
+            lifecycle: lifecycleByTaskId.get(task.id),
             engineActiveSinceMs: settings.engineActiveSinceMs,
             engineActivationGraceMs: settings.engineActivationGraceMs,
           });

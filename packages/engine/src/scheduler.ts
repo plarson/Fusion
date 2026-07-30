@@ -41,7 +41,7 @@ import { StaleTaskReporter } from "./stale-task-reporter.js";
 import { BacklogPressureReporter } from "./backlog-pressure-reporter.js";
 import { UnlinkedMissionsAdvisoryReporter } from "./unlinked-missions-advisory-reporter.js";
 import { createRunAuditor, generateSyntheticRunId } from "./run-audit.js";
-import { resolveWorkflowIrForTask, resolveWorkflowIrById, resolveColumnFlags, resolveWorktreeCapacityLimit, resolveLifecycleColumns, isWipColumnRole } from "@fusion/core";
+import { resolveWorkflowIrForTask, resolveWorkflowIrById, resolveColumnFlags, resolveWorktreeCapacityLimit, resolveLifecycleColumns, isWipColumnRole, isReviewColumnRole, isCompleteColumnRole, columnsWithFlag } from "@fusion/core";
 import type { ColumnRoleTraitFlags } from "@fusion/core";
 import type { WorkflowIr, WorkflowIrV2 } from "@fusion/core";
 import { runHoldReleaseSweep, isUnplannedForExecution, type SlotReservation } from "./hold-release.js";
@@ -229,14 +229,94 @@ export function isCoordinationOnlyTask(task: Task, scope: string[]): boolean {
   return isCoordinationSafeScope(scope);
 }
 
-function isLegacyDependencySatisfied(dep: Task | undefined): boolean {
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-30-19:05 (fleet — scheduler dependency satisfaction):
+A dependency's satisfaction is decided on ITS OWN board, because a dependency edge may cross
+workflows: the dependent can sit on the default board while the dependency lives on a renamed one.
+
+THE TWO RULES THIS FILE ALREADY HAD, PRESERVED EXACTLY:
+  legacy (live)   satisfied = COMPLETE or ARCHIVED or the REVIEW lane (mergeBlocker/humanReview)
+  marker (shadow) satisfied = COMPLETE or ARCHIVED, else the handoff marker decides
+
+They genuinely differ on the review lane, and the conversion does NOT reconcile them — that is a
+product decision, not a vocabulary one. See the PR body: #2720 settled "satisfied = complete or
+archived" for `update-task-deps.ts`, which matches the MARKER rule, so the live legacy rule here is
+the broader of the two. Narrowing it silently would strand every dependent of an in-review card.
+
+`columns` is resolved per dependency and passed in by the caller. Omitted (or absent for a given
+dependency) → the aggregate's legacy dependency-status classifier, so unconverted callers retain
+its reviewed compatibility semantics while workflow-aware callers use per-task role authority.
+*/
+export interface DependencySatisfactionColumns {
+  /** COMPLETE ∪ ARCHIVED for the dependency's own workflow. */
+  terminal: ReadonlySet<string>;
+  /** The dependency's own review lane (mergeBlocker ∪ humanReview). */
+  review: ReadonlySet<string>;
+}
+
+/*
+DELIBERATE-LITERAL — the no-metadata fallback, reviewed 2026-07-30-20:40.
+Resolved columns win when present; the literal answers only when the caller could not resolve the
+dependency's workflow at all. DELETING it does not "finish the conversion" — it makes an
+unresolvable workflow read as `terminal.size === 0`, i.e. NEVER satisfied, which blocks every
+dependent forever. That is strictly worse than the legacy behaviour it would replace.
+*/
+function isTerminalDependencyColumn(dep: Task, columns: DependencySatisfactionColumns | undefined): boolean {
+  if (columns) return columns.terminal.has(dep.column);
+  return dep.column === "done" || dep.column === "archived";
+}
+
+/*
+The aggregate's dependency-status helper is the legacy fallback for callers without per-task workflow metadata.
+Workflow-aware callers take the branches above, so their own terminal/review roles remain authoritative.
+*/
+function isLegacyDependencySatisfied(dep: Task | undefined, columns?: DependencySatisfactionColumns): boolean {
+  if (!dep) return false;
+  if (isTerminalDependencyColumn(dep, columns)) return true;
+  if (columns) return columns.review.has(dep.column);
   return isDependencySchedulingSatisfied(dep);
 }
 
-function isMarkerDependencySatisfied(dep: Task | undefined, markerAccepted: boolean): boolean {
+function isMarkerDependencySatisfied(
+  dep: Task | undefined,
+  markerAccepted: boolean,
+  columns?: DependencySatisfactionColumns,
+): boolean {
   if (!dep) return false;
-  if (dep.column === "done" || dep.column === "archived") return true;
+  if (isTerminalDependencyColumn(dep, columns)) return true;
   return markerAccepted;
+}
+
+/**
+ * FNXC:WorkflowLifecycleColumns 2026-07-30-19:05:
+ * Build the per-dependency column vocabulary for {@link getUnmetSchedulingDependencies}.
+ *
+ * `cache` is caller-owned for the reason documented on `resolveTaskLifecycleColumns`: a sweep over
+ * many dependents spanning three workflows must read three IRs, not one per dependency. A
+ * dependency whose workflow cannot be resolved is simply OMITTED from the map, which lands that
+ * dependency on the literal fallback rather than on an empty set (an empty set would read as
+ * "never satisfied" and block the dependent forever — the expensive direction to be wrong in).
+ */
+export async function resolveDependencySatisfactionColumns(
+  store: Parameters<typeof resolveWorkflowIrForTask>[0],
+  dependencies: readonly Task[],
+  cache?: Map<string, WorkflowIr>,
+): Promise<Map<string, DependencySatisfactionColumns>> {
+  const resolved = new Map<string, DependencySatisfactionColumns>();
+  const irCache = cache ?? new Map<string, WorkflowIr>();
+  for (const dep of dependencies) {
+    try {
+      const ir = await resolveWorkflowIrForTask(store, dep.id, irCache);
+      if (!ir) continue;
+      const terminal = new Set([...columnsWithFlag(ir, "complete"), ...columnsWithFlag(ir, "archived")]);
+      const review = new Set([...columnsWithFlag(ir, "mergeBlocker"), ...columnsWithFlag(ir, "humanReview")]);
+      if (terminal.size === 0 && review.size === 0) continue;
+      resolved.set(dep.id, { terminal, review });
+    } catch {
+      // Unresolvable workflow: leave it unmapped so this dependency keeps the legacy literals.
+    }
+  }
+  return resolved;
 }
 
 export function computeShadowLeaseParityState(mergeRequestState: string | null): {
@@ -270,6 +350,11 @@ export function getUnmetSchedulingDependencies(
   options?: {
     markerAcceptedByTaskId?: Map<string, boolean>;
     onParityDiff?: (diff: SchedulingDependencyParityDiff) => void;
+    /**
+     * Per-dependency resolved column vocabulary from
+     * {@link resolveDependencySatisfactionColumns}. Omitted → the legacy literals.
+     */
+    satisfactionColumnsByTaskId?: Map<string, DependencySatisfactionColumns>;
   },
 ): string[] {
   const unmet: string[] = [];
@@ -280,8 +365,13 @@ export function getUnmetSchedulingDependencies(
     seen.add(depId);
     const dep = tasks.find((candidate) => candidate.id === depId);
     if (!dep) continue;
-    const legacySatisfied = isLegacyDependencySatisfied(dep);
-    const markerSatisfied = isMarkerDependencySatisfied(dep, options?.markerAcceptedByTaskId?.get(depId) === true);
+    const satisfactionColumns = options?.satisfactionColumnsByTaskId?.get(depId);
+    const legacySatisfied = isLegacyDependencySatisfied(dep, satisfactionColumns);
+    const markerSatisfied = isMarkerDependencySatisfied(
+      dep,
+      options?.markerAcceptedByTaskId?.get(depId) === true,
+      satisfactionColumns,
+    );
     if (options?.onParityDiff && legacySatisfied !== markerSatisfied) {
       options.onParityDiff({
         taskId: task.id,
@@ -364,7 +454,15 @@ export function shouldHoldActiveFileScopeLease(
   scheduler-renamed-wip-file-scope-lease.test.ts.
   */
   if (task.paused || task.userPaused) return false;
+  /*
+  DELIBERATE-LITERAL — the documented default for an unconverted caller, reviewed 2026-07-30-20:40.
+  Both scheduler call sites now pass the resolved answer, so these defaults are dead on the
+  scheduler's own path; they exist for the self-healing / repair callers this predicate is shared
+  with. Removing them would silently change those callers' meaning, which is the coupling the
+  optional-parameter shape exists to avoid.
+  */
   const isWipColumn = options?.isWipColumn ?? task.column === "in-progress";
+  /* DELIBERATE-LITERAL — the review half of the same shared-caller default. */
   const isReviewColumn = options?.isReviewColumn ?? task.column === "in-review";
   if (isWipColumn) {
     return getUnmetSchedulingDependencies(task, tasks, options?.schedulingDependencyOptions).length === 0;
@@ -876,6 +974,8 @@ export class Scheduler {
           const settings = await this.store.getSettings();
           if (!settings.globalPause && !settings.enginePaused) {
             const todoTasks = await this.store.listTasks({ column: parked.hold, slim: true });
+            /* One IR cache for the whole reconciliation, per the caller-owned-cache contract. */
+            const dependencySatisfactionIrCache = new Map<string, WorkflowIr>();
             for (const dependent of todoTasks) {
               const mentionsCompletedTask = dependent.dependencies.includes(task.id);
               const currentlyBlockedByCompletedTask = dependent.blockedBy === task.id;
@@ -891,17 +991,25 @@ export class Scheduler {
               const dependencyTasks = (await Promise.all(
                 dependent.dependencies.map((dependencyId) => this.store.getTask(dependencyId).catch(() => null)),
               )).filter((candidate) => candidate !== null);
+              const satisfactionColumnsByTaskId = await resolveDependencySatisfactionColumns(
+                this.store,
+                [task, ...dependencyTasks],
+                dependencySatisfactionIrCache,
+              );
               const unresolvedDeps = getUnmetSchedulingDependencies(
                 dependent,
                 [dependent, task, ...dependencyTasks],
-                markerAcceptedByTaskId
-                  ? {
-                    markerAcceptedByTaskId,
-                    onParityDiff: (diff) => {
-                      this.emitDependencyParityDiff(diff);
-                    },
-                  }
-                  : undefined,
+                {
+                  satisfactionColumnsByTaskId,
+                  ...(markerAcceptedByTaskId
+                    ? {
+                      markerAcceptedByTaskId,
+                      onParityDiff: (diff: SchedulingDependencyParityDiff) => {
+                        this.emitDependencyParityDiff(diff);
+                      },
+                    }
+                    : {}),
+                },
               );
 
               try {
@@ -1091,6 +1199,8 @@ export class Scheduler {
           const todoTasks = await this.store.listTasks({ column: deletedParked.hold, slim: true });
           const inProgressTasks = await this.store.listTasks({ column: "in-progress", slim: true });
           const dependents = [...todoTasks, ...inProgressTasks];
+          /* One IR cache for the whole reconciliation, per the caller-owned-cache contract. */
+          const deletedDependencyIrCache = new Map<string, WorkflowIr>();
 
           for (const dependent of dependents) {
             const mentionsDeletedTask = dependent.dependencies.includes(task.id);
@@ -1103,17 +1213,25 @@ export class Scheduler {
             const dependencyTasks = (await Promise.all(
               dependent.dependencies.map((dependencyId) => this.store.getTask(dependencyId).catch(() => null)),
             )).filter((candidate) => candidate !== null);
+            const satisfactionColumnsByTaskId = await resolveDependencySatisfactionColumns(
+              this.store,
+              dependencyTasks,
+              deletedDependencyIrCache,
+            );
             const unresolvedDeps = getUnmetSchedulingDependencies(
               dependent,
               [dependent, ...dependencyTasks],
-              markerAcceptedByTaskId
-                ? {
-                  markerAcceptedByTaskId,
-                  onParityDiff: (diff) => {
-                    this.emitDependencyParityDiff(diff);
-                  },
-                }
-                : undefined,
+              {
+                satisfactionColumnsByTaskId,
+                ...(markerAcceptedByTaskId
+                  ? {
+                    markerAcceptedByTaskId,
+                    onParityDiff: (diff: SchedulingDependencyParityDiff) => {
+                      this.emitDependencyParityDiff(diff);
+                    },
+                  }
+                  : {}),
+              },
             );
 
             try {
@@ -1423,13 +1541,37 @@ export class Scheduler {
       return;
     }
 
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-30-20:40 (fleet — PR-monitor startup hydration):
+    Startup rehydration of PR monitoring resolves the review lane per task.
+
+    Keyed on `column !== "in-review"`, a renamed board hydrated NOTHING on engine restart: every
+    open PR silently stopped being watched, so merges, review comments and closures went unnoticed
+    until something else moved the card. The failure is invisible precisely because it is a missing
+    background watcher rather than an error.
+
+    This is a one-shot startup pass over an already-fetched list, and it is already off the hot path
+    (`void ... .then(...)`), so a per-task resolution with a shared IR cache costs one read per
+    distinct workflow. Fail-soft: an unresolvable workflow falls back to the legacy literal via
+    `isReviewColumnRole`'s documented no-metadata behaviour rather than dropping the watcher.
+    */
     void this.store.listTasks({ slim: true, includeArchived: false, startupMemo: true })
-      .then((tasks) => {
+      .then(async (tasks) => {
         const repo = getCurrentRepo(this.store.getRootDir());
         if (!repo) return;
 
+        const hydrationIrCache = new Map<string, WorkflowIr>();
         for (const task of tasks) {
-          if (task.column !== "in-review" || !task.prInfo) continue;
+          if (!task.prInfo) continue;
+          let flags: ColumnRoleTraitFlags | undefined;
+          try {
+            const ir = await resolveWorkflowIrForTask(this.store, task.id, hydrationIrCache);
+            const column = (ir as WorkflowIrV2).columns?.find((candidate) => candidate.id === task.column);
+            if (column) flags = resolveColumnFlags(column);
+          } catch {
+            // Unresolvable workflow: `isReviewColumnRole` falls back to the legacy id below.
+          }
+          if (!isReviewColumnRole(flags, task.column)) continue;
           options.prMonitor!.startMonitoring(task.id, repo.owner, repo.repo, task.prInfo);
         }
       })
@@ -1446,20 +1588,38 @@ export class Scheduler {
    * or `null` if the task should start from HEAD (default).
    *
    * Priority: explicit dep in-review (first with worktree) > blockedBy in-review.
+   *
+   * FNXC:WorkflowLifecycleColumns 2026-07-30-20:40 (fleet — scheduler base-branch stacking):
+   * `isReviewColumn` is a REQUIRED resolved answer, not an optional one with a literal default.
+   *
+   * This decides whether a starting task stacks its branch on a predecessor still in review. Keyed
+   * on the literal, a renamed board resolved every predecessor as "not in review" and the task
+   * started from HEAD instead of from its dependency's branch — so the dependent silently rebuilt
+   * work its predecessor had already done, and the first merge of the two conflicted. That is a
+   * quiet wrong answer, not a crash, which is why it would survive unnoticed.
+   *
+   * Required rather than optional because this method has exactly ONE caller, inside
+   * `runHoldReleaseSweepPass`, which has already resolved per-task trait flags for the whole board.
+   * An optional parameter with a literal default would let a future caller reintroduce the bug by
+   * omission; making it required means the compiler asks the question.
    */
-  private resolveBaseBranch(task: Task, allTasks: Task[]): string | null {
-    // Check explicit dependencies for in-review tasks with worktrees
+  private resolveBaseBranch(
+    task: Task,
+    allTasks: Task[],
+    isReviewColumn: (candidate: Task) => boolean,
+  ): string | null {
+    // Check explicit dependencies for review-lane tasks with worktrees
     for (const depId of task.dependencies) {
       const dep = allTasks.find((t) => t.id === depId);
-      if (dep && dep.column === "in-review" && dep.worktree) {
+      if (dep && isReviewColumn(dep) && dep.worktree) {
         return resolveTaskWorkingBranch(dep);
       }
     }
 
-    // Check implicit blockedBy for in-review task with worktree
+    // Check implicit blockedBy for a review-lane task with worktree
     if (task.blockedBy) {
       const blocker = allTasks.find((t) => t.id === task.blockedBy);
-      if (blocker && blocker.column === "in-review" && blocker.worktree) {
+      if (blocker && isReviewColumn(blocker) && blocker.worktree) {
         return resolveTaskWorkingBranch(blocker);
       }
     }
@@ -1617,6 +1777,9 @@ export class Scheduler {
    */
   private async renewActiveMissionSymbolLocks(tasks: Task[]): Promise<void> {
     for (const task of tasks) {
+      /* DELIBERATE-LITERAL — seeds the trait resolution immediately below, which overwrites it
+         whenever the workflow resolves; the literal survives only as the documented fallback for an
+         unresolvable workflow. Reviewed 2026-07-30-20:40. */
       let isImplementationColumn = task.column === "in-progress";
       try {
         const ir = await resolveWorkflowIrForTask(this.store, task.id);
@@ -1729,6 +1892,18 @@ export class Scheduler {
         columnFlagsByWorkflowId.get(workflowIdByTaskId.get(task.id) ?? "builtin:coding")?.get(task.column);
       const isWipColumnTask = (task: Task): boolean =>
         isWipColumnRole(columnFlagsForTask(task), task.column);
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-07-30-19:05:
+      The review-lane twin of `isWipColumnTask`, over the SAME resolved flags map.
+
+      The file-scope lease sweep below had a renamed-board hole in the shape 2026-07-30-16:30 already
+      fixed for the wip half: the review pass gated on the literal `column === "in-review"`, so on a
+      renamed board no review card entered `activeScopes` and its worktree's files read as free while
+      the merge was still in flight. Fixing only the wip half left the two halves of one registry
+      disagreeing. Same predicate, same flags, so they cannot drift.
+      */
+      const isReviewColumnTask = (task: Task): boolean =>
+        isReviewColumnRole(columnFlagsForTask(task), task.column);
       const wipTaskIds = tasks.filter(isWipColumnTask).map((task) => task.id);
       let reservedWorktreeSlots = wipTaskIds.length;
       let reservedConcurrentSlots = reservedWorktreeSlots;
@@ -1762,14 +1937,27 @@ export class Scheduler {
           markerAcceptedByTaskId.set(depId, (await this.store.getCompletionHandoffAcceptedMarker(depId)) !== null);
         }
       }
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-07-30-19:05:
+      Resolved ONCE per sweep, over the dependency cards actually referenced — not per dependent,
+      and not over the whole board. `tasks` is already in memory, so this adds workflow-IR reads
+      bounded by the number of distinct workflows, not by the number of dependency edges.
+      */
+      const referencedDependencyIds = new Set(tasks.flatMap((candidate) => candidate.dependencies));
+      const satisfactionColumnsByTaskId = await resolveDependencySatisfactionColumns(
+        this.store,
+        tasks.filter((candidate) => referencedDependencyIds.has(candidate.id)),
+        new Map<string, WorkflowIr>(),
+      );
       const schedulingDependencyOptions = mergeShadowEnabled
         ? {
+          satisfactionColumnsByTaskId,
           markerAcceptedByTaskId,
           onParityDiff: (diff: SchedulingDependencyParityDiff) => {
             this.emitDependencyParityDiff(diff);
           },
         }
-        : undefined;
+        : { satisfactionColumnsByTaskId };
 
       if (settings.groupOverlappingFiles) {
         for (const task of tasks) {
@@ -1799,16 +1987,18 @@ export class Scheduler {
         const reviewHandoffMarkerMap = new Map<string, boolean>();
         if (settings.mergeRequestContractShadowEnabled === true) {
           for (const t of tasks) {
-            if (t.column === "in-review") {
+            if (isReviewColumnTask(t)) {
               reviewHandoffMarkerMap.set(t.id, (await this.store.getCompletionHandoffAcceptedMarker(t.id)) !== null);
             }
           }
         }
         const inReviewWithWorktree = tasks.filter(
-          (task) => task.column === "in-review" && shouldHoldActiveFileScopeLease(task, tasks, {
+          (task) => isReviewColumnTask(task) && shouldHoldActiveFileScopeLease(task, tasks, {
             mergeRequestContractShadowEnabled: settings.mergeRequestContractShadowEnabled,
             handoffAccepted: reviewHandoffMarkerMap.get(task.id) ?? false,
             schedulingDependencyOptions,
+            /* Both halves of the gate agree: the filter said review, so the predicate is told so. */
+            isReviewColumn: true,
           }),
         );
         for (const task of inReviewWithWorktree) {
@@ -2335,7 +2525,7 @@ export class Scheduler {
           }
 
           dispatchPrepByTaskId.set(task.id, {
-            baseBranch: this.resolveBaseBranch(freshTask, tasks),
+            baseBranch: this.resolveBaseBranch(freshTask, tasks, isReviewColumnTask),
             dispatchStormCount: nextDispatchStormCount,
             dispatchTimestamp,
             effectiveNodeId: effectiveNode.nodeId ?? null,
@@ -2485,7 +2675,27 @@ export class Scheduler {
         );
       }
 
-      if (toColumn === "done") {
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-07-30-20:40 (fleet — mission completion advance):
+      "Did this task just COMPLETE?" resolved from the destination column's own trait.
+
+      Keyed on `toColumn === "done"`, a renamed board never advanced mission execution: the feature
+      status above was reconciled (that path already resolves traits), but the follow-on completion
+      never fired, so the mission stalled with its roadmap showing the work finished. The two halves
+      of one handler disagreed about whether the same move was a completion.
+
+      Fail-soft to the legacy literal via `isCompleteColumnRole`'s documented no-metadata behaviour —
+      an unresolvable workflow keeps today's behaviour rather than stalling the mission.
+      */
+      let completionFlags: ColumnRoleTraitFlags | undefined;
+      try {
+        const ir = await resolveWorkflowIrForTask(this.store, taskId);
+        const column = (ir as WorkflowIrV2).columns?.find((candidate) => candidate.id === toColumn);
+        if (column) completionFlags = resolveColumnFlags(column);
+      } catch {
+        // Unresolvable workflow: fall back to the legacy `done` literal below.
+      }
+      if (isCompleteColumnRole(completionFlags, toColumn)) {
         await this.handleMissionTaskCompletion(taskId, sliceIdBeforeUpdate);
       }
     } catch (err) {

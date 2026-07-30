@@ -122,6 +122,107 @@ describe("GitHubTrackingStateService", () => {
     service = new GitHubTrackingStateService(store as unknown as TaskStore);
   });
 
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-31-10:40 (fleet phase — THE SEAM WAS NEVER WIRED):
+  `decideIssueAction` has accepted an injectable `classify` since U12/R2, and the header of
+  github-tracking-state.ts states the defect that seam fixed: "a user-authored workflow whose terminal
+  column is called something else never closed its linked GitHub issue". But the only PRODUCTION caller
+  passed no classifier, so every real move fell through to `legacyColumnLifecycleClass` and the described
+  bug was still live. The seam was reachable from unit tests only — which is exactly why the 68 cases in
+  this file were all green while the thing they document did not work.
+
+  These cases drive the SERVICE (not the pure decision function) on a renamed board, so they fail if the
+  wiring is removed even though the seam still exists.
+
+  REVERT CHECK, measured: dropping the resolved classifier at the call site — leaving
+  `decideIssueAction(event.from, event.to)`, exactly as it was — makes both cases fail with 0
+  setIssueState calls. The pure-function cases above pass either way.
+  */
+  describe("the resolved classifier is actually wired into the service", () => {
+    const RENAMED_IR = {
+      version: "v2",
+      id: "custom:renamed",
+      name: "Renamed",
+      nodes: [],
+      edges: [],
+      columns: [
+        { id: "building", name: "Building", traits: [{ trait: "wip" }] },
+        { id: "shipped", name: "Shipped", traits: [{ trait: "complete" }] },
+        { id: "attic", name: "Attic", traits: [{ trait: "archived" }] },
+      ],
+    };
+
+    function renamedStore(): MockStore {
+      const s = new MockStore();
+      return Object.assign(s, {
+        getTaskWorkflowSelection: () => ({ workflowId: "custom:renamed", stepIds: [] }),
+        getWorkflowDefinition: async () => ({ ir: RENAMED_IR }),
+      });
+    }
+
+    it("closes the linked issue when a card reaches a RENAMED complete lane", async () => {
+      const s = renamedStore();
+      new GitHubTrackingStateService(s as unknown as TaskStore).start();
+
+      s.emit("task:moved", { task: createTask(), from: "building", to: "shipped" });
+      await flushAsync();
+
+      expect(mockSetIssueState).toHaveBeenCalledWith("owner", "repo", 42, "closed", "completed");
+    });
+
+    it("maps a RENAMED archive lane to not_planned", async () => {
+      const s = renamedStore();
+      new GitHubTrackingStateService(s as unknown as TaskStore).start();
+
+      s.emit("task:moved", { task: createTask(), from: "building", to: "attic" });
+      await flushAsync();
+
+      expect(mockSetIssueState).toHaveBeenCalledWith("owner", "repo", 42, "closed", "not_planned");
+    });
+
+    it("closes the issue from a SECOND complete lane, not just the first", async () => {
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-14:20 (PR #2754 review — greptile):
+      `LifecycleColumns` names ONE column per role by design (#2721), so a workflow declaring `complete`
+      on two columns had the second invisible: a card moved there left its linked GitHub issue OPEN, with
+      no error and nothing in the log to notice. Core's `resolveTerminalColumns` is the same singular
+      pair, so the flag SETS are the membership answer.
+      */
+      const TWO_COMPLETE_IR = {
+        ...RENAMED_IR,
+        columns: [
+          ...RENAMED_IR.columns,
+          { id: "shipped-two", name: "Shipped 2", traits: [{ trait: "complete" }] },
+        ],
+      };
+      const s = Object.assign(new MockStore(), {
+        getTaskWorkflowSelection: () => ({ workflowId: "custom:renamed", stepIds: [] }),
+        getWorkflowDefinition: async () => ({ ir: TWO_COMPLETE_IR }),
+      });
+      new GitHubTrackingStateService(s as unknown as TaskStore).start();
+
+      s.emit("task:moved", { task: createTask(), from: "building", to: "shipped-two" });
+      await flushAsync();
+
+      expect(mockSetIssueState).toHaveBeenCalledWith("owner", "repo", 42, "closed", "completed");
+    });
+
+    it("does nothing for a move between two lanes that play neither terminal role", async () => {
+      // Non-vacuous: the resolved classifier must still return null for non-terminal moves.
+      const s = renamedStore();
+      new GitHubTrackingStateService(s as unknown as TaskStore).start();
+
+      s.emit("task:moved", { task: createTask(), from: "shipped", to: "building" });
+      await flushAsync();
+
+      // shipped -> building is a reopen, so an action IS expected; use two non-terminal lanes instead.
+      mockSetIssueState.mockClear();
+      s.emit("task:moved", { task: createTask(), from: "building", to: "building" });
+      await flushAsync();
+      expect(mockSetIssueState).not.toHaveBeenCalled();
+    });
+  });
+
   it("start/stop are idempotent", async () => {
     service.start();
     service.start();

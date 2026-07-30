@@ -223,3 +223,45 @@ export function summarize(findings) {
 export function censusFiles(files, readFile = (f) => readFileSync(f, "utf8")) {
   return files.flatMap((file) => findComparisons(file, readFile(file)));
 }
+
+const ROLE_RESOLVER_NAMES = [
+  "resolveLifecycleColumns", "resolveTaskLifecycleColumns", "resolveTerminalColumns", "resolveCompleteColumn",
+  "resolveMergeOrchestrationColumn", "resolveReboundTarget", "columnsWithFlag", "workflowHasColumn",
+  "isIntakeColumnRole", "isHoldColumnRole", "isWipColumnRole", "isReviewColumnRole", "isCompleteColumnRole",
+  "isArchivedColumnRole", "isPreImplementationColumnRole", "resolveColumnFlags", "columnHasFlag",
+];
+
+/** Blank string/template literal CONTENTS, preserving quotes and newlines so offsets do not shift. */
+export function stripStringLiterals(source) {
+  return source.replace(/(["'`])(?:\\.|(?!\1)[^\\])*\1/g, (match, quote) => {
+    const inner = match.slice(1, -1).replace(/[^\n]/g, " ");
+    return `${quote}${inner}${quote}`;
+  });
+}
+
+/** Files where a role resolver is used AND legacy literals remain — both vocabularies live at once. */
+export function mixedVocabularyFiles(byFile, readFile) {
+  const mixed = [];
+  for (const [file, count] of byFile) {
+    if (count === 0) continue;
+    let source;
+    try {
+      source = readFile(file);
+    } catch {
+      continue; // Unreadable file is not evidence of anything.
+    }
+    /*
+    FNXC:LifecycleColumnCensus 2026-07-30-22:10 (PR #2704 review — greptile):
+    COMMENTS AND STRINGS ARE NOT USAGE. The first version searched raw source, so a resolver named
+    only in a FNXC note, a doc comment, or an error message classified the file as mixed. This file
+    is dense with prose that names these very functions, so the false-positive rate was structural
+    rather than incidental — and a review signal that cries wolf gets ignored, which is the whole
+    value gone. `stripComments` blanks comments while preserving newlines; string literals are
+    blanked the same way so a message mentioning a resolver does not count as calling one.
+    */
+    const code = stripStringLiterals(stripComments(source));
+    const resolvers = ROLE_RESOLVER_NAMES.filter((name) => new RegExp(`\\b${name}\\b`).test(code));
+    if (resolvers.length > 0) mixed.push({ file, count, resolvers: resolvers.length });
+  }
+  return mixed.sort((a, b) => b.count - a.count);
+}

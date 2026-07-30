@@ -1,18 +1,5 @@
 {
   "generatedFrom": "node scripts/lifecycle-column-census.mjs --strict --update-baseline",
-  "totals": {
-    "column": 686,
-    "role": 5,
-    "status": 186,
-    "deliberate": 23
-  },
-  "byColumnId": {
-    "done": 180,
-    "in-progress": 135,
-    "in-review": 197,
-    "archived": 136,
-    "todo": 38
-  },
   "byFile": {
     "packages/engine/src/self-healing.ts": 110,
     "packages/engine/src/executor.ts": 54,
@@ -20,7 +7,6 @@
     "packages/dashboard/app/components/TaskDetailModal.tsx": 30,
     "packages/engine/src/scheduler.ts": 23,
     "packages/dashboard/src/routes/register-task-workflow-routes.ts": 20,
-    "packages/core/src/task-store/moves.ts": 15,
     "packages/core/src/store.ts": 12,
     "packages/engine/src/project-engine.ts": 12,
     "packages/engine/src/mission-execution-loop.ts": 10,
@@ -83,6 +69,7 @@
     "packages/core/src/task-store/archive-lifecycle-2.ts": 2,
     "packages/core/src/task-store/audit-ops.ts": 2,
     "packages/core/src/task-store/comments-ops.ts": 2,
+    "packages/core/src/task-store/moves.ts": 2,
     "packages/core/src/task-store/project-store-ops.ts": 2,
     "packages/core/src/task-store/reads.ts": 2,
     "packages/core/src/task-store/symbol-locks.ts": 2,
@@ -175,18 +162,6 @@
     "packages/engine/src/hold-release.ts\u0000done": 1,
     "packages/engine/src/hold-release.ts\u0000in-review": 1,
     "packages/engine/src/triage.ts\u0000triage": 1
-  },
-  "properties": {
-    "query": 83,
-    "definition": 43
-  },
-  "queryByColumnId": {
-    "todo": 10,
-    "archived": 7,
-    "done": 10,
-    "in-progress": 19,
-    "in-review": 35,
-    "triage": 2
   },
   "queryByFile": {
     "packages/engine/src/self-healing.ts": 48,

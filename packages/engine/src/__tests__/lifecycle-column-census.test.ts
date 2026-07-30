@@ -21,6 +21,7 @@ import {
   receiverOf,
   stripComments,
   summarize,
+  mixedVocabularyFiles,
 } from "../../../../scripts/lib/lifecycle-column-census.mjs";
 
 function census(source: string) {
@@ -451,7 +452,14 @@ describe("the baseline can always be re-recorded", () => {
       const r = runCli(["--strict", "--update-baseline"], stale) as unknown as { status: number; stdout: string; baselinePath: string };
       expect(r.status).toBe(0);
       const written = JSON.parse(fs.readFileSync(r.baselinePath, "utf8"));
-      expect(written.totals.column).toBeGreaterThan(1);
+      /*
+      FNXC:LifecycleColumnCensus 2026-07-30-19:10:
+      Asserted on the per-file entry rather than `totals`, which the pin no longer stores — the
+      derived aggregates were the only lines every conversion PR rewrote, and so the sole cause of
+      fleet-wide conflicts in this file. The claim is unchanged and still specific: the stale pin
+      said 1, and the rewritten pin must carry the tree's real (higher) count for that same file.
+      */
+      expect(written.byFile["packages/engine/src/self-healing.ts"]).toBeGreaterThan(1);
       expect(r.stdout).toContain("ACCEPTED RISES");
     });
 
@@ -496,6 +504,73 @@ were exercised by hand first:
   rise, --strict            exit 1
   clean                     exit 0
 */
+/*
+FNXC:LifecycleColumnCensus 2026-07-30-21:00 (the half-conversion detector):
+A file holding BOTH vocabularies is where a resolved guard can end up feeding a literal one — the
+shape behind four separate review findings in a single day. Report-only by design: a partially
+converted file is the expected state mid-phase, so this must inform a reviewer, not fail a build.
+*/
+describe("mixed-vocabulary detection", () => {
+  const read = (contents: Record<string, string>) => (file: string) => {
+    const found = contents[file];
+    if (found === undefined) throw new Error(`no such file: ${file}`);
+    return found;
+  };
+
+  it("flags a file that uses a role resolver AND still holds legacy literals", () => {
+    const result = mixedVocabularyFiles(
+      [["a.ts", 3]],
+      read({ "a.ts": `const lanes = resolveLifecycleColumns(ir); if (t.column === "done") return;` }),
+    );
+
+    expect(result).toEqual([{ file: "a.ts", count: 3, resolvers: 1 }]);
+  });
+
+  it("does NOT flag a file that is fully literal — nothing is half-converted there", () => {
+    /* The whole backlog would light up otherwise, and the signal would carry no information. */
+    expect(mixedVocabularyFiles([["a.ts", 9]], read({ "a.ts": `if (t.column === "done") return;` }))).toEqual([]);
+  });
+
+  it("does NOT flag a fully converted file — zero guards means nothing left to mismatch", () => {
+    expect(mixedVocabularyFiles([["a.ts", 0]], read({ "a.ts": `resolveLifecycleColumns(ir)` }))).toEqual([]);
+  });
+
+  it("does NOT count a resolver named only in a COMMENT", () => {
+    /*
+    FNXC:LifecycleColumnCensus 2026-07-30-22:10 (PR #2704 review — greptile):
+    This codebase's FNXC notes name these functions constantly, so counting prose made the false
+    positive structural rather than incidental. Measured: it over-reported 23 files / 311 guards
+    where the truth is 21 / 300. A review signal that cries wolf gets ignored, and then it is worth
+    nothing at all.
+    */
+    const result = mixedVocabularyFiles(
+      [["a.ts", 3]],
+      read({ "a.ts": `// was resolveLifecycleColumns(ir) once\nif (t.column === "done") return;` }),
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it("does NOT count a resolver named only in a STRING literal", () => {
+    /* An error message or a log line mentioning a resolver is not a call to one. */
+    const result = mixedVocabularyFiles(
+      [["a.ts", 3]],
+      read({ "a.ts": `throw new Error("use resolveLifecycleColumns instead"); if (t.column === "done") return;` }),
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it("does not match a resolver name embedded in a longer identifier", () => {
+    /* Same trap the trait hints hit in #2677: `hold` matched inside `threshold`. */
+    expect(mixedVocabularyFiles([["a.ts", 2]], read({ "a.ts": `myResolveLifecycleColumnsHelper()` }))).toEqual([]);
+  });
+
+  it("survives an unreadable file rather than reporting it", () => {
+    expect(mixedVocabularyFiles([["gone.ts", 4]], read({}))).toEqual([]);
+  });
+});
+
 describe("the ratchet follows the count down", () => {
   const repoRoot = new URL("../../../../", import.meta.url).pathname;
   const cliPath = `${repoRoot}scripts/lifecycle-column-census.mjs`;

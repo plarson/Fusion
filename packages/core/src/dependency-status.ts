@@ -24,6 +24,13 @@ export function isDependencySchedulingSatisfied(dependency: Pick<Task, "column">
   return SATISFIED_COLUMNS.has(dependency.column as Task["column"]);
 }
 
+/**
+ * DELIBERATE-LITERAL: This retained aggregate compatibility formatter reports
+ * legacy dependency states by their persisted column ids. It has no per-task
+ * workflow classifier, so converting these labels to board-wide role unions
+ * would be less correct. Workflow-aware callers must use their dependency's
+ * own lifecycle classifier instead of this reporting helper.
+ */
 export function classifyDependencyStatus(
   dependencyId: string,
   dependency: Pick<Task, "column"> | undefined,

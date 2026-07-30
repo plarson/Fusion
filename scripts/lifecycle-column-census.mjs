@@ -45,7 +45,21 @@ import {
 } from "./lib/lifecycle-column-census.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const BASELINE_PATH = join(HERE, "lib", "lifecycle-column-census-baseline.json");
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-18:20 (PR #2668 review — greptile):
+BASELINE PATH IS OVERRIDABLE so the CLI can be driven END TO END in a test.
+
+The suite could only assert this file's SOURCE TEXT — substrings, marker ordering,
+`writeFileSync` call counts — because a test that actually ran the CLI would rewrite
+the repo's real baseline. Source assertions cannot see control flow: move the exit,
+reorder the branches, or return before the write, and every one of them still passes.
+
+An env override is the smallest seam that makes the real contract testable: exit
+code, what lands in the baseline file, and what is printed. Production never sets it,
+so the default is unchanged.
+*/
+const BASELINE_PATH = process.env.FUSION_CENSUS_BASELINE_PATH
+  ?? join(HERE, "lib", "lifecycle-column-census-baseline.json");
 
 let files;
 try {
@@ -260,6 +274,48 @@ for (const [file, allowed] of baselineQueryByFile) {
 }
 
 
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-18:20:
+`--update-baseline` MUST RUN EVEN WHEN A FILE ROSE, and it could not: the rise check exited first, so the
+only supported way to re-record was unavailable in exactly the situation that needs it.
+
+That is not hypothetical now that #2654 gates CI on this. A CONVERSION LEGITIMATELY ADDS A LITERAL: the
+correct shape for a caller that may have no traits is `flags ? flags.x : columnId === "legacy"`, and every
+one of those raises a file's count by one. So a worker doing the right thing hits a red gate whose only
+escape is hand-editing the JSON — which is how a ratchet becomes something people route around instead of
+run. Measured on current main: `columnRoles.ts` 0 -> 1 from exactly that shape.
+
+The flag is an explicit operator action, so it re-records unconditionally and PRINTS what it accepted
+under `ACCEPTED RISES`. Silently swallowing a rise is the real danger; refusing to let anyone re-record is
+the same danger one step later, wearing a red check nobody trusts.
+*/
+if (updateBaseline) {
+  writeFileSync(
+    BASELINE_PATH,
+    `${JSON.stringify({
+      generatedFrom: "node scripts/lifecycle-column-census.mjs --strict --update-baseline",
+      totals: summary.totals,
+      byColumnId: summary.byColumnId,
+      byFile: Object.fromEntries(summary.byFile),
+      deliberateByFile: Object.fromEntries(summary.deliberateByFile ?? []),
+      properties: summary.properties,
+      queryByColumnId: summary.queryByColumnId,
+      queryByFile: Object.fromEntries(summary.queryByFile),
+    }, null, 2)}\n`,
+  );
+  if (regressions.length > 0) {
+    console.log("\n  ACCEPTED RISES (a merge or a conversion added guards here — convert them or they stay in the bar):");
+    for (const r of regressions) {
+      console.log(`    ${r.file}${r.kind === "query" ? " (query filter)" : ""}: ${r.allowed} -> ${r.count}`);
+    }
+  }
+  if (stale.length > 0) {
+    console.log(`\n  TIGHTENED ${stale.length} entr${stale.length === 1 ? "y" : "ies"} whose counts dropped.`);
+  }
+  console.log("\nlifecycle-column-census: baseline re-recorded.");
+  process.exit(0);
+}
+
 if (regressions.length > 0) {
   console.error("\nlifecycle-column-census --strict: column-guard count ROSE\n");
   for (const r of regressions) {
@@ -273,24 +329,14 @@ if (regressions.length > 0) {
   process.exit(1);
 }
 
-if (stale.length > 0 || (!deliberateTracked && updateBaseline)) {
-  if (updateBaseline) {
-    writeFileSync(
-      BASELINE_PATH,
-      `${JSON.stringify({
-        generatedFrom: "node scripts/lifecycle-column-census.mjs --strict --update-baseline",
-        totals: summary.totals,
-        byColumnId: summary.byColumnId,
-        byFile: Object.fromEntries(summary.byFile),
-        deliberateByFile: Object.fromEntries(summary.deliberateByFile ?? []),
-        properties: summary.properties,
-        queryByColumnId: summary.queryByColumnId,
-        queryByFile: Object.fromEntries(summary.queryByFile),
-      }, null, 2)}\n`,
-    );
-    console.log(`\nlifecycle-column-census --strict: baseline TIGHTENED for ${stale.length} file(s).`);
-    process.exit(0);
-  }
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-18:25: the `--update-baseline` branch that lived here is GONE — it
+now runs above, before the rise exit, so a risen file can be re-recorded. Keeping a second copy here would
+be two writers for one artifact, and the one behind the rise exit was unreachable in the case that needed
+it. The `!deliberateTracked && updateBaseline` condition went with it: the unconditional block covers the
+legacy-shape migration too.
+*/
+if (stale.length > 0) {
   console.error("\nlifecycle-column-census --strict: baseline is STALE — it allows more than the tree has\n");
   for (const s of stale) {
     console.error(`  ${s.file}: allows ${s.allowed}, tree has ${s.count}`);

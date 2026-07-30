@@ -342,3 +342,136 @@ describe("the summary separates the three classes", () => {
     expect(summary.byColumnId).toEqual({ todo: 1 });
   });
 });
+
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-18:40 (the ratchet's one unusable state, now fixed):
+
+`--update-baseline` MUST RUN EVEN WHEN A FILE ROSE. It could not: the rise check exited before the write,
+so the only supported way to re-record was unavailable in exactly the situation that needs it.
+
+That is a live problem, not a tidiness one, because #2654 gates CI on this AND A CONVERSION LEGITIMATELY
+ADDS A LITERAL — the correct shape for a caller that may have no traits is
+`flags ? flags.x : columnId === "legacy"`, and each one raises a file's count by one. Measured on main:
+`columnRoles.ts` went 0 -> 1 from exactly that shape. So a worker doing the right thing met a red gate
+whose only escape was hand-editing the JSON, which is how a ratchet becomes something people route around.
+
+Exercised end to end before writing this, on a real rise injected into `live-agent-count.ts`:
+  rise + plain --strict            exit 1  (unchanged — the ratchet still bites)
+  rise + --strict --update-baseline exit 0, printing "ACCEPTED RISES  live-agent-count.ts: 6 -> 7"
+
+EXIT CODES ARE THE CONTRACT and the pure summarizer cannot express them, so these assert the CLI's own
+source: which branch writes, which exits, and — the part that was actually broken — the ORDER. Marker-to-
+marker slices rather than character windows, and each marker checked for uniqueness first, because a
+repeated marker is the magic-number problem wearing a name.
+*/
+describe("the baseline can always be re-recorded", () => {
+  const cliPath = new URL("../../../../scripts/lifecycle-column-census.mjs", import.meta.url).pathname;
+
+  function cliSource(): string {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require("node:fs").readFileSync(cliPath, "utf8") as string;
+  }
+
+  function sliceBetween(cli: string, from: string, to: string): string {
+    const start = cli.indexOf(from);
+    const end = cli.indexOf(to, start + from.length);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    // A repeated marker would make the slice meaningless, so prove uniqueness before trusting it.
+    expect(cli.indexOf(from, start + from.length)).toBe(-1);
+    return cli.slice(start, end);
+  }
+
+  it("writes the baseline BEFORE the rise check can exit", () => {
+    const cli = cliSource();
+    const updateAt = cli.indexOf("if (updateBaseline) {");
+    const riseAt = cli.indexOf("column-guard count ROSE");
+
+    expect(updateAt).toBeGreaterThan(-1);
+    expect(riseAt).toBeGreaterThan(updateAt);
+  });
+
+  it("exits 0 from the update branch and 1 from the rise branch", () => {
+    const cli = cliSource();
+
+    expect(sliceBetween(cli, "if (updateBaseline) {", "column-guard count ROSE")).toContain("process.exit(0)");
+    expect(sliceBetween(cli, "column-guard count ROSE", "baseline is STALE")).toContain("process.exit(1)");
+  });
+
+  /*
+  FNXC:LifecycleColumnCensus 2026-07-31-18:30 (PR #2668 review — greptile):
+  END-TO-END, because every assertion above reads this file's SOURCE TEXT. Substrings,
+  marker ordering and `writeFileSync` counts cannot see control flow: move the exit,
+  reorder the branches, or return before the write, and all of them stay green while
+  the contract is broken.
+
+  The contract is three observable things — the EXIT CODE, what lands in the baseline
+  file, and what is printed. These drive the real CLI against a throwaway baseline via
+  `FUSION_CENSUS_BASELINE_PATH` and assert exactly those, so a control-flow change
+  fails here even when the source still contains every string the tests above look for.
+  */
+  describe("driven end to end", () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { execFileSync } = require("node:child_process");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("node:fs");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require("node:os");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require("node:path");
+
+    const repoRoot = new URL("../../../..", import.meta.url).pathname;
+
+    function runCli(args: string[], baseline: unknown): { status: number; stdout: string } {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fusion-census-"));
+      const baselinePath = path.join(dir, "baseline.json");
+      fs.writeFileSync(baselinePath, JSON.stringify(baseline));
+      try {
+        const stdout = execFileSync("node", [cliPath, ...args], {
+          encoding: "utf8",
+          /* The CLI globs with `git ls-files` relative to CWD, and vitest runs from the
+             package dir where that finds nothing — the run then exits on "file list is
+             EMPTY". Without this the rise test would pass for the wrong reason. */
+          cwd: repoRoot,
+          env: { ...process.env, FUSION_CENSUS_BASELINE_PATH: baselinePath },
+        }) as string;
+        return { status: 0, stdout, ...{ baselinePath } } as never;
+      } catch (err) {
+        const e = err as { status?: number; stdout?: string };
+        return { status: e.status ?? -1, stdout: e.stdout ?? "", ...{ baselinePath } } as never;
+      } finally {
+        // Read-back happens in the caller via the returned path; cleanup is per-test.
+      }
+    }
+
+    it("exits 0 and REWRITES the baseline under --update-baseline, even when the count rose", () => {
+      /* The case the ordering bug broke: a rise used to exit before the write, so the
+         one command whose whole job is re-recording could not re-record. */
+      const stale = { totals: { column: 1, role: 0, status: 0, deliberate: 0 }, byFile: { "packages/engine/src/self-healing.ts": 1 }, byColumnId: {}, queryByFile: {} };
+      const r = runCli(["--strict", "--update-baseline"], stale) as unknown as { status: number; stdout: string; baselinePath: string };
+      expect(r.status).toBe(0);
+      const written = JSON.parse(fs.readFileSync(r.baselinePath, "utf8"));
+      expect(written.totals.column).toBeGreaterThan(1);
+      expect(r.stdout).toContain("ACCEPTED RISES");
+    });
+
+    it("exits 1 and LEAVES the baseline alone on a rise without --update-baseline", () => {
+      const stale = { totals: { column: 1, role: 0, status: 0, deliberate: 0 }, byFile: { "packages/engine/src/self-healing.ts": 1 }, byColumnId: {}, queryByFile: {} };
+      const r = runCli(["--strict"], stale) as unknown as { status: number; stdout: string; baselinePath: string };
+      expect(r.status).toBe(1);
+      const after = JSON.parse(fs.readFileSync(r.baselinePath, "utf8"));
+      expect(after.totals.column).toBe(1);
+    });
+  });
+
+  it("names what it accepted instead of swallowing it", () => {
+    // A silent re-record would hide a genuine regression behind a routine command.
+    expect(cliSource()).toContain("ACCEPTED RISES");
+  });
+
+  it("has exactly ONE writer for the baseline artifact", () => {
+    // The old code had a second `writeFileSync` behind the rise exit — unreachable in the case that
+    // needed it, and a second writer for one artifact is how the two drift.
+    expect(cliSource().split("writeFileSync(").length - 1).toBe(1);
+  });
+});

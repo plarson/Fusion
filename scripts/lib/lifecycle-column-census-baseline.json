@@ -1,22 +1,22 @@
 {
   "generatedFrom": "node scripts/lifecycle-column-census.mjs --strict --update-baseline",
   "totals": {
-    "column": 768,
+    "column": 748,
     "role": 5,
-    "status": 187,
-    "deliberate": 13
+    "status": 186,
+    "deliberate": 17
   },
   "byColumnId": {
-    "done": 201,
-    "in-progress": 146,
-    "in-review": 209,
+    "done": 200,
+    "in-progress": 144,
+    "in-review": 205,
     "archived": 148,
-    "todo": 60,
+    "todo": 47,
     "triage": 4
   },
   "byFile": {
     "packages/engine/src/self-healing.ts": 110,
-    "packages/engine/src/executor.ts": 104,
+    "packages/engine/src/executor.ts": 87,
     "packages/dashboard/app/components/TaskCard.tsx": 42,
     "packages/core/src/task-store/moves.ts": 39,
     "packages/dashboard/app/components/TaskDetailModal.tsx": 30,
@@ -91,7 +91,6 @@
     "packages/core/src/team-analytics.ts": 2,
     "packages/core/src/workflow-analytics.ts": 2,
     "packages/dashboard/app/components/Board.tsx": 2,
-    "packages/dashboard/app/components/command-center/MissionControlPanel.tsx": 2,
     "packages/dashboard/app/components/DocumentsView.tsx": 2,
     "packages/dashboard/app/components/effective-model-resolution.ts": 2,
     "packages/dashboard/app/components/WorkflowResultsTab.tsx": 2,
@@ -130,7 +129,6 @@
     "packages/dashboard/app/components/TaskPlannerChatTab.tsx": 1,
     "packages/dashboard/app/hooks/useExecutorStats.ts": 1,
     "packages/dashboard/app/hooks/useTasks.ts": 1,
-    "packages/dashboard/app/utils/columnRoles.ts": 1,
     "packages/dashboard/app/utils/inReviewStallCopy.ts": 1,
     "packages/dashboard/app/utils/quickAddStart.ts": 1,
     "packages/dashboard/app/utils/stalePausedReviewCopy.ts": 1,
@@ -155,6 +153,16 @@
     "packages/engine/src/pr-comment-handler.ts": 1,
     "plugins/fusion-plugin-even-realities-glasses/src/notifications/diff.ts": 1,
     "plugins/fusion-plugin-reports/src/store/report-types.ts": 1
+  },
+  "deliberateByFile": {
+    "packages/dashboard/app/components/command-center/MissionControlPanel.tsx": 3,
+    "packages/dashboard/app/components/TaskCard.tsx": 3,
+    "packages/dashboard/app/components/TaskDetailModal.tsx": 3,
+    "packages/engine/src/hold-release.ts": 3,
+    "packages/dashboard/src/routes/register-task-workflow-routes.ts": 2,
+    "packages/dashboard/app/components/TaskContextMenu.tsx": 1,
+    "packages/dashboard/app/utils/columnRoles.ts": 1,
+    "packages/engine/src/triage.ts": 1
   },
   "properties": {
     "query": 83,

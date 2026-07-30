@@ -16,9 +16,16 @@ Report-only by default:
 `--strict` fails on a RISE (a reintroduced guard) and equally on a DROP that was not recorded: a
 stale allowance is a hole through which the same guards can return while the check stays green.
 
-NOT wired into the merge gate. A thousand-site backlog cannot be a blocking check on the day it
-is first measured; `--strict` exists so it can become one incrementally, per-file, once owners have
-converted their areas.
+WIRED INTO THE MERGE GATE (`pnpm test:gate`) as of 2026-07-31. The original note here said the
+opposite — "NOT wired into the merge gate" — on the reasoning that a thousand-site backlog cannot be
+blocking on the day it is first measured. That reasoning was sound and its conclusion expired: the
+baseline is per-file, so gating costs nothing for files nobody touches, and while it was unwired the
+baseline drifted to 854 against a tree of 787. Sixty-seven guards of regression would have merged
+green (PR #2661).
+
+Consequence for conversion PRs, stated because it is a real cost: lowering a count now REQUIRES
+re-recording the baseline in the same PR (`--strict --update-baseline`). That is deliberate — it puts
+the new number in the diff, where a reviewer sees it, instead of in a hand-written claim.
 */
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -138,8 +145,53 @@ if (!existsSync(BASELINE_PATH)) {
 const baseline = JSON.parse(readFileSync(BASELINE_PATH, "utf8"));
 const baselineByFile = new Map(Object.entries(baseline.byFile ?? {}));
 const currentByFile = new Map(summary.byFile);
+  /*
+FNXC:WorkflowLifecycleColumns 2026-07-31-06:40 (PR #2661 review — greptile, narrowed and closed):
+THE DELIBERATE TOTAL IS PINNED TOO, because a marker exempts the construct it is attached to and
+everything INSIDE it — so a comparison appended to an already-marked expression inherits the
+exemption and never reaches the byFile counts.
+
+Measured rather than argued, on the marker in register-task-workflow-routes.ts:
+  - a comparison added as a SIBLING statement inside the same `if`  -> COUNTED (21 -> 22, fails)
+  - a comparison appended to the MARKED assignment itself           -> exempt, and byFile is unchanged
+The review's stated mechanism (the marker attaching to the enclosing conditional) does not hold;
+the narrower hole does, and it applies to every marker in the codebase rather than just this one.
+
+Pinning it per FILE closes it. An earlier version of this check compared the repo-wide TOTAL, which a
+REMOVAL in one marked construct offsets against an ADDITION in another — the total stays flat, the
+check passes, and the new guard is invisible to `byFile` too because deliberate findings are excluded
+from it (PR #2661 review, greptile P1). Same high-water failure this whole PR is about, one field
+over. Per-file makes offsetting edits visible, because they land in different files.
+*/
+
 const regressions = [];
 const stale = [];
+
+/*
+DELIBERATE-LITERAL counts, compared per file alongside the column counts above. A marker excuses the
+construct it is attached to AND everything inside it (`hasDeliberateMarker` walks ancestors by
+design), so a comparison appended to an already-marked expression inherits the exemption and never
+reaches the column counts. Tracking the exemptions themselves is what makes that visible.
+*/
+/*
+FIRST-RUN MIGRATION. A baseline recorded before this field existed has no `deliberateByFile` at all,
+which is NOT the same as "every marked file had zero" — comparing against an absent map would report
+every existing marker as a fresh rise and demand people convert literals that were already reviewed.
+Seed it on the next `--update-baseline` instead, and start comparing once it is present.
+*/
+const deliberateTracked = baseline.deliberateByFile !== undefined;
+const baselineDeliberateByFile = new Map(Object.entries(baseline.deliberateByFile ?? {}));
+const currentDeliberateByFile = new Map(summary.deliberateByFile ?? []);
+for (const [file, count] of deliberateTracked ? currentDeliberateByFile : []) {
+  const allowed = baselineDeliberateByFile.get(file) ?? 0;
+  if (count > allowed) regressions.push({ file: `${file} (DELIBERATE-LITERAL)`, count, allowed });
+  else if (count < allowed) stale.push({ file: `${file} (DELIBERATE-LITERAL)`, count, allowed });
+}
+for (const [file, allowed] of deliberateTracked ? baselineDeliberateByFile : []) {
+  if (!currentDeliberateByFile.has(file) && allowed > 0) {
+    stale.push({ file: `${file} (DELIBERATE-LITERAL)`, count: 0, allowed });
+  }
+}
 
 for (const [file, count] of currentByFile) {
   const allowed = baselineByFile.get(file) ?? 0;
@@ -206,7 +258,7 @@ if (regressions.length > 0) {
   process.exit(1);
 }
 
-if (stale.length > 0) {
+if (stale.length > 0 || (!deliberateTracked && updateBaseline)) {
   if (updateBaseline) {
     writeFileSync(
       BASELINE_PATH,
@@ -215,6 +267,7 @@ if (stale.length > 0) {
         totals: summary.totals,
         byColumnId: summary.byColumnId,
         byFile: Object.fromEntries(summary.byFile),
+        deliberateByFile: Object.fromEntries(summary.deliberateByFile ?? []),
         properties: summary.properties,
         queryByColumnId: summary.queryByColumnId,
         queryByFile: Object.fromEntries(summary.queryByFile),

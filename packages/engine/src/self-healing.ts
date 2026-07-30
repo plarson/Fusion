@@ -2947,12 +2947,87 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    * ordinary triage card. Completed work goes through the normal review
    * recovery seam; incomplete remediation resumes at its pinned column.
    */
+  /*
+  FNXC:WorkflowColumns 2026-07-29-09:30 (Phase B — self-healing intake/hold vocabulary):
+  Per-sweep resolver for the two PRE-WIP lifecycle roles this file gates on.
+
+  `triage` is INTAKE and `todo` is HOLD, but only for the built-in coding shape.
+  U11 merges them into one column that KEEPS the id "todo" and DELETES "triage",
+  so every `column === "triage"` here becomes a guard that silently stops matching
+  the moment that IR lands — recovery disabled with a green suite, which is exactly
+  the failure the plan's Problem Frame measured (82 guards that would stop matching
+  without failing a test).
+
+  Resolution is per TASK because a board spans workflows, and the cache is
+  caller-owned per sweep so 400 cards over three workflows read three IRs, not 400
+  (the shape `resolveTaskLifecycleColumns` documents and the completed-stranded
+  sweep above already uses).
+
+  UNRESOLVABLE workflows return the legacy literals rather than nothing. These are
+  RECOVERY sweeps: a card whose IR cannot be read must keep its current recovery
+  behaviour, not silently drop out of every sweep. That is the conservative
+  direction here, and it differs deliberately from conversions whose failure mode
+  is a destructive move.
+  */
+  private async resolvePreWipColumns(
+    taskId: string,
+    cache: Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>,
+  ): Promise<{ intake: string; hold: string }> {
+    try {
+      const lifecycle = resolveLifecycleColumns(await resolveWorkflowIrForTask(this.store, taskId, cache));
+      return { intake: lifecycle?.intake ?? "triage", hold: lifecycle?.hold ?? "todo" };
+    } catch {
+      return { intake: "triage", hold: "todo" };
+    }
+  }
+
+  /** True when the task's own column fills its workflow's intake or hold role. */
+  private async isPreWipColumn(task: Task): Promise<boolean> {
+    const columns = await this.resolvePreWipColumns(
+      task.id,
+      new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>(),
+    );
+    return task.column === columns.intake || task.column === columns.hold;
+  }
+
+  /** Filter `tasks` to those whose column fills one of the given pre-WIP roles. */
+  private async filterByPreWipRole(
+    tasks: Task[],
+    roles: Array<"intake" | "hold">,
+    cache: Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>,
+  ): Promise<Task[]> {
+    const kept: Task[] = [];
+    for (const task of tasks) {
+      const columns = await this.resolvePreWipColumns(task.id, cache);
+      if (roles.some((role) => task.column === columns[role])) kept.push(task);
+    }
+    return kept;
+  }
+
   async recoverAdvancedTriageTasks(): Promise<number> {
     try {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
 
-      const tasks = await this.store.listTasks({ column: "triage", slim: true });
+      /*
+      FNXC:WorkflowColumns 2026-07-29-17:40 (PR #2560 review — greptile P1):
+      THE QUERY carried the literal too, and I missed it while converting this
+      sweep's predicate. `listTasks({ column: "triage" })` returns EMPTY for the
+      merged default lineage (#2515 collapsed the two pre-implementation columns
+      into one with id "todo") and for any workflow that renamed its intake column —
+      so the role-aware filter below received no candidates and this recovery was
+      dead, silently. Converting a predicate while leaving its source query on a
+      literal produces a sweep that LOOKS converted and does nothing.
+
+      Read the board and filter by role. `slim` is preserved; the extra cost is one
+      board read per sweep instead of an indexed column read, which the per-workflow
+      IR cache below bounds to one resolution per workflow rather than per task.
+      */
+      const tasks = await this.filterByPreWipRole(
+        await this.store.listTasks({ slim: true, includeArchived: false }),
+        ["intake"],
+        new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>(),
+      );
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
       const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
       const hasForeignPathOwner = (task: Task) => {
@@ -2960,9 +3035,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         const owner = activeSessionRegistry.lookupByPath(task.worktree);
         return owner != null && owner.taskId !== task.id;
       };
+      /*
+      FNXC:WorkflowColumns 2026-07-29-09:30 (Phase B): intake ROLE, not the literal
+      "triage". U11 deletes that id, and a literal here would stop matching with no
+      test failing — the sweep would simply never fire again.
+      */
+      const preWipCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
       const candidates = tasks.filter((task) =>
-        task.column === "triage"
-        && task.status == null
+        task.status == null
         && !task.paused
         && !task.error
         && Boolean(task.worktree)
@@ -2980,8 +3060,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         if (this.options.reserveAdvancedTriageRecovery && !releaseReservation) continue;
         try {
           const live = await this.store.getTask(snapshot.id);
+          const liveColumns = await this.resolvePreWipColumns(live.id, preWipCache);
           if (
-            live.column !== "triage"
+            live.column !== liveColumns.intake
             || live.status != null
             || live.paused
             || live.error
@@ -3014,9 +3095,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           }
 
           const resumeColumn = live.workflowIrPinColumnId;
-          if (!resumeColumn || resumeColumn === "triage") continue;
+          if (!resumeColumn || resumeColumn === liveColumns.intake) continue;
           const moved = await this.store.moveTaskIf(live.id, resumeColumn, (current) =>
-            current.column === "triage"
+            current.column === liveColumns.intake
             && current.status == null
             && !current.paused
             && !current.error
@@ -9198,6 +9279,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const maxAutoMergeRetries = resolveMaxAutoMergeRetries(settings);
       const now = Date.now();
       const inReview = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowColumns 2026-07-29-17:40 (PR #2560 review):
+      This trio is a UNION and is deliberately left on literals. For the merged
+      default lineage the `triage` read returns empty and `todo` supplies the cards;
+      for a legacy/custom workflow that still declares `triage` it supplies them.
+      Either way the union is complete, and the role filter below decides which rows
+      count as pre-WIP. Unlike the recoverAdvancedTriageTasks query this replaces
+      nothing and disables nothing — it is a redundant read, not a dead sweep.
+      */
       const triage = await this.store.listTasks({ column: "triage", slim: true });
       const todo = await this.store.listTasks({ column: "todo", slim: true });
       const inProgress = await this.store.listTasks({ column: "in-progress", slim: true });
@@ -9210,12 +9300,24 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         dependentsByBlocker.set(task.blockedBy, dependents);
       }
 
+      /*
+      FNXC:WorkflowColumns 2026-07-29-09:30 (Phase B): "dependents parked before WIP"
+      is an intake-or-hold ROLE question, but the filter below is synchronous and
+      role resolution reads the workflow IR. Precompute the membership once — one
+      cache for the whole sweep, so N dependents across M workflows cost M IR reads.
+      */
+      const preWipCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
+      const allDependents = [...dependentsByBlocker.values()].flat();
+      const preWipDependentIds = new Set(
+        (await this.filterByPreWipRole(allDependents, ["intake", "hold"], preWipCache)).map((t) => t.id),
+      );
+
       const candidates = inReview.filter((task) => {
         if (task.deletedAt) return false;
         const cooldownStart = this.deadlockRecoveryCooldown.get(task.id) ?? 0;
         const cooldownElapsed = now - cooldownStart;
         const hasBlockedDependents = (dependentsByBlocker.get(task.id) ?? []).some(
-          (dep) => dep.column === "triage" || dep.column === "todo",
+          (dep) => preWipDependentIds.has(dep.id),
         );
         return task.column === "in-review" &&
           allowsAutoMergeProcessing(task, settings) &&
@@ -10693,6 +10795,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
     const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
     const now = Date.now();
+    const reaperCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
     let reaped = 0;
 
     for (const { taskId } of holders) {
@@ -10700,7 +10803,23 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         if (executingIds.has(taskId)) continue;
 
         const task = await this.store.getTask(taskId).catch(() => null);
-        const reapableColumn = !task || task.column === "todo" || task.column === "triage";
+        /*
+        FNXC:WorkflowColumns 2026-07-29-09:30 (Phase B): intake-or-hold ROLE, same
+        behaviour as the literals it replaces.
+
+        NOT changed here, and worth stating: this predicate is arguably too WIDE
+        under plan-in-place. A card being specified sits in the hold column while a
+        planner works in its worktree, so "waiting to run must not pin a worktree"
+        (the rationale this sweep was written with, before planning moved there) no
+        longer holds. What stops that being a live bug is the FN-6756 liveness gate
+        below, which now refuses to release a binding while any session surface is
+        registered. Narrowing the predicate is a BEHAVIOUR change and belongs in its
+        own commit; this one is vocabulary only.
+        */
+        const preWip = task
+          ? await this.resolvePreWipColumns(task.id, reaperCache)
+          : { intake: "triage", hold: "todo" };
+        const reapableColumn = !task || task.column === preWip.hold || task.column === preWip.intake;
         if (!reapableColumn) continue;
 
         if (task) {
@@ -11279,7 +11398,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       } else if (linkedTask.assignedAgentId && linkedTask.assignedAgentId !== agent.id) {
         shouldClear = true;
         reason = `linked task assigned to ${linkedTask.assignedAgentId}`;
-      } else if (linkedTask.column === "todo" || linkedTask.column === "triage") {
+      } else if (await this.isPreWipColumn(linkedTask)) {
         const activeRun = await agentStore.getActiveHeartbeatRun(agent.id);
         const proof = evaluateParkedAgentTaskLink({
           agent,
@@ -12165,12 +12284,22 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // block recovery indefinitely.
       this.options.evictStaleTriageProcessing?.();
 
-      const tasks = await this.store.listTasks({ column: "triage" });
+      /*
+      FNXC:WorkflowColumns 2026-07-29-09:30 (Phase B): the LIST QUERY carried the
+      literal too — `listTasks({ column: "triage" })` returns nothing once that id
+      is gone, so converting only the predicate would have left the sweep dead.
+      Query the whole board and filter by role.
+      */
+      const preWipCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
+      const tasks = await this.filterByPreWipRole(
+        await this.store.listTasks({ slim: true, includeArchived: false }),
+        ["intake"],
+        preWipCache,
+      );
       const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
       const now = Date.now();
 
       const orphanedApproved = tasks.filter((t) =>
-        t.column === "triage" &&
         t.status === "planning" &&
         !t.paused &&
         !planningIds.has(t.id) &&
@@ -12215,7 +12344,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       }
 
       const tasks = await this.store.listTasks({ slim: true, includeArchived: false, limit: 500 });
-      const candidates = tasks.filter((task) => task.column === "triage" || task.column === "todo");
+      // FNXC:WorkflowColumns 2026-07-29-09:30 (Phase B): intake-or-hold role.
+      const candidates = await this.filterByPreWipRole(
+        tasks,
+        ["intake", "hold"],
+        new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>(),
+      );
 
       let resolved = 0;
       let processedMarkers = 0;
@@ -12317,8 +12451,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
       const now = Date.now();
 
-      const candidates = tasks.filter((task) => {
-        if (task.column !== "triage") return false;
+      // FNXC:WorkflowColumns 2026-07-29-09:30 (Phase B): intake role.
+      const intakeCandidates = await this.filterByPreWipRole(
+        tasks,
+        ["intake"],
+        new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>(),
+      );
+      const candidates = intakeCandidates.filter((task) => {
         if (task.sourceType !== "task_refine") return false;
         if (task.paused) return false;
         if (task.status !== null && task.status !== "planning") return false;
@@ -12486,12 +12625,18 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // block recovery indefinitely.
       this.options.evictStaleTriageProcessing?.();
 
-      const tasks = await this.store.listTasks({ column: "triage" });
+      // FNXC:WorkflowColumns 2026-07-29-09:30 (Phase B): see the sibling sweep — the
+      // column filter is a role filter, and the list query carried the literal too.
+      const preWipCache = new Map<string, Awaited<ReturnType<typeof resolveWorkflowIrForTask>>>();
+      const tasks = await this.filterByPreWipRole(
+        await this.store.listTasks({ slim: true, includeArchived: false }),
+        ["intake"],
+        preWipCache,
+      );
       const planningIds = this.options.getPlanningTaskIds?.() ?? new Set<string>();
       const now = Date.now();
 
       const orphaned = tasks.filter((t) =>
-        t.column === "triage" &&
         t.status === "planning" &&
         !t.paused &&
         !planningIds.has(t.id) &&

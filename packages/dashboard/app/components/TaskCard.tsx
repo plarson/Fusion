@@ -1898,6 +1898,9 @@ function TaskCardComponent({
     projectId,
     {
       enabled: isInViewport,
+      // FNXC:WorkflowResolvedColumns 2026-07-31-03:30: the card already resolved these; the hook needs
+      // them so its done/active decision is a role question rather than an id comparison.
+      columnFlags: taskColumnFlags,
       worktree: task.worktree,
       stepVersion: isActiveColumn ? stepVersion : undefined,
       mergeSignature,

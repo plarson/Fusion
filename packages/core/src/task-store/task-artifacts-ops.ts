@@ -10,6 +10,8 @@
  */
 
 import { TaskStore } from "../store.js";
+import {resolveTaskLifecycleColumns} from "../workflow-lifecycle-traits.js";
+import {resolveWorkflowIrForTask} from "../workflow-ir-resolver.js";
 import { countAgentLogEntries, readAgentLogEntries } from "../agent-log-file-store.js";
 import { toJsonNullable } from "../db.js";
 import { DbTransaction, recordRunAuditEventWithinTransaction } from "../postgres/data-layer.js";
@@ -315,28 +317,139 @@ export async function archiveAllDoneImpl(store: TaskStore, options?: { removeLin
     return archivedTasks;
 }
 
-export function resolveUnarchiveTargetColumnImpl(store: TaskStore, preArchiveColumn: unknown): Column {
-    if (!isColumn(preArchiveColumn) || preArchiveColumn === "archived") {
-      return "done";
+/*
+FNXC:WorkflowLifecycleColumns 2026-08-02-16:25 (fleet: the UNARCHIVE destination):
+WHERE A RESTORED CARD LANDS is three lifecycle decisions in four lines, and all three were literals:
+  - no usable pre-archive column -> the COMPLETE lane (a restored card with no history is finished work);
+  - it was mid-flight (wip or review) -> the HOLD lane, because its worktree and session are long gone;
+  - otherwise -> back where it was.
+
+On a renamed board the first fell back to `done` (a column that may not exist), the second never matched — so
+a card archived FROM the wip lane was restored straight back INTO it with no worktree, which the scheduler
+then treats as a live holder occupying a slot. That is the worst of the three: it does not just misfile the
+card, it consumes capacity.
+
+ASYNC because the answer needs the workflow. Its one production caller (`archive-lifecycle-2`'s unarchive) is
+already async, and the sync alternative is the PostgreSQL no-op documented in #2703. `taskId` is now required
+so the lanes can be resolved for the card being restored rather than for the board in general.
+*/
+export async function resolveUnarchiveTargetColumnImpl(
+  store: TaskStore,
+  preArchiveColumn: unknown,
+  taskId?: string,
+): Promise<Column> {
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-08-02-19:10 (PR #2742 review — greptile P1, and this is the THIRD time
+    I have made this exact mistake in one session):
+    `?? legacyId` IS ONLY CORRECT WHEN THE RESOLVER RETURNED NOTHING. My first version wrote
+    `lifecycle?.complete ?? "done"` and `lifecycle?.hold ?? "todo"`, so a workflow that resolves but declares
+    no complete (or no hold) lane got an UNDECLARED column — and `unarchiveTaskImpl` writes this destination
+    DIRECTLY to the row, bypassing moveTask's unknown-column validation. That persists a column the board does
+    not have; the card then renders nowhere and no guard can find it.
+
+    The rule, stated for the third time because I keep needing it: a resolved struct with a MISSING FIELD is an
+    answer — "this board has no such lane" — and `?? legacy` discards exactly that answer. The two cases are:
+      - lifecycle undefined (v1 IR / unresolvable): the legacy ids ARE the answer.
+      - lifecycle resolved, field absent: refuse. Restoring into an invented column is worse than refusing to
+        restore, because the refusal is visible and the invented column is not.
+
+    Earlier occurrences: #2733 (`applyPrMergedTransition`'s move target) and moveToDoneImpl in this same PR.
+    */
+    const lifecycle = taskId ? await resolveTaskLifecycleColumns(store, taskId) : undefined;
+    /* The board's declared ids, for the "is this pre-archive column usable?" test below. */
+    const declaredColumnIds = new Set<string>(
+      taskId && lifecycle
+        ? ((await resolveWorkflowIrForTask(store, taskId).catch(() => undefined)) as { columns?: Array<{ id: string }> } | undefined)
+            ?.columns?.map((column) => column.id) ?? []
+        : [],
+    );
+    const completeColumn = (lifecycle ? lifecycle.complete : "done") as Column | undefined;
+    const holdColumn = (lifecycle ? lifecycle.hold : "todo") as Column | undefined;
+    const wipColumn = lifecycle?.wip ?? "in-progress";
+    const reviewColumn = lifecycle?.review ?? "in-review";
+    const archivedColumn = lifecycle?.archived ?? "archived";
+
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-08-02-19:45 (found by my OWN test, and it is a bigger defect than the
+    one I came here to fix):
+    `isColumn` TESTS THE CLOSED LEGACY ENUM, so on a renamed board it rejects every declared column id — and
+    this branch then treats a perfectly good pre-archive column as "unusable" and restores the card to the
+    COMPLETE lane. Every restore on a renamed board landed in Done, whatever the card was doing when it was
+    archived.
+
+    My lane conversion could not have helped while this stood: I converted the comparisons below and the
+    branch above them still swallowed every renamed id first. That is the half-conversion shape this program
+    keeps finding, in my own work, one line up from the part I was looking at — which is the argument for
+    reading the whole function rather than the sites the census points at.
+
+    `isColumn` is correct for legacy ids and its own doc says workflow-scoped validity belongs to
+    `workflowHasColumn`. Accepting a column the RESOLVED workflow declares, and falling back to the enum when
+    there is no workflow, keeps both boards right.
+    */
+    const declaresPreArchiveColumn = typeof preArchiveColumn === "string"
+      && (lifecycle !== undefined
+        ? declaredColumnIds.has(preArchiveColumn)
+        : isColumn(preArchiveColumn));
+    if (!declaresPreArchiveColumn || preArchiveColumn === archivedColumn || preArchiveColumn === "archived") {
+      if (completeColumn === undefined) {
+        throw new Error(`Cannot resolve an unarchive target${taskId ? ` for ${taskId}` : ""}: its workflow declares no complete column`);
+      }
+      return completeColumn;
     }
-    if (preArchiveColumn === "in-progress" || preArchiveColumn === "in-review") {
-      return "todo";
+    if (preArchiveColumn === wipColumn || preArchiveColumn === reviewColumn) {
+      if (holdColumn === undefined) {
+        throw new Error(`Cannot resolve an unarchive target${taskId ? ` for ${taskId}` : ""}: its workflow declares no hold column`);
+      }
+      return holdColumn;
     }
-    return preArchiveColumn;
+    return preArchiveColumn as Column;
 }
 
 export async function readPreArchiveColumnFromTaskFileImpl(store: TaskStore, dir: string): Promise<Column | undefined> {
     try {
       const raw = await readFile(join(dir, "task.json"), "utf-8");
       const parsed = JSON.parse(raw) as { preArchiveColumn?: unknown };
-      return isColumn(parsed.preArchiveColumn) ? parsed.preArchiveColumn : undefined;
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-08-02-19:55 (the same `isColumn` defect, one function over):
+      `isColumn` TESTS THE CLOSED LEGACY ENUM, so a renamed board's stored `preArchiveColumn` was DROPPED on
+      read — the restore then saw `undefined` and treated the card as having no usable history. Two legacy-enum
+      gates in one path, both upstream of the lane comparisons I came here to convert.
+
+      A stored pre-archive column is DATA, not a claim: whatever id the row carries is what the card was in when
+      it was archived, and validating it against a closed enum is what loses renamed boards' history. The
+      destination resolver downstream decides whether the id is still usable, and now does so against the
+      workflow's declared columns.
+      */
+      return typeof parsed.preArchiveColumn === "string" && parsed.preArchiveColumn.length > 0
+        ? parsed.preArchiveColumn as Column
+        : undefined;
     } catch {
       return undefined;
     }
 }
 
 export async function moveToDoneImpl(store: TaskStore, task: Task, dir: string): Promise<void> {
-    if (task.column === "done") {
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-08-02-16:10 (fleet: the archive/complete writer):
+    THE GUARD, THE WRITE AND THE EVENT are one decision and now share one snapshot. This function writes
+    `task.column` DIRECTLY (it is the store's own finaliser, not a moveTask caller), so a literal here is not
+    caught by moveTask's unknown-column validation the way every converted call site is — it silently persists
+    a column the board does not declare, and then emits `to: "done"` to every listener.
+
+    That makes this one of the few sites where a literal writes bad state rather than failing to act. On a
+    renamed board: the already-complete short-circuit never fired (so the finaliser re-ran and re-stamped
+    executionCompletedAt), the row was written to `done` instead of the board's completion column, and the
+    event told the GitHub tracking poster and the auto-merge handoff about a column that does not exist.
+
+    A workflow that declares columns but NO complete lane refuses rather than inventing one — the distinction
+    #2733 settled: a missing field on a resolved struct is an answer, and `?? legacy` discards it.
+    */
+    const completeLifecycle = await resolveTaskLifecycleColumns(store, task.id);
+    const completeColumn = completeLifecycle ? completeLifecycle.complete : "done";
+    if (completeColumn === undefined) {
+      throw new Error(`Cannot move ${task.id} to a completion column: its workflow declares none`);
+    }
+    if (task.column === completeColumn) {
       return;
     }
 
@@ -346,7 +459,7 @@ export async function moveToDoneImpl(store: TaskStore, task: Task, dir: string):
       throw new Error(`Cannot move ${task.id} to done: ${mergeBlocker}`);
     }
 
-    task.column = "done";
+    task.column = completeColumn;
     store.clearDoneTransientFields(task);
     task.columnMovedAt = new Date().toISOString();
     task.updatedAt = task.columnMovedAt;
@@ -359,7 +472,7 @@ export async function moveToDoneImpl(store: TaskStore, task: Task, dir: string):
     // Update cache if watcher is active
     if (store.isWatching) store.taskCache.set(task.id, { ...task });
 
-    store.emit("task:moved", { task, from: fromColumn, to: "done" as Column, source: "engine" });
+    store.emit("task:moved", { task, from: fromColumn, to: completeColumn as Column, source: "engine" });
 }
 
 export function clearDoneTransientFieldsImpl(store: TaskStore, task: Task): boolean {

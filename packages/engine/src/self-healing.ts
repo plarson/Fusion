@@ -30,7 +30,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr } from "@fusion/core";
+import { resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr,
+  resolveProjectColumnsForRoles,
+  REVIEW_ROLES,
+} from "@fusion/core";
 import { finalizePlanningSegment } from "@fusion/core";
 import type { MeshLeaseManager } from "./mesh-lease-manager.js";
 import { createLogger, schedulerLog } from "./logger.js";
@@ -7062,9 +7065,46 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     try {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-22:00 (the query-filter class, seventh sweep):
+      `listTasks({ column: "in-review" })` returned EMPTY on a renamed board, so a task whose branch has
+      NO commits ahead of base — a genuine no-op merge — was never finalised and sat in review forever.
+
+      Activation check run first: this sweep is one of the four holding both a literal query and an
+      unwired `getTaskMergeBlocker`. Widening the read alone would have made it find renamed-board cards
+      and then decline every one, so the guard is wired in the same change.
+
+      Lane set precomputed per card so the candidate filter stays synchronous; one resolution feeds both
+      the lane test and the blocker.
+      */
+      const noOpReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const noOpById = new Map<string, Task>();
+      for (const column of noOpReviewColumns) {
+        for (const task of await this.store.listTasks({ column, slim: true })) noOpById.set(task.id, task);
+      }
+      const tasks = [...noOpById.values()];
+      const noOpIrCache = new Map<string, WorkflowIr>();
+      const unresolvedNoOpCards: string[] = [];
+      const noOpLanesByTask = new Map<string, ReadonlySet<string>>();
+      for (const task of tasks) {
+        const resolved = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id, noOpIrCache)
+          .catch(() => undefined);
+        const own = resolved
+          ? [...new Set(REVIEW_ROLES.flatMap((role) => columnsWithFlag(resolved.ir, role)))]
+          : [];
+        if (!resolved || resolved.source === "default") unresolvedNoOpCards.push(task.id);
+        /* DELIBERATE-LITERAL — the unresolvable-workflow default, reviewed 2026-07-30-22:00. */
+        noOpLanesByTask.set(task.id, own.length > 0 ? new Set(own) : new Set(["in-review"]));
+      }
+      if (unresolvedNoOpCards.length > 0) {
+        log.warn(
+          `no-op review finalize: ${unresolvedNoOpCards.length} card(s) measured against the built-in `
+          + `review lane because their own workflow could not be resolved `
+          + `(${unresolvedNoOpCards.slice(0, 5).join(", ")}); a renamed review lane there stays unfinalised.`,
+        );
+      }
       const candidates = tasks.filter((t) =>
-        t.column === "in-review" &&
+        (noOpLanesByTask.get(t.id) ?? new Set(["in-review"])).has(t.column) &&
         allowsAutoMergeProcessing(t, settings) &&
         !t.paused &&
         // FNXC:AutoMergeHold 2026-07-09-17:10: FN-7750 intentionally keeps the pure branchContext-shape predicate here. Stale shared-group members must stay OUT of solo no-op finalize even when their group is not live; only the positive auto-merge-off exemption gates use the live-group predicate.
@@ -7081,7 +7121,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         t.status !== "merging-pr" &&
         t.status !== "awaiting-user-review" &&
         t.status !== "failed" &&
-        getTaskMergeBlocker(t) === undefined,
+        /* Wired: unwired, this would decline every card the widened read now finds. */
+        getTaskMergeBlocker(t, { reviewColumns: noOpLanesByTask.get(t.id) ?? new Set(["in-review"]) }) === undefined,
       );
 
       if (candidates.length === 0) return 0;
@@ -7265,12 +7306,100 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
   async reconcileDoneTaskIntegrity(): Promise<number> {
     try {
-      const tasks = await this.store.listTasks({ column: "done", slim: true });
-      const candidates = tasks.filter((task) =>
-        task.column === "done" &&
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-16:50 (the query-filter class, now unblocked):
+      THE QUERY WAS THE BUG, not the comparison below it. `listTasks({ column: "done" })` returns an
+      EMPTY array on a board whose complete lane is renamed, so this sweep never ran — proven in
+      `self-healing-query-filter-blindness.test.ts` (#2800), which asserts the query ARGUMENT because
+      the outcome is 0 either way.
+
+      `resolveProjectColumnsForRoles` is the seam that fix needed: a read happens before any task is in
+      hand, so there is nothing to resolve a per-task lane from. It answers the PROJECT-level question —
+      every column any workflow here declares for the role — and unions the legacy ids, so a board
+      mid-rename still surfaces rows stored under the old one.
+
+      Same three-line shape as `stale-task-reporter` and `backlog-pressure-reporter`: resolve the roles,
+      iterate the set, dedupe by id.
+
+      FNXC:WorkflowResolvedColumns 2026-07-30-17:20 (#2838 review — greptile P1):
+      THE PROJECT UNION IS FOR THE QUERY, NEVER FOR THE PER-CARD TEST. My first version re-asserted
+      `completeColumns.has(task.column)`, which is the flat-set mistake `project-lane-vocabulary.ts`
+      warns about in its own header — a card is claimed as complete because SOME OTHER workflow in the
+      project calls its column complete. On a project with two boards, one naming its wip lane the same
+      as another's complete lane, this sweep would rewrite merge evidence onto a card still being worked.
+
+      Widening the read and widening the verdict are different decisions. The read must over-include
+      (a missed row is invisible); the verdict must not (a wrong row is a write). So the candidate filter
+      resolves each card against ITS OWN workflow.
+      */
+      const completeColumns = await resolveProjectColumnsForRoles(this.store, ["complete"]);
+      const byId = new Map<string, Task>();
+      for (const column of completeColumns) {
+        for (const task of await this.store.listTasks({ column, slim: true })) byId.set(task.id, task);
+      }
+      const shortlist = [...byId.values()].filter((task) =>
         (!task.mergeDetails?.commitSha || task.mergeDetails.commitSha.trim().length === 0) &&
         (task.modifiedFiles?.length ?? 0) > 0,
-      ).slice(0, DONE_TASK_INTEGRITY_SWEEP_LIMIT);
+      );
+      const perTaskIrCache = new Map<string, WorkflowIr>();
+      const candidates: Task[] = [];
+      /* Cards whose own workflow could not be resolved. Collected so an unrepairable backlog is
+         reportable rather than silent — see the provenance note in the loop. */
+      const unresolvedWorkflowCards: string[] = [];
+      for (const task of shortlist) {
+        if (candidates.length >= DONE_TASK_INTEGRITY_SWEEP_LIMIT) break;
+        /*
+        FNXC:WorkflowResolvedColumns 2026-07-30-17:55 (#2838 review — greptile P1, "workflow fallback
+        drops renamed completions"):
+
+        PROVENANCE, BECAUSE THIS RESOLVER DOES NOT FAIL — IT SUBSTITUTES.
+
+        `resolveWorkflowIrForTask` degrades to the BUILT-IN coding IR rather than throwing, so the
+        `.catch(() => undefined)` protected almost nothing: when a task's selection cannot be resolved
+        the call SUCCEEDS and hands back a board whose complete lane is `done`. The old line then read
+        `ownComplete.length > 0` as "this card answered", so a renamed-lane card was measured against
+        the built-in vocabulary, rejected, and — because this sweep is the thing that would have
+        repaired its missing merge evidence — rejected again on every subsequent sweep.
+
+        The provenance form separates "the card's own workflow says complete = X" from "nobody could
+        say, here is the default". Only the first is an answer.
+
+        THE VERDICT IS DELIBERATELY UNCHANGED, AND I MEASURED THAT RATHER THAN ASSUMING IT. My first
+        version also gated `ownComplete` on the provenance, which READS like the fix and is inert: a
+        defaulted card resolves to the built-in `complete = ["done"]`, and gating it to `[]` falls
+        through to the literal `done` — the same verdict by a different route. Mutating the gate away
+        left the suite green, which is how I found it. Shipping it would have been a conversion that
+        scores as a win and changes nothing, so it is gone.
+
+        The verdict SHOULD stay conservative here: this sweep WRITES merge evidence, and guessing a lane
+        to rewrite history onto the wrong card is worse than leaving one unrepaired. What the provenance
+        buys is the thing that was actually missing — the unresolvable card is now REPORTED instead of
+        being indistinguishable from a card that answered, so "unrepaired" stops meaning "unrepairable
+        and invisible forever".
+        */
+        const resolved = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id, perTaskIrCache)
+          .catch(() => undefined);
+        const ownComplete = resolved ? columnsWithFlag(resolved.ir, "complete") : [];
+        /* A THROW is unresolvable too. Checking only `source === "default"` left the rarer path — the
+           resolver raising rather than substituting — silently discarded, which is the same invisibility
+           this change exists to remove, one branch over. */
+        if (!resolved || resolved.source === "default") unresolvedWorkflowCards.push(task.id);
+        /* DELIBERATE-LITERAL — the degraded per-card default, reviewed 2026-07-30-17:20. Reached when the
+           card's own workflow could not be resolved AT ALL, or resolves and declares no complete lane. The
+           project union must not stand in here: that is the flat-set mistake this filter exists to avoid,
+           so the legacy id is the conservative answer. The census ratchet flagged this line when it
+           appeared, which is the guard working. */
+        const isComplete = ownComplete.length > 0 ? ownComplete.includes(task.column) : task.column === "done";
+        if (isComplete) candidates.push(task);
+      }
+
+      if (unresolvedWorkflowCards.length > 0) {
+        log.warn(
+          `done-task integrity sweep: ${unresolvedWorkflowCards.length} card(s) measured against the `
+          + `built-in complete lane because their own workflow could not be resolved `
+          + `(${unresolvedWorkflowCards.slice(0, 5).join(", ")}); a renamed completion lane there stays unrepaired.`,
+        );
+      }
 
       if (candidates.length === 0) return 0;
       const settings = await this.store.getSettings();
@@ -7412,7 +7541,38 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
       const maxAutoMergeRetries = resolveMaxAutoMergeRetries(settings);
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-20:20 (the query-filter class, fifth sweep):
+      Fifth application of the four-part shape in
+      `docs/solutions/architecture-patterns/self-healing-sweeps-are-blind-on-a-renamed-board.md`.
+      `listTasks({ column: "in-review" })` returns EMPTY on a renamed board, so a card that is genuinely
+      ready to merge — every step done, no blocker — was never re-enqueued and sat in review forever.
+
+      Read via the project union; verdict per card against its own workflow, because this sweep enqueues
+      a MERGE; provenance so an unresolvable card is reported rather than silently skipped.
+      */
+      const mergeableReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const mergeableById = new Map<string, Task>();
+      for (const column of mergeableReviewColumns) {
+        for (const task of await this.store.listTasks({ column, slim: true })) mergeableById.set(task.id, task);
+      }
+      const tasks = [...mergeableById.values()];
+      const mergeableIrCache = new Map<string, WorkflowIr>();
+      const unresolvedMergeableCards: string[] = [];
+      /*
+      Returns the card's OWN review lanes, so one resolution feeds BOTH consumers below — the lane test
+      and `getTaskMergeBlocker`. Two resolutions of the same fact is how the halves of one decision drift.
+      */
+      const ownReviewLanesFor = async (task: Task): Promise<ReadonlySet<string>> => {
+        const resolved = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id, mergeableIrCache)
+          .catch(() => undefined);
+        const own = resolved
+          ? [...new Set(REVIEW_ROLES.flatMap((role) => columnsWithFlag(resolved.ir, role)))]
+          : [];
+        if (!resolved || resolved.source === "default") unresolvedMergeableCards.push(task.id);
+        /* DELIBERATE-LITERAL — the unresolvable-workflow default, reviewed 2026-07-30-20:20. */
+        return own.length > 0 ? new Set(own) : new Set(["in-review"]);
+      };
       /*
       FNXC:WorkflowReviewGates 2026-07-26-15:30:
       Liveness gate, mirroring `recoverGhostReviewTasks` and
@@ -7432,7 +7592,6 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
 
       const mergeable = tasks.filter((t) =>
-        t.column === "in-review" &&
         allowsAutoMergeProcessing(t, settings) &&
         !t.paused &&
         !executingIds.has(t.id) &&
@@ -7455,13 +7614,38 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         // refreshes updatedAt, preventing cooldown-based retries from ever
         // becoming eligible. Also skip tasks explicitly tagged as no-op merges
         // in case updateTask(moveTask) is briefly out-of-order during recovery.
-        (t.mergeRetries ?? 0) < maxAutoMergeRetries &&
-        getTaskMergeBlocker(t) === undefined,
+        (t.mergeRetries ?? 0) < maxAutoMergeRetries,
       );
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-20:20 (widening a query makes a dormant guard REACHABLE):
+      `getTaskMergeBlocker` moved out of the synchronous filter above because it needs this card's
+      resolved review lanes, and those need an await.
+
+      This matters beyond tidiness. That call was previously UNWIRED — it took the legacy `in-review`
+      default — and was harmless only because the literal query above meant a renamed board never reached
+      it. Widening the read makes it reachable for the first time, so left as-is it would have refused
+      every card on exactly the boards this fix is for: the sweep would find them and then decline them.
+
+      Converting a query is therefore not just a read change; it activates every guard downstream of it.
+      */
+      const laneQualifiedMergeable: Task[] = [];
+      for (const task of mergeable) {
+        const reviewColumns = await ownReviewLanesFor(task);
+        if (!reviewColumns.has(task.column)) continue;
+        if (getTaskMergeBlocker(task, { reviewColumns }) !== undefined) continue;
+        laneQualifiedMergeable.push(task);
+      }
+      if (unresolvedMergeableCards.length > 0) {
+        log.warn(
+          `mergeable-review recovery: ${unresolvedMergeableCards.length} card(s) measured against the `
+          + `built-in review lane because their own workflow could not be resolved `
+          + `(${unresolvedMergeableCards.slice(0, 5).join(", ")}); a renamed review lane there stays stuck.`,
+        );
+      }
       const ownershipFlags = await Promise.all(
-        mergeable.map((task) => this.isMergeLaneOwned(task.id)),
+        laneQualifiedMergeable.map((task) => this.isMergeLaneOwned(task.id)),
       );
-      const unownedMergeable = mergeable.filter((_, i) => !ownershipFlags[i]);
+      const unownedMergeable = laneQualifiedMergeable.filter((_, i) => !ownershipFlags[i]);
 
       const inReviewIds = new Set(tasks.map((task) => task.id));
       const mergeableIds = new Set(unownedMergeable.map((task) => task.id));
@@ -7473,7 +7657,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
       if (unownedMergeable.length === 0) return 0;
 
-      log.warn(`Found ${unownedMergeable.length} mergeable review task(s) stuck in in-review`);
+      log.warn(
+        `Found ${unownedMergeable.length} mergeable review task(s) stuck in ${[...mergeableReviewColumns].join(", ")}`,
+      );
 
       // Prefer the engine's merge queue so `mergeStrategy` (direct vs.
       // pull-request) is honored. Fall back to a direct store merge only
@@ -7555,7 +7741,48 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
 
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-21:20 (the query-filter class, sixth sweep — and the first
+      converted with the ACTIVATION check run FIRST, per
+      `docs/solutions/architecture-patterns/self-healing-sweeps-are-blind-on-a-renamed-board.md`):
+
+      `listTasks({ column: "in-review" })` returned EMPTY on a renamed board, so a card parked with a
+      FAILED pre-merge review step was never auto-revived and stayed parked until a human noticed.
+
+      The activation check mattered here more than anywhere so far. This sweep's filter asks
+      `blocker !== "task has failed pre-merge workflow steps"` — an EXACT STRING match. Unwired on a
+      renamed board the blocker instead returns "task is in 'checking', must be in 'in-review'", which is
+      not that string, so every card would be rejected the moment the widened query started finding them.
+      Wiring the blocker is therefore part of this conversion, not a follow-up.
+      */
+      const failedStepReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const failedStepById = new Map<string, Task>();
+      for (const column of failedStepReviewColumns) {
+        for (const task of await this.store.listTasks({ column, slim: true })) failedStepById.set(task.id, task);
+      }
+      const tasks = [...failedStepById.values()];
+      const failedStepIrCache = new Map<string, WorkflowIr>();
+      const unresolvedFailedStepCards: string[] = [];
+      /* One resolution per card, feeding BOTH the lane test and the blocker below. */
+      const ownReviewLanesForFailedStep = async (task: Task): Promise<ReadonlySet<string>> => {
+        const resolved = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id, failedStepIrCache)
+          .catch(() => undefined);
+        const own = resolved
+          ? [...new Set(REVIEW_ROLES.flatMap((role) => columnsWithFlag(resolved.ir, role)))]
+          : [];
+        if (!resolved || resolved.source === "default") unresolvedFailedStepCards.push(task.id);
+        /* DELIBERATE-LITERAL — the unresolvable-workflow default, reviewed 2026-07-30-21:20. */
+        return own.length > 0 ? new Set(own) : new Set(["in-review"]);
+      };
+      const reviewLanesByTask = new Map<string, ReadonlySet<string>>();
+      for (const task of tasks) reviewLanesByTask.set(task.id, await ownReviewLanesForFailedStep(task));
+      if (unresolvedFailedStepCards.length > 0) {
+        log.warn(
+          `failed-pre-merge-step revival: ${unresolvedFailedStepCards.length} card(s) measured against the `
+          + `built-in review lane because their own workflow could not be resolved `
+          + `(${unresolvedFailedStepCards.slice(0, 5).join(", ")}); a renamed review lane there stays parked.`,
+        );
+      }
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
 
       const latestFailedPreMergeStep = (task: Pick<Task, "workflowStepResults">): WorkflowStepResult | undefined => {
@@ -7643,7 +7870,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       };
 
       const candidates = tasks.filter((task) => {
-        if (task.column !== "in-review") return false;
+        /* Precomputed above, so this filter stays synchronous. */
+        if (!(reviewLanesByTask.get(task.id) ?? new Set(["in-review"])).has(task.column)) return false;
         if (!allowsAutoMergeProcessing(task, settings)) return false;
         if (task.paused) return false;
         /*
@@ -7666,7 +7894,11 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         // Merge must be blocked *specifically* by the failed pre-merge step —
         // not by an unrelated condition (incomplete steps, etc.) that is
         // already handled by a dedicated scan.
-        const blocker = getTaskMergeBlocker(task);
+        /* Wired: this comparison is an EXACT STRING match, so an unwired blocker returning
+           "task is in '<lane>', must be in 'in-review'" would reject every card on a renamed board. */
+        const blocker = getTaskMergeBlocker(task, {
+          reviewColumns: reviewLanesByTask.get(task.id) ?? new Set(["in-review"]),
+        });
         if (!parkedRemediationFailure && blocker !== "task has failed pre-merge workflow steps") return false;
 
         // The retry flow injects into PROMPT.md + re-executes on the worktree.
@@ -8401,23 +8633,62 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const timeoutMs = settings.taskStuckTimeoutMs;
       if (!timeoutMs || timeoutMs <= 0) return 0;
 
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
-      const statusCandidates = tasks.filter((task) =>
-        task.column === "in-review" &&
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-19:50 (the query-filter class, fourth sweep):
+      Same shape as its three siblings: `listTasks({ column: "in-review" })` returns EMPTY on a renamed
+      board, so a task interrupted mid-merge — status still `merging`, no live session behind it — was
+      never recovered and sat in that state indefinitely.
+
+      Project union for the READ; per-card verdict for the MUTATION, since this sweep rewrites status and
+      clears merge state. Provenance so an unresolvable card is reported rather than silently skipped —
+      identical to `recoverAlreadyMergedReviewTasks` and `recoverStuckMergeDeadlocks`, so the four cannot
+      drift apart.
+      */
+      const interruptedReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const interruptedById = new Map<string, Task>();
+      for (const column of interruptedReviewColumns) {
+        for (const task of await this.store.listTasks({ column, slim: true })) interruptedById.set(task.id, task);
+      }
+      const interruptedIrCache = new Map<string, WorkflowIr>();
+      const unresolvedInterruptedCards: string[] = [];
+      const inOwnReviewLaneForInterrupted = async (task: Task): Promise<boolean> => {
+        const resolved = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id, interruptedIrCache)
+          .catch(() => undefined);
+        const own = resolved
+          ? [...new Set(REVIEW_ROLES.flatMap((role) => columnsWithFlag(resolved.ir, role)))]
+          : [];
+        if (!resolved || resolved.source === "default") unresolvedInterruptedCards.push(task.id);
+        /* DELIBERATE-LITERAL — the unresolvable-workflow default, reviewed 2026-07-30-19:50. */
+        return own.length > 0 ? own.includes(task.column) : task.column === "in-review";
+      };
+      const statusCandidates = [...interruptedById.values()].filter((task) =>
         allowsAutoMergeProcessing(task, settings) &&
         !task.paused &&
         Boolean(task.status && ACTIVE_MERGE_STATUSES.has(task.status)),
       );
       const candidates: Task[] = [];
       for (const task of statusCandidates) {
+        if (!(await inOwnReviewLaneForInterrupted(task))) continue;
         if (await this.isPastInterruptedMergeGraceAsync(task, timeoutMs)) {
           candidates.push(task);
         }
       }
 
+      if (unresolvedInterruptedCards.length > 0) {
+        log.warn(
+          `interrupted-merge recovery: ${unresolvedInterruptedCards.length} card(s) measured against the `
+          + `built-in review lane because their own workflow could not be resolved `
+          + `(${unresolvedInterruptedCards.slice(0, 5).join(", ")}); a renamed review lane there stays stuck.`,
+        );
+      }
+
       if (candidates.length === 0) return 0;
 
-      log.warn(`Found ${candidates.length} stale merging task(s) in in-review`);
+      /* Names the lanes actually searched rather than the literal `in-review`, which is no longer what
+         was queried and would misreport the board this ran against. */
+      log.warn(
+        `Found ${candidates.length} stale merging task(s) in ${[...interruptedReviewColumns].join(", ")}`,
+      );
 
       let recovered = 0;
       for (const task of candidates) {
@@ -9408,22 +9679,54 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       if (settings.globalPause || settings.enginePaused) return 0;
       const maxAutoMergeRetries = resolveMaxAutoMergeRetries(settings);
       const now = Date.now();
-      const inReview = await this.store.listTasks({ column: "in-review", slim: true });
       /*
-      FNXC:WorkflowColumns 2026-07-29-17:40 (PR #2560 review):
-      This trio is a UNION and is deliberately left on literals. For the merged
-      default lineage the `triage` read returns empty and `todo` supplies the cards;
-      for a legacy/custom workflow that still declares `triage` it supplies them.
-      Either way the union is complete, and the role filter below decides which rows
-      count as pre-WIP. Unlike the recoverAdvancedTriageTasks query this replaces
-      nothing and disables nothing — it is a redundant read, not a dead sweep.
+      FNXC:WorkflowResolvedColumns 2026-07-30-19:20 (the query-filter class, third sweep):
+      FOUR reads, two different jobs, and only the reads were broken.
+
+      `inReview` supplies the CANDIDATES — cards blocked on merge — so it needs both halves: the project
+      union for the read, and a per-card verdict against the card's own workflow, because this sweep
+      mutates. Same shape as `recoverAlreadyMergedReviewTasks`, provenance and reporting included.
+
+      The other three supply DEPENDENTS, and their verdict is already correct: `filterByPreWipRole`
+      resolves intake/hold per card below. The 2026-07-29-17:40 note reasoned that the literal trio was a
+      complete union "and the role filter below decides which rows count" — which held for the default and
+      legacy lineages it considered, and does not hold for a RENAMED board, where all three reads return
+      empty and the role filter is handed nothing to decide about. Widening the reads restores exactly the
+      property that note relied on; the filter it points at is unchanged.
       */
-      const triage = await this.store.listTasks({ column: "triage", slim: true });
-      const todo = await this.store.listTasks({ column: "todo", slim: true });
-      const inProgress = await this.store.listTasks({ column: "in-progress", slim: true });
+      const reviewColumnsForDeadlock = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const inReviewById = new Map<string, Task>();
+      for (const column of reviewColumnsForDeadlock) {
+        for (const task of await this.store.listTasks({ column, slim: true })) inReviewById.set(task.id, task);
+      }
+      const deadlockIrCache = new Map<string, WorkflowIr>();
+      const unresolvedDeadlockCards: string[] = [];
+      const inOwnReviewLaneForDeadlock = async (task: Task): Promise<boolean> => {
+        const resolved = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id, deadlockIrCache)
+          .catch(() => undefined);
+        const own = resolved
+          ? [...new Set(REVIEW_ROLES.flatMap((role) => columnsWithFlag(resolved.ir, role)))]
+          : [];
+        if (!resolved || resolved.source === "default") unresolvedDeadlockCards.push(task.id);
+        /* DELIBERATE-LITERAL — the unresolvable-workflow default, reviewed 2026-07-30-19:20. */
+        return own.length > 0 ? own.includes(task.column) : task.column === "in-review";
+      };
+      const inReview = [...inReviewById.values()];
+
+      /* Dependents: read every pre-WIP and WIP lane the project declares; `filterByPreWipRole` below
+         still decides per card which of them actually count. */
+      const dependentSourceColumns = await resolveProjectColumnsForRoles(
+        this.store,
+        ["intake", "hold", "countsTowardWip"],
+      );
+      const dependentsById = new Map<string, Task>();
+      for (const column of dependentSourceColumns) {
+        for (const task of await this.store.listTasks({ column, slim: true })) dependentsById.set(task.id, task);
+      }
+      const dependentSources = [...dependentsById.values()];
 
       const dependentsByBlocker = new Map<string, Task[]>();
-      for (const task of [...triage, ...todo, ...inProgress]) {
+      for (const task of dependentSources) {
         if (!task.blockedBy) continue;
         const dependents = dependentsByBlocker.get(task.blockedBy) ?? [];
         dependents.push(task);
@@ -9449,8 +9752,9 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         const hasBlockedDependents = (dependentsByBlocker.get(task.id) ?? []).some(
           (dep) => preWipDependentIds.has(dep.id),
         );
-        return task.column === "in-review" &&
-          allowsAutoMergeProcessing(task, settings) &&
+        /* Lane identity is decided per card by `inOwnReviewLaneForDeadlock` below — this synchronous
+           filter keeps every other condition, so the async check runs only for rows that already qualify. */
+        return allowsAutoMergeProcessing(task, settings) &&
           !task.paused &&
           task.status === "failed" &&
           (task.mergeRetries ?? 0) >= maxAutoMergeRetries &&
@@ -9459,10 +9763,23 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           cooldownElapsed >= DEADLOCK_RECOVERY_COOLDOWN_MS;
       });
 
-      if (candidates.length === 0) return 0;
+      /* The per-card lane verdict is async, so it cannot live in the filter above. */
+      const laneQualified: Task[] = [];
+      for (const task of candidates) {
+        if (await inOwnReviewLaneForDeadlock(task)) laneQualified.push(task);
+      }
+      if (unresolvedDeadlockCards.length > 0) {
+        log.warn(
+          `merge-deadlock recovery: ${unresolvedDeadlockCards.length} card(s) measured against the `
+          + `built-in review lane because their own workflow could not be resolved `
+          + `(${unresolvedDeadlockCards.slice(0, 5).join(", ")}); a renamed review lane there stays deadlocked.`,
+        );
+      }
+
+      if (laneQualified.length === 0) return 0;
 
       let recovered = 0;
-      for (const task of candidates) {
+      for (const task of laneQualified) {
         if (task.deletedAt) continue;
         const blockedDependents = dependentsByBlocker.get(task.id) ?? [];
         const blockedTaskIds = blockedDependents.map((dep) => dep.id);
@@ -9819,16 +10136,84 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       if (settings.globalPause || settings.enginePaused) return 0;
       const maxAutoMergeRetries = resolveMaxAutoMergeRetries(settings);
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
-      const candidates = tasks.filter((task) =>
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-18:20 (the query-filter class, second sweep):
+      THE QUERY WAS THE BUG. `listTasks({ column: "in-review" })` returns EMPTY on a board whose review
+      lane is renamed, so this sweep never ran — and it is the one that rescues a card whose merge
+      ACTUALLY SUCCEEDED but is parked in review with `status: "failed"`. Unrun, that card stays stuck
+      permanently with a merge nobody reconciles.
+
+      Read widened via the project union (a read happens before any task is in hand); the per-card verdict
+      below is resolved against THAT CARD's own workflow, because this sweep mutates. Widening the read
+      and widening the verdict are different decisions — see `reconcileDoneTaskIntegrity`.
+      */
+      const reviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const byId = new Map<string, Task>();
+      for (const column of reviewColumns) {
+        for (const task of await this.store.listTasks({ column, slim: true })) byId.set(task.id, task);
+      }
+      const reviewIrCache = new Map<string, WorkflowIr>();
+      /* Cards whose own workflow could not be resolved — reported below rather than silently dropped. */
+      const unresolvedReviewCards: string[] = [];
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-18:50 (#2838 review — greptile P1, same class as the
+      done-integrity sweep one commit earlier):
+      PROVENANCE, BECAUSE THIS RESOLVER DOES NOT FAIL — IT SUBSTITUTES. `resolveWorkflowIrForTask`
+      degrades to the BUILT-IN coding IR rather than throwing, so `own.length > 0` read as "this card
+      answered" when nobody had: a renamed-lane card was measured against the built-in `in-review`,
+      rejected, and — because this sweep is what would have rescued its already-merged state — rejected
+      again on every subsequent pass.
+
+      I wrote this sweep before that fix landed on the done-integrity one and reproduced its pre-fix
+      shape verbatim. Same resolution, same reporting, so the two cannot drift.
+
+      The VERDICT stays conservative: this sweep mutates a task's column and status, and guessing a lane
+      is worse than leaving one unrescued. What provenance buys is that the unrescued card is REPORTED.
+      */
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-20:50 (widening this sweep's query ACTIVATED a guard below):
+      Returns the card's OWN review lanes rather than a boolean, so ONE resolution feeds BOTH consumers —
+      this sweep's lane test and the `getTaskHardMergeBlocker` call in its recovery loop.
+
+      That blocker was unwired and UNREACHABLE while this sweep's query was a literal. Widening the read
+      made it reachable: the sweep now finds renamed-board cards, and unwired it would decline every one,
+      so the conversion would have looked complete and delivered nothing. Found by scanning this file for
+      sweeps holding BOTH a literal query and an unwired lane guard — six of them, this one included.
+      */
+      const ownReviewLanesForAlreadyMerged = async (task: Task): Promise<ReadonlySet<string>> => {
+        const resolved = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id, reviewIrCache)
+          .catch(() => undefined);
+        const own = resolved
+          ? [...new Set(REVIEW_ROLES.flatMap((role) => columnsWithFlag(resolved.ir, role)))]
+          : [];
+        /* A THROW is unresolvable too — the rarer path where the resolver raises rather than substitutes. */
+        if (!resolved || resolved.source === "default") unresolvedReviewCards.push(task.id);
+        /* DELIBERATE-LITERAL — the unresolvable-workflow default, reviewed 2026-07-30-18:50. */
+        return own.length > 0 ? new Set(own) : new Set(["in-review"]);
+      };
+      const inOwnReviewLane = async (task: Task): Promise<boolean> =>
+        (await ownReviewLanesForAlreadyMerged(task)).has(task.column);
+      const shortlist = [...byId.values()].filter((task) =>
         !task.deletedAt &&
-        task.column === "in-review" &&
         allowsAutoMergeProcessing(task, settings) &&
         task.status === "failed" &&
         (task.mergeRetries ?? 0) >= maxAutoMergeRetries &&
         task.mergeDetails?.mergeConfirmed !== true &&
         !executingIds.has(task.id),
       );
+
+      /* The per-card lane verdict is async, so it cannot live in the filter above. */
+      const candidates: Task[] = [];
+      for (const task of shortlist) {
+        if (await inOwnReviewLane(task)) candidates.push(task);
+      }
+      if (unresolvedReviewCards.length > 0) {
+        log.warn(
+          `already-merged review rescue: ${unresolvedReviewCards.length} card(s) measured against the `
+          + `built-in review lane because their own workflow could not be resolved `
+          + `(${unresolvedReviewCards.slice(0, 5).join(", ")}); a renamed review lane there stays unrescued.`,
+        );
+      }
 
       if (candidates.length === 0) return 0;
 
@@ -9904,11 +10289,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             mergeTargetSource: mergeTarget.source,
           };
 
+          /* Wired with THIS card's review lanes — see the note on `ownReviewLanesForAlreadyMerged` above. */
           const hardBlocker = getTaskHardMergeBlocker({
             ...task,
             steps: task.steps ?? [],
             workflowStepResults: task.workflowStepResults,
-          });
+          }, { reviewColumns: await ownReviewLanesForAlreadyMerged(task) });
           if (hardBlocker) {
             await this.store.updateTask(task.id, {
               status: "failed",
@@ -10292,11 +10678,40 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   async recoverCompletionHandoffLimbo(): Promise<void> {
     const settings = await this.store.getSettings();
     if (settings.globalPause || settings.enginePaused) return;
-    const tasks = await this.store.listTasks({ column: "in-review", slim: false });
+    /*
+    FNXC:WorkflowResolvedColumns 2026-07-30-22:40 (the query-filter class, eighth sweep):
+    `listTasks({ column: "in-review" })` returned EMPTY on a renamed board, so a task stranded in
+    completion-handoff limbo — falsely marked exhausted while the merge queue already owns it — was never
+    cleared and stayed wedged.
+
+    Activation check first: this is one of the three remaining sweeps holding both a literal query and an
+    unwired `getTaskMergeBlocker`, so the guard is wired in the same change. This loop is already async,
+    so the per-card resolution happens inline rather than needing a precomputed map.
+    */
+    const limboReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+    const limboById = new Map<string, Task>();
+    for (const column of limboReviewColumns) {
+      for (const task of await this.store.listTasks({ column, slim: false })) limboById.set(task.id, task);
+    }
+    const tasks = [...limboById.values()];
+    const limboIrCache = new Map<string, WorkflowIr>();
+    const unresolvedLimboCards: string[] = [];
+    const ownLimboReviewLanes = async (task: Task): Promise<ReadonlySet<string>> => {
+      const resolved = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id, limboIrCache)
+        .catch(() => undefined);
+      const own = resolved
+        ? [...new Set(REVIEW_ROLES.flatMap((role) => columnsWithFlag(resolved.ir, role)))]
+        : [];
+      if (!resolved || resolved.source === "default") unresolvedLimboCards.push(task.id);
+      /* DELIBERATE-LITERAL — the unresolvable-workflow default, reviewed 2026-07-30-22:40. */
+      return own.length > 0 ? new Set(own) : new Set(["in-review"]);
+    };
     const now = Date.now();
 
     for (const task of tasks) {
-      if (task.column !== "in-review" || task.paused) continue;
+      if (task.paused) continue;
+      const limboReviewLanes = await ownLimboReviewLanes(task);
+      if (!limboReviewLanes.has(task.column)) continue;
       if (!allowsAutoMergeProcessing(task, settings)) continue;
       if (await this.isFalseCompletionHandoffExhaustionWhileMergeOwned(task)) {
         await this.store.updateTask(task.id, {
@@ -10313,7 +10728,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       if (task.status != null || task.mergeDetails != null || task.review != null || task.reviewState != null) continue;
       if (this.options.isTaskActive?.(task.id)) continue;
       if (await this.isMergeLaneOwned(task.id)) continue;
-      if (getTaskMergeBlocker(task) !== undefined) continue;
+      /* Wired: unwired, this would skip every card the widened read now finds. */
+      if (getTaskMergeBlocker(task, { reviewColumns: limboReviewLanes }) !== undefined) continue;
 
       const doneMarker = [...(task.log ?? [])].reverse().find((entry) => entry.action === "Task marked done by agent");
       if (!doneMarker?.timestamp) continue;

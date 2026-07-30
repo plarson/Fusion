@@ -84,6 +84,103 @@ The two shapes that work:
 - When you touch a self-healing test, make its `listTasks` fake **honor `options.column`**. That is a one-line change per fake and it converts this whole class from invisible to failing-loudly.
 - Read `self-healing.ts: N` in the census as "N comparisons", never as "N remaining defects" — in this file the two numbers are not related.
 
+## Converting a sweep: the four-part shape, and the part that is easy to miss
+
+Four sweeps are converted (`reconcileDoneTaskIntegrity`, `recoverAlreadyMergedReviewTasks`,
+`recoverStuckMergeDeadlocks`, `recoverInterruptedMergingTasks`). They are deliberately identical, because
+the second one drifted from the first — it was written from the pre-review version and reproduced a flaw
+review had already fixed one commit earlier.
+
+1. **Read** — `resolveProjectColumnsForRoles(store, ROLES)`, then query each column and dedupe by id. A
+   read happens before any task is in hand, so there is nothing to resolve a per-task lane from. The
+   legacy ids are unioned in, so a board mid-rename whose rows are still stored under the old id is not
+   skipped.
+2. **Verdict** — resolved per card against **its own** workflow. Widening the read and widening the
+   verdict are different decisions: a missed row is invisible, a wrong row is a write. Using the project
+   union as a per-card test claims a card because *some other board* calls its column that role.
+3. **Provenance** — `resolveWorkflowIrForTaskWithProvenance`, because the resolver **substitutes** the
+   built-in IR rather than failing. Without it, `columnsWithFlag(ir, role).length > 0` reads as "this card
+   answered" when nobody did. It does not change the verdict (measured: identical, since the built-in lane
+   already *is* the legacy id) — it makes the unrepaired card **reportable** instead of invisible.
+4. **The log strings.** Widening a query silently invalidates every message naming the old literal.
+   `recoverInterruptedMergingTasks` logged `"stale merging task(s) in in-review"` after its read covered
+   several lanes — an operator debugging a renamed board would have been told the wrong column.
+5. **The guards the widened query now ACTIVATES.** This is the one that bites hardest, because it makes a
+   conversion look complete while delivering nothing.
+
+## Converting a query is also an activation
+
+A guard downstream of a literal query is **unreachable on a renamed board** — the sweep never hands it a
+row. Unreachable and correct are indistinguishable from the outside, which is exactly why these guards sit
+unwired for years without anyone noticing.
+
+Widen the read and they become reachable for the first time. `recoverMergeableReviewTasks` called
+`getTaskMergeBlocker(t)` unwired; the moment its query found renamed-board cards, that call declined every
+one of them. **The sweep would have found the cards and refused them** — strictly worse than not finding
+them, because it looks fixed.
+
+Measured across `self-healing.ts`: **4 sweeps hold both a literal column query and a genuinely unwired lane
+guard**; 32 hold a literal query with no such guard.
+
+```text
+  finalizeNoOpReviewTasks             getTaskMergeBlocker
+  recoverOrphanOnlyScopeViolations    getTaskHardMergeBlocker
+  recoverPostDoneNonContinuableWedge  getTaskHardMergeBlocker
+  recoverCompletionHandoffLimbo       getTaskMergeBlocker
+```
+
+**That number was 6 in the first version of this doc, and both extra rows were my scanner lying.** Worth
+recording, because the scan is the thing the next worker will re-run:
+
+- `recoverAlreadyMergedReviewTasks` was reported unwired **after I had wired it** — the options object sits
+  on the call's *last* line and the check read only the *first*. A multi-line call needs its whole span.
+- `recoverReviewTasksWithFailedPreMergeSteps` was reported with a second unwired guard that is **prose
+  inside a doc comment** (`"because getTaskMergeBlocker() correctly blocks incomplete steps"`).
+
+Both are the same failure this program keeps documenting about the census: **an instrument that matches
+syntax, read as if it measured meaning.** I published 6, corrected to 5, and only reached 4 by re-checking
+the correction itself. Re-run the scan with the span-aware and comment-skipping form, and spot-check each
+row against the source before acting on it.
+
+The scan must also run **before** the query is widened, not after: I converted
+`recoverAlreadyMergedReviewTasks` two commits before noticing its guard, so for two commits it found
+renamed-board cards and declined them.
+
+`getTaskHardMergeBlocker` was the blind spot for four of the six: it is a *wrapper*, it had no lane
+parameter at all, and every one of its callers sat behind a literal query. Nothing exercised it.
+
+Parts 4 and 5 are both invisible to the census — one is string contents, the other is reachability — and
+each of the **43 remaining queries** carries both risks.
+
+## Testing a sweep: assert what happens ONLY when the change is correct
+
+Four assertions on this branch were vacuous — they passed with the fix reverted — and all four shared one
+shape: **I asserted something the sweep does regardless of the code under test.** The surface presentation
+differed every time, which is why recognising it took four rounds:
+
+| the assertion | why it proved nothing |
+| --- | --- |
+| `commitSha` stayed undefined | the write needs a real git repo, so it never happens in the fixture either way |
+| `toContain("must be in")` | **two** guards can refuse; the other one caught the card and produced the same substring |
+| a warn was emitted | the sweep warns on a path unrelated to the conversion |
+| `getSettings` was called | the sweep calls it **unconditionally on its first line** |
+
+The reliable question is not *"did something observable happen"* but *"what happens **only** when this
+change is correct"*. In a self-healing sweep that is almost always **candidacy** — the first thing that
+runs once per accepted row, after the filter:
+
+```ts
+// getSettings runs before the filter → useless
+// isBranchAheadOfBase runs once per CANDIDATE → separates accepted from declined
+const aheadCheck = vi.spyOn(manager as never, "isBranchAheadOfBase").mockResolvedValue(false);
+```
+
+**Asserting the query is only safe when nothing downstream can veto.** Once a sweep has a lane-sensitive
+guard (part 5), a query-only assertion passes while the guard silently rejects every row — which is
+precisely the bug being fixed. Where a guard exists, assert the end-to-end outcome instead.
+
+And run the revert. Every one of the four above was found that way and none by reading.
+
 ## Related
 
 - `docs/solutions/test-failures/optional-flags-seam-hides-unconverted-column-guards.md` — the same lesson one level down: the census counts syntax, and a green suite that omits the new parameter carries no information about the change.

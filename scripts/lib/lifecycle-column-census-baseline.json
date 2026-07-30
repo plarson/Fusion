@@ -1,14 +1,14 @@
 {
   "generatedFrom": "node scripts/lifecycle-column-census.mjs --strict --update-baseline",
   "totals": {
-    "column": 715,
+    "column": 714,
     "role": 5,
     "status": 186,
     "deliberate": 23
   },
   "byColumnId": {
     "done": 194,
-    "in-progress": 136,
+    "in-progress": 135,
     "in-review": 197,
     "archived": 146,
     "todo": 42
@@ -18,7 +18,7 @@
     "packages/engine/src/executor.ts": 82,
     "packages/dashboard/app/components/TaskCard.tsx": 42,
     "packages/dashboard/app/components/TaskDetailModal.tsx": 30,
-    "packages/engine/src/scheduler.ts": 24,
+    "packages/engine/src/scheduler.ts": 23,
     "packages/dashboard/src/routes/register-task-workflow-routes.ts": 20,
     "packages/core/src/task-store/moves.ts": 15,
     "packages/core/src/store.ts": 12,

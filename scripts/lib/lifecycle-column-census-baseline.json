@@ -16,7 +16,6 @@
     "packages/engine/src/agent-tools.ts": 5,
     "packages/engine/src/project-engine.ts": 5,
     "packages/engine/src/restart-recovery-coordinator.ts": 5,
-    "packages/core/src/task-store/branch-group-ops.ts": 4,
     "packages/dashboard/app/components/TaskDetailModal.tsx": 4,
     "packages/dashboard/src/routes/register-git-github.ts": 4,
     "packages/engine/src/agent-heartbeat.ts": 4,

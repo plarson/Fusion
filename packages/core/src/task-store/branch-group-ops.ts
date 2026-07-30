@@ -7,7 +7,8 @@
  * instance as its first parameter and performs byte-identical work.
  */
 import {TaskStore} from "../store.js";
-import {resolveTaskLifecycleColumns} from "../workflow-lifecycle-traits.js";
+import {resolveTaskLifecycleColumns, columnsWithFlag} from "../workflow-lifecycle-traits.js";
+import {resolveWorkflowIrForTask} from "../workflow-ir-resolver.js";
 import type {WorkflowIr} from "../workflow-ir-types.js";
 import type {Task, ColumnId, ArtifactType, ArtifactWithTask, InboxTask, TaskLogEntry, RunMutationContext, Agent} from "../types.js";
 import {runReconciliationAbort} from "../workflow-reconciliation.js";
@@ -114,8 +115,32 @@ export async function selectNextTaskForAgentImpl(store: TaskStore, agentId: stri
 
     const assignedTasks = tasks.filter((task) => task.assignedAgentId === agentId);
 
+    /*
+    FNXC:WorkflowResolvedColumns 2026-07-30-14:50 (fleet phase; #2739 review — greptile P2):
+    The dispatcher's OWN lane filters, resolved for this agent's tasks only. On a renamed board both
+    matched nothing, so an agent asking for work was told there was none with its own assigned tasks
+    sitting in the list it just fetched — no error, no log, the agent simply idles.
+
+    Scoped to `assignedTasks` deliberately: an earlier version walked the whole board before filtering, so
+    a 400-card board paid 400 resolutions to dispatch one agent that owns three. `assignedAgentId` is a
+    plain property read and was already the next filter, so hoisting it costs nothing.
+
+    ONE cache across BOTH lifecycle loops. An earlier version of this comment claimed the dependency pass
+    below shared it while the code allocated a second map, so a task and its dependency in the same workflow
+    resolved that workflow's IR twice — the comment asserted an optimisation the code did not perform.
+    `lifecycleIrCache` is now the only cache and the dependency loop takes it.
+    */
+    const lifecycleIrCache = new Map<string, WorkflowIr>();
+    const lifecycleByTaskId = new Map<string, Awaited<ReturnType<typeof resolveTaskLifecycleColumns>>>();
+    for (const task of assignedTasks) {
+      if (lifecycleByTaskId.has(task.id)) continue;
+      lifecycleByTaskId.set(task.id, await resolveTaskLifecycleColumns(store, task.id, lifecycleIrCache));
+    }
+    const isWipTask = (task: Task) => task.column === (lifecycleByTaskId.get(task.id)?.wip ?? "in-progress");
+    const isHoldTask = (task: Task) => task.column === (lifecycleByTaskId.get(task.id)?.hold ?? "todo");
+
     const inProgress = assignedTasks
-      .filter((task) => task.column === "in-progress" && isBindCompatible(task))
+      .filter((task) => isWipTask(task) && isBindCompatible(task))
       .sort(sortByOldestColumnMove);
     if (inProgress.length > 0) {
       return {
@@ -139,19 +164,35 @@ export async function selectNextTaskForAgentImpl(store: TaskStore, agentId: stri
     legacy ids, matching the answer settled in #2720 and used by the merge blocker.
     */
     const satisfiedColumns = new Set<string>(["done", "archived"]);
-    const satisfiedIrCache = new Map<string, WorkflowIr>();
+    /* FNXC:WorkflowResolvedColumns 2026-07-30-14:50 (#2739 review): reuses the dispatch cache above, so a
+       task and its dependency in one workflow read that IR once between them. */
+    /*
+    FNXC:WorkflowResolvedColumns 2026-07-30-16:10 (#2739 review — greptile P1, MEMBERSHIP not first-per-role):
+    `resolveLifecycleColumns` returns the FIRST column carrying each trait, so a workflow declaring two
+    complete lanes (or a complete plus a separate sign-off-complete) had only one of them counted as
+    satisfying a dependency. A dependent whose blocker landed in the SECOND terminal lane read as unfinished
+    and was dropped from both ready and actionable-blocked dispatch — silently, since "no work available" is
+    indistinguishable from "correctly waiting".
+
+    Fixed locally with `columnsWithFlag`, and worth distinguishing from the arity gap I declined to fix on
+    the earlier thread. That one asked a single-id question (`lifecycle.wip`) where making it membership
+    changes what the shared resolver returns for ~30 consumers. THIS loop already builds a SET and already
+    unions across dependencies, so membership is what it was always trying to express — no resolver change,
+    no consumer migration, and it matches the `register-task-workflow-routes` precedent.
+    */
     for (const dependencyId of new Set(
       roleCompatibleAssignedTasks.flatMap((task) => task.dependencies ?? []),
     )) {
-      const lifecycle = await resolveTaskLifecycleColumns(store, dependencyId, satisfiedIrCache);
-      if (lifecycle?.complete) satisfiedColumns.add(lifecycle.complete);
-      if (lifecycle?.archived) satisfiedColumns.add(lifecycle.archived);
+      const ir = await resolveWorkflowIrForTask(store, dependencyId, lifecycleIrCache);
+      if (!ir) continue;
+      for (const columnId of columnsWithFlag(ir, "complete")) satisfiedColumns.add(columnId);
+      for (const columnId of columnsWithFlag(ir, "archived")) satisfiedColumns.add(columnId);
     }
     const isDoneLike = (task: Task | undefined) => task !== undefined && satisfiedColumns.has(task.column);
 
     /** FNXC:TaskDispatch 2026-07-19-14:40: remembered ownership must not reselect an operator-parked task when `userPaused` remains true but legacy `paused` is false. */
     const todoCandidates = roleCompatibleAssignedTasks.filter(
-      (task) => task.column === "todo" && task.paused !== true && task.userPaused !== true,
+      (task) => isHoldTask(task) && task.paused !== true && task.userPaused !== true,
     );
 
     const readyTodo = todoCandidates
@@ -236,7 +277,17 @@ export async function pauseTaskImpl(store: TaskStore, id: string, paused: boolea
       }
       // When pausing an in-progress/in-review task, set status so the UI can show the state.
       // When unpausing, clear the "paused" status.
-      if (task.column === "in-progress" || task.column === "in-review") {
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-14:50 (fleet phase):
+      One task in hand, so one resolution — the "is this card mid-flight or in review" test that decides
+      whether pausing shows a `paused` status. On a renamed board neither literal matched, so pausing a
+      running card left its status untouched and the UI kept showing it as working.
+      */
+      const pauseLifecycle = await resolveTaskLifecycleColumns(store, id);
+      if (
+        task.column === (pauseLifecycle?.wip ?? "in-progress")
+        || task.column === (pauseLifecycle?.review ?? "in-review")
+      ) {
         task.status = paused ? "paused" : undefined;
       }
       const now = new Date().toISOString();

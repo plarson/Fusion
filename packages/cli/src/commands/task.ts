@@ -1417,12 +1417,33 @@ export async function runTaskRetry(id: string, projectName?: string) {
       throw new Error(`Task ${id} is not in a retryable state (status: ${task.status || 'none'})`);
     }
 
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-31-11:20 (fleet — the retry TARGET, live regression on main):
+    Retry re-queues the card to its board's HOLD column, resolved from the task's own workflow.
+
+    #2728 converted the retry CLASSIFIER above (`retryReviewColumns.has(task.column)`) and left all
+    three re-queue targets below on the literal `"todo"`. That combination is strictly worse than the
+    bug it fixed: before, `fn task retry` silently did nothing on a renamed board; after, it
+    correctly decides to retry and then THROWS
+
+        TransitionRejectionError: Invalid transition: 'checking' -> 'todo'. Unknown column for this workflow.
+
+    because `todo` is not a column that board declares.
+
+    The census cannot see this: it counts COMPARISONS, and a move target contains none. So the file
+    reads 0 guards while the crash is live — which is exactly why the classifier and the target must
+    move together.
+
+    Fail-soft to `"todo"` when the workflow cannot be resolved, matching every other fallback here.
+    */
+    const retryHoldColumn = (await resolveTaskLifecycleColumns(context.store, id))?.hold ?? "todo";
+
     const autoPauseClearPatch = buildAutoPauseClearPatch(task);
     const clearedDeadlockAutoPause = Object.keys(autoPauseClearPatch).length > 0;
     const retryLogSuffix = clearedDeadlockAutoPause ? ", cleared deadlock auto-pause" : "";
 
     if (isMissingWorktreeSessionRetry) {
-      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, "todo", { preserveProgress: true }));
+      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true }));
       await retryBoardCall(context, id, "update task", () => context.store.updateTask(id, {
         status: null,
         error: null,
@@ -1444,7 +1465,7 @@ export async function runTaskRetry(id: string, projectName?: string) {
     // and merge failures (all steps done).
     if (isInReviewRetry) {
       if (isExecutionFailureInReview) {
-        await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, "todo", { preserveProgress: true }));
+        await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never, { preserveProgress: true }));
         await retryBoardCall(context, id, "update task", () => context.store.updateTask(id, {
           status: null,
           error: null,
@@ -1464,7 +1485,7 @@ export async function runTaskRetry(id: string, projectName?: string) {
         return;
       }
 
-      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, "todo"));
+      await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never));
       await retryBoardCall(context, id, "update task", () => context.store.updateTask(id, {
         status: null,
         error: null,
@@ -1479,10 +1500,20 @@ export async function runTaskRetry(id: string, projectName?: string) {
       return;
     }
 
-    // Move to todo column before applying retry resets. `moveTask` reads from the
+    // Move to the hold column before applying retry resets. `moveTask` reads from the
     // store's durable index and may overwrite task.json-only updates, so apply the
     // manual retry reset patch after the move to make the cleared counters stick.
-    await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, 'todo'));
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-31-12:30 (PR #2752 review — greptile P1):
+    THE FOURTH TARGET, and the one that matters most.
+
+    This is the GENERIC retry fallthrough — a plainly `failed` or `stuck-killed` card, which is the
+    ordinary case, not the in-review stall paths above. It was written with SINGLE quotes while its
+    three siblings used double, so my first pass converted three of four and left the common path
+    crashing. Found by review, not by me, and not by any tool: the census counts comparisons and sees
+    none of these, and a same-file grep for the double-quoted form reports clean.
+    */
+    await retryBoardCall(context, id, "move task", () => context.store.moveTask(id, retryHoldColumn as never));
 
     // Clear failure state and stale branch refs so retry can choose a fresh base.
     await retryBoardCall(context, id, "update task", () => context.store.updateTask(id, {

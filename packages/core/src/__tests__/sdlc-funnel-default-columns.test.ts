@@ -1,6 +1,6 @@
 // @vitest-environment node
 /*
-FNXC:SdlcFunnelColumns 2026-07-31-09:50 (the default path was the only path, and it used the legacy IR):
+FNXC:SdlcFunnelColumns 2026-07-30-09:50 (the default path was the only path, and it used the legacy IR):
 
 THE INVARIANT: the SDLC funnel's built-in column fallback maps the board Fusion actually ships.
 
@@ -22,7 +22,7 @@ test stops being evidence and becomes a chore.
 */
 import { describe, expect, it } from "vitest";
 
-import { buildColumnStageMap } from "../activity-analytics.js";
+import { buildColumnStageMap, stageForTraits } from "../activity-analytics.js";
 import { resolveDefaultWorkflowIr } from "../builtin-workflows.js";
 import { BUILTIN_CODING_WORKFLOW_IR } from "../builtin-coding-workflow-ir.js";
 import type { WorkflowIrColumn } from "../workflow-ir-types.js";
@@ -80,7 +80,7 @@ describe("the funnel's built-in column fallback tracks the SHIPPED default board
 });
 
 /*
-FNXC:SdlcFunnelColumns 2026-07-31-10:25 (the real fix, and the correction of my own claim):
+FNXC:SdlcFunnelColumns 2026-07-30-10:25 (the real fix, and the correction of my own claim):
 
 I first changed only `defaultColumns()` from the legacy IR to `resolveDefaultWorkflowIr()` and described
 it as fixing renamed boards. IT DOES NOT. Post-U11 the current lineage's column ids are a SUBSET of the
@@ -126,5 +126,60 @@ describe("a board whose columns the funnel was not given folds to OTHER", () => 
     const empty = buildColumnStageMap([]);
 
     expect(empty.size).toBe(0);
+  });
+});
+
+/*
+FNXC:SdlcFunnel 2026-07-30-16:00:
+A HOLD-ONLY column must land in the funnel, not in OTHER.
+
+`hold` was missing from the trait->stage map, so a renamed board's wait-for-capacity lane resolved to
+OTHER and disappeared from the SDLC funnel entirely. The default lineage hid this: its Planning column
+also carries `intake` and `reset-on-entry`, so it always matched something. Only a board that names
+its wait lane separately — exactly the custom shape this trait mapping exists to support — was
+affected.
+
+REVERT CHECK: remove `hold` from TRAIT_TO_STAGE and the first case returns "other".
+
+NOT covered here, on purpose: the merged default Planning column carries intake AND reset-on-entry, so
+`stageForTraits` still resolves it to `triage` and the `todo` stage stays empty on default boards.
+That is a real defect from the U11 merge and a larger, non-reversible call — changing which stage
+Planning reports would retroactively alter historical analytics. Flagged on PR #2669 for a decision
+rather than settled silently here. The second case below PINS the current behaviour so that decision
+is made deliberately and not drifted into.
+*/
+describe("SDLC funnel: hold-only columns", () => {
+  it("places a hold-only column in the todo stage rather than OTHER", () => {
+    expect(stageForTraits(["hold"])).toBe("todo");
+  });
+
+  it("maps a hold-only COLUMN through buildColumnStageMap, not just its traits", () => {
+    /*
+    FNXC:SdlcFunnel 2026-07-30-16:00 (PR #2674 review — greptile, and it is the project's own rule):
+    The reported bug was that a hold-only COLUMN disappeared from the funnel. Asserting
+    `stageForTraits` alone tests the helper, not the surface where the defect shows — and the
+    Surface Enumeration rule exists because a fix proven only at the unit it was written in is how
+    the same bug comes back one caller over.
+
+    `buildColumnStageMap` is the seam the funnel actually consumes: it maps column id -> stage for
+    every column on the board. A hold-only lane must appear there with a real stage, not OTHER.
+    */
+    const stages = buildColumnStageMap([
+      { id: "waiting", traits: [{ trait: "hold" }] },
+      { id: "building", traits: [{ trait: "wip" }] },
+      { id: "shipped", traits: [{ trait: "complete" }] },
+    ] as never);
+
+    expect(stages.get("waiting")).toBe("todo");
+    // The neighbours prove the map is populated normally, so the case above cannot pass because the
+    // map is empty or every column collapsed to one stage.
+    expect(stages.get("building")).toBe("in-progress");
+    expect(stages.get("shipped")).toBe("done");
+  });
+
+  it("still resolves the merged Planning column to `triage` — unchanged by this fix", () => {
+    // intake (stage 0) outranks reset-on-entry/hold (stage 1) by flow order. Pinned so the separate
+    // merged-column question cannot be answered accidentally by a future edit to this map.
+    expect(stageForTraits(["intake", "hold", "reset-on-entry"])).toBe("triage");
   });
 });

@@ -44,23 +44,26 @@ export function diffSnapshots(
     }
 
     /*
-    FNXC:WorkflowLifecycleColumns 2026-07-30-22:25 (batch-cli-plugins):
-    The completion notification asks each card's OWN complete column.
+    FNXC:WorkflowLifecycleColumns 2026-07-31-03:05 (supersedes the 2026-07-30-22:25 and -01:20 notes):
+    The completion notification asks each card's OWN complete column, and the caller now builds it.
 
     Keyed on the literal, a renamed board would never fire a "completed" card to the glasses — the
-    wearer would be notified of every column transition EXCEPT the one they care about. The map is
-    per task, not a flat set, because the poll spans the whole board and one workflow's complete
-    column id can be another workflow's WIP id.
+    wearer is notified of every column transition EXCEPT the one they care about.
 
-    CURRENTLY UNREACHABLE, stated plainly: the only production caller (`notifier.ts`) passes
-    `alsoNotifyOnDone: false`, so this branch does not run today and this change is not observable at
-    runtime. It is converted rather than marked DELIBERATE-LITERAL because the literal is not
-    deliberate — it is simply wrong, and would ship the bug the day someone turns the flag on.
+    PER TASK, not a flat project set, and this shape has now been argued twice. The original note
+    gave the reason and it is correct: the poll spans the whole board, so one workflow's complete
+    column id can be another workflow's WIP id. I briefly replaced it with a flat set from
+    `resolveProjectColumnsForRoles` because that is one read instead of N — but that helper always
+    unions the legacy `done` in, which is inert for a query and a FALSE POSITIVE for a per-card
+    decision: a workflow declaring `shipped` as complete while reusing `done` as an ordinary lane
+    would fire "completed" for live work (#2852 review, greptile P2).
 
-    DELIBERATE-LITERAL — the unresolved-workflow default, reviewed 2026-07-30-22:25.
+    What the original note got wrong was not the shape but the wiring — no caller ever built the map,
+    so this literal decided every real notification. `notifier.ts` now builds it, and builds it only
+    when `alsoNotifyOnDone` is on, so the per-task cost is paid only by a caller that consumes it.
     */
     const completeColumns = opts.completeColumnsByTaskId?.get(task.id);
-    /* DELIBERATE-LITERAL — the unresolved-workflow default documented above, reviewed 2026-07-30-22:25. */
+    /* DELIBERATE-LITERAL — the degraded default for a card the caller could not resolve. */
     const isComplete = completeColumns ? completeColumns.has(task.column) : task.column === "done";
     if (isComplete && opts.alsoNotifyOnDone) {
       events.push({

@@ -536,8 +536,18 @@ const RESET_TASK_FIELDS = {
   sessionFile: null,
 } as const;
 
+/*
+FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (U12 — PR #2582 review, greptile):
+COLUMN REMOVED from the shared constant. It hardcoded `todo`, so drift correction forced
+the card there regardless of the workflow's actual rebound column — and then the final
+verification (which now compares against `resetColumn`) saw the mismatch and raised the
+very 409 "limbo" conflict this change exists to remove. Fixing the check without fixing
+the writer just moved the bug.
+
+The column is supplied per call from the resolved rebound column; everything else here is
+genuinely column-independent cleanup.
+*/
 const RESET_DRIFT_CORRECTION_FIELDS = {
-  column: "todo" as const,
   worktree: null,
   branch: null,
   status: null,
@@ -1118,6 +1128,21 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
       the heuristic instead of turning a board load into thousands of reads.
       */
       try {
+        /*
+        FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (U12 — R8, DELIBERATELY NOT CONVERTED):
+        This filter names `todo`, so a workflow whose waiting lane is called something else
+        gets no enrichment and silently falls back to the heuristic. I converted it and then
+        REVERTED: resolving each task's hold column needs a per-task workflow read, and this
+        is the board-load path whose own comment above exists because unbounded reads here
+        "turn a board load into thousands of reads". My version did those reads for every
+        task BEFORE the enrich limit applied — trading a silent degradation for a load-time
+        regression on every board.
+
+        Converting it properly needs the hold column resolved per WORKFLOW from data the
+        board payload already carries, not per task from the store. That is a real change
+        with a measurable cost, not a rename, so it is left for one — with the cost stated
+        rather than the conversion quietly skipped.
+        */
         const todoRows = tasks.filter((task) => task.column === "todo");
         const enrichable = todoRows.slice(0, AWAITING_PLANNING_ENRICH_LIMIT);
         if (todoRows.length > enrichable.length) {
@@ -2884,7 +2909,16 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         throw notFound(`Task ${req.params.id} not found after reset`);
       }
 
-      const needsDriftCorrection = updated.column !== "todo"
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (U12 — R8 drift conversion):
+      Verify against the column the reset actually TARGETED. The mover two lines up already
+      resolves `resetColumn` from the task's workflow, but both post-reset checks compared
+      against the literal `todo` — so on any workflow whose rebound column is not `todo`
+      (Coding (Ideas), any custom or renamed lineage) a reset that SUCCEEDED was reported
+      as a "limbo state" conflict. The mover and its own verification disagreed about
+      where the card was supposed to land.
+      */
+      const needsDriftCorrection = updated.column !== resetColumn
         || (updated.worktree ?? null) !== null
         || (updated.branch ?? null) !== null
         || (updated.checkedOutBy ?? null) !== null
@@ -2901,10 +2935,17 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
           worktreeSessionRetryCount: updated.worktreeSessionRetryCount ?? null,
           sessionFile: updated.sessionFile ?? null,
         };
-        await scopedStore.updateTask(req.params.id, RESET_DRIFT_CORRECTION_FIELDS);
+        /*
+        Built as a named const, not an inline literal: `updateTask`'s patch type does not
+        declare `column`, and the original code only compiled because a variable reference
+        skips excess-property checking. Keeping that shape preserves the existing runtime
+        behaviour exactly while making the column follow the resolved rebound target.
+        */
+        const driftCorrection = { ...RESET_DRIFT_CORRECTION_FIELDS, column: resetColumn };
+        await scopedStore.updateTask(req.params.id, driftCorrection);
         await scopedStore.logEntry(
           req.params.id,
-          "Auto-corrected reset drift after moveTask — normalized task back to todo with cleared worktree/branch bindings",
+          `Auto-corrected reset drift after moveTask — normalized task back to ${resetColumn} with cleared worktree/branch bindings`,
           JSON.stringify(offendingSnapshot),
         );
         await emitResetDriftAudit(scopedStore, req.params.id, offendingSnapshot);
@@ -2914,7 +2955,8 @@ export function registerTaskWorkflowRoutes(ctx: ApiRoutesContext, deps: TaskWork
         }
       }
 
-      if (updated.column !== "todo" || (updated.worktree ?? null) !== null || (updated.branch ?? null) !== null) {
+      // Same target as the drift check above: the resolved rebound column, not `todo`.
+      if (updated.column !== resetColumn || (updated.worktree ?? null) !== null || (updated.branch ?? null) !== null) {
         throw conflict(
           `Reset refused to return task ${req.params.id} in limbo state (${updated.column}, branch=${updated.branch ?? "null"}, worktree=${updated.worktree ?? "null"})`,
         );

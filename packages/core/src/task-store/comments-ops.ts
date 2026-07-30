@@ -20,6 +20,40 @@ import "../builtin-traits.js";
 import {__setTaskActivityLogLimitsForTesting, isBootstrapPromptStub} from "../task-store/comments.js";
 import {getLiveTaskColumn, publishArchivedTaskDocumentAddition as publishArchivedTaskDocumentAdditionAsync, upsertTaskDocument as upsertTaskDocumentAsync} from "../task-store/async-comments-attachments.js";
 
+/*
+FNXC:PostCommentRetriage 2026-07-29-19:30 (U11 lifecycle-column conversion):
+STATUS is the discriminator here, not the column id.
+
+Callers reach this only after establishing the card sits in a pre-implementation
+column, so re-testing the column inside was always redundant — and after U11 it was
+WRONG. `builtin:coding` resolves to BUILTIN_STEPWISE_FINAL_REVIEW_CODING_WORKFLOW_IR,
+whose merged Planning column keeps the id `todo` and declares no `triage` column at
+all. The old `column === "triage" && status === "awaiting-approval"` therefore never
+matched a default card, and the consequences were graded:
+
+  - with a real spec, the card fell through to the re-triage arm — same
+    `needs-replan` write, but audited as "requested re-specification" instead of
+    "invalidated spec approval";
+  - with a bootstrap-stub spec, `hasRealPrompt` was false and NEITHER arm fired, so
+    an operator comment on a card awaiting spec approval invalidated nothing. The
+    approval silently stood.
+
+Dropping the column re-checks fixes both and removes 2 of this file's 3 `triage`
+literals. The remaining one is the caller's gate (`column === "todo" || column ===
+"triage"`), which is deliberately left: it covers BOTH vocabularies, so it still
+fires for default cards, and narrowing it to traits needs an IR the caller does not
+have.
+*/
+export function resolvePostCommentRetriageDecision(input: {
+  column: string;
+  status?: string | null;
+  hasRealPrompt: boolean;
+}): { invalidateApproval: boolean; retriagePlanned: boolean } {
+  const invalidateApproval = input.status === "awaiting-approval";
+  const retriagePlanned = input.hasRealPrompt && !invalidateApproval;
+  return { invalidateApproval, retriagePlanned };
+}
+
 export async function addCommentImpl(store: TaskStore, id: string, text: string, author: string = "user", options?: { skipRefinement?: boolean; source?: "user" | "agent" | "github-review" | "github-review-comment"; externalId?: string; reviewState?: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED"; }, runContext?: RunMutationContext,): Promise<Task> {
     {
       const layer = store.asyncLayer!;
@@ -152,13 +186,8 @@ export async function addCommentImpl(store: TaskStore, id: string, text: string,
         });
       }
 
-      const shouldInvalidateAwaitingApproval =
-        task.column === "triage" && task.status === "awaiting-approval";
-      const shouldRetriagePlannedTask = hasRealPrompt
-        && (
-          task.column === "todo"
-          || (task.column === "triage" && task.status !== "awaiting-approval")
-        );
+      const { invalidateApproval: shouldInvalidateAwaitingApproval, retriagePlanned: shouldRetriagePlannedTask } =
+        resolvePostCommentRetriageDecision({ column: task.column, status: task.status, hasRealPrompt });
 
       if (shouldInvalidateAwaitingApproval || shouldRetriagePlannedTask) {
         const phase = shouldInvalidateAwaitingApproval

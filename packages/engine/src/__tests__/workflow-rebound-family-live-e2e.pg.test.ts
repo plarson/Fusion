@@ -23,6 +23,8 @@ Assertions read the PERSISTED row back through `getTask`; the audit rows are rea
 back through the store's own reader.
 */
 import { beforeAll, beforeEach, afterEach, afterAll, describe, expect, it } from "vitest";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import "@fusion/core"; // registers the built-in column traits
 import type { Task, TaskStore } from "@fusion/core";
 
@@ -110,6 +112,182 @@ pgDescribe("live rebound E2E: where a recovered card goes back to", () => {
         | undefined;
       expect(metadata?.toColumn).toBe(RENAMED_VOCAB.hold);
       expect(metadata?.priorColumn).toBe("a-column-no-workflow-declares");
+    });
+
+    /*
+    FNXC:MergedPlanningColumn 2026-07-29-16:20 (U11 migration proof):
+    THE PATH AN OPERATOR ACTUALLY HITS, which the cases above do not cover. They strand a card in a
+    synthetic `a-column-no-workflow-declares`; the real upgrade leaves cards in `triage` — a column
+    that WAS declared until U11 removed it from the default lineage, on the REAL `builtin:coding`
+    workflow rather than a fixture vocabulary.
+
+    That difference matters: `triage` is still a legal `ColumnId` and is still declared by
+    legacy-coding, Ideas and every linear built-in (R11), so nothing rejects it and nothing throws.
+    The card simply sits in a column its OWN workflow no longer declares, where — per the file
+    header — it carries no trait flags and is invisible to every trait-driven sweep.
+
+    Proven below with progress and plan artifacts, because re-homing targets the HOLD column and a
+    repair that loses the spec would be worse than the strand.
+    */
+    /*
+    FNXC:MergedPlanningColumn 2026-07-29-18:10 (PR #2597 review — greptile):
+    REPRESENTATIVE progress, not a bare integer. The first cut set `current_step = 2` on a task
+    seeded with `applyDefaultWorkflowSteps: false` — so there were no steps for the index to point
+    at — and asserted `description` survived, which is an ordinary creation-time field rather than
+    anything a re-home could plausibly reset. A regression that wiped REAL progress would have left
+    that test green, which makes it the exact class of test this program keeps rejecting.
+
+    Now seeds the three things a re-home could actually destroy: a real step array with one step
+    already done, a recorded worktree, and a real PROMPT.md artifact on disk.
+    */
+    async function strandInTriageOnDefaultWorkflow(taskId: string): Promise<void> {
+      const store = h.store();
+      await seedTask(taskId, "todo", "builtin:coding");
+
+      await store.updateTask(taskId, {
+        steps: [
+          { name: "Step one", status: "done" },
+          { name: "Step two", status: "pending" },
+        ],
+        currentStep: 1,
+        worktree: `/tmp/wt-${taskId}`,
+      } as never);
+
+      // A real plan artifact — the thing an operator would actually lose.
+      const taskDir = join(store.getTasksDir(), taskId);
+      await mkdir(taskDir, { recursive: true });
+      await writeFile(join(taskDir, "PROMPT.md"), `# ${taskId}\n\n## Steps\n\n### Step 0: real spec\n`, "utf-8");
+
+      // Direct write: `moveTask` refuses to take a card into an undeclared column, which is the
+      // transition policy working. The corrupt post-upgrade state IS the fixture.
+      await h.adminSql()`UPDATE project.tasks SET "column" = 'triage' WHERE id = ${taskId}`;
+      store.taskCache.delete(taskId);
+    }
+
+    it("re-homes a card left in the deleted `triage` column on a DEFAULT-workflow board", async () => {
+      await strandInTriageOnDefaultWorkflow("FN-MIG-1");
+      expect(await persistedColumn("FN-MIG-1")).toBe("triage");
+
+      const rehomed = await new SelfHealingManager(h.store(), {} as never).reconcileUndeclaredTaskColumns();
+
+      expect(rehomed).toBe(1);
+      // The merged Planning column — the default workflow's hold column, id `todo`.
+      expect(await persistedColumn("FN-MIG-1")).toBe("todo");
+    });
+
+    it("FAILS to move the card when the sweep does not run (proves the sweep is the mover)", async () => {
+      /*
+      The revert check, in-suite: without this the test above could pass because some OTHER sweep
+      or a store-open reconcile moved the card, and it would keep passing if
+      `reconcileUndeclaredTaskColumns` were deleted outright.
+      */
+      await strandInTriageOnDefaultWorkflow("FN-MIG-2");
+
+      // Deliberately do NOT call the sweep.
+      expect(await persistedColumn("FN-MIG-2")).toBe("triage");
+    });
+
+    it("preserves real step progress, the worktree, and the plan artifact across the re-home", async () => {
+      await strandInTriageOnDefaultWorkflow("FN-MIG-3");
+      const store = h.store();
+      const before = await store.getTask("FN-MIG-3");
+      const promptPath = join(store.getTasksDir(), "FN-MIG-3", "PROMPT.md");
+      const promptBefore = await readFile(promptPath, "utf-8");
+      // The fixture must actually carry progress, or the assertions below prove nothing.
+      expect(before.steps).toHaveLength(2);
+      expect(before.steps?.[0]?.status).toBe("done");
+      expect(before.worktree).toBe("/tmp/wt-FN-MIG-3");
+
+      await new SelfHealingManager(store, {} as never).reconcileUndeclaredTaskColumns();
+
+      store.taskCache.delete("FN-MIG-3");
+      const after = await store.getTask("FN-MIG-3");
+      expect(after.column).toBe("todo");
+      /*
+      `preserveProgress: true` is passed by the sweep; assert what it must actually protect rather
+      than trusting the option name. `reset-on-entry` rides on the merged Planning column, so a
+      re-home landing there is precisely where step resets would fire if the flag were dropped.
+      */
+      expect(after.steps).toHaveLength(2);
+      expect(after.steps?.[0]?.status).toBe("done");
+      expect(after.currentStep).toBe(before.currentStep);
+      expect(after.worktree).toBe(before.worktree);
+      expect(await readFile(promptPath, "utf-8")).toBe(promptBefore);
+    });
+
+    it("SKIPS a userPaused card, leaving it in the deleted column (documented caveat)", async () => {
+      /*
+      Confirmed behavior, recorded as a test so it is a decision rather than an accident: an
+      operator park is authoritative and the sweep will not override it. The consequence is real —
+      a paused card stays in a column its workflow no longer declares, invisible to trait-driven
+      sweeps, until someone unpauses it.
+
+      It is a caveat rather than a stall because the card is reachable: unpausing it makes the next
+      sweep re-home it, and the U11 undeclared-source escape hatch in `resolveAllowedColumns` lets
+      an operator move it by hand in the meantime.
+      */
+      await strandInTriageOnDefaultWorkflow("FN-MIG-4");
+      // `user_paused` is an integer flag in the PG schema, not a boolean.
+      await h.adminSql()`UPDATE project.tasks SET user_paused = 1 WHERE id = ${"FN-MIG-4"}`;
+      h.store().taskCache.delete("FN-MIG-4");
+
+      const rehomed = await new SelfHealingManager(h.store(), {} as never).reconcileUndeclaredTaskColumns();
+
+      expect(rehomed).toBe(0);
+      expect(await persistedColumn("FN-MIG-4")).toBe("triage");
+    });
+
+    /*
+    FNXC:MergedPlanningColumn 2026-07-29-18:20 (PR #2597 review — greptile):
+    The skip test above proves only the skip. The "caveat, not a stall" CONCLUSION rests on the two
+    escape paths actually working, and that was asserted in prose rather than in code — so the
+    conclusion was unproven, which is worse than an untested behavior because it was reported as an
+    answer. Both paths are now exercised.
+    */
+    it("ESCAPE 1: unpausing lets the next sweep re-home the card", async () => {
+      await strandInTriageOnDefaultWorkflow("FN-MIG-5");
+      await h.adminSql()`UPDATE project.tasks SET user_paused = 1 WHERE id = ${"FN-MIG-5"}`;
+      h.store().taskCache.delete("FN-MIG-5");
+      expect(await new SelfHealingManager(h.store(), {} as never).reconcileUndeclaredTaskColumns()).toBe(0);
+
+      await h.adminSql()`UPDATE project.tasks SET user_paused = 0 WHERE id = ${"FN-MIG-5"}`;
+      h.store().taskCache.delete("FN-MIG-5");
+
+      expect(await new SelfHealingManager(h.store(), {} as never).reconcileUndeclaredTaskColumns()).toBe(1);
+      expect(await persistedColumn("FN-MIG-5")).toBe("todo");
+    });
+
+    it("ESCAPE 2: an operator can move the card out by hand, with self-healing never running", async () => {
+      /*
+      FNXC:MergedPlanningColumn 2026-07-29-18:50 (PR #2597 review — greptile, and a CORRECTION):
+
+      This passes, and my first explanation of WHY was wrong. I claimed the rescue came from U11's
+      undeclared-source escape hatch in `resolveAllowedColumns`. Mutation-tested: stubbing that
+      hatch back to `[]` leaves this test GREEN, so the hatch is not what saves the card.
+
+      The real reason is narrower and worth knowing. `moves.ts` gates its entire workflow-adjacency
+      block on `useWorkflow = isWorkflowColumnsCompatibilityFlagEnabled(...)`, which reads the RAW
+      `experimentalFeatures.workflowColumns` key — and nothing in production writes that key, so it
+      reads false. The block containing `resolveAllowedColumns` therefore does not execute on the
+      live move path at all; the legacy `VALID_TRANSITIONS` path does, and `triage -> todo` is a
+      legal legacy transition. That is what makes the card movable.
+
+      So caveat 2 is survivable, but by the LEGACY table rather than by the trait-resolved hatch —
+      and the hatch I added in #2515 only covers projects that have the compat flag on, which is
+      approximately none. This is U2b ("converge the two move paths", never done) surfacing: a fix
+      landed on the dead branch. Recorded here rather than silently relied upon, because the
+      difference decides whether the hatch may be deleted as dead code later.
+
+      The assertion is deliberately about the OUTCOME an operator sees, not about which branch
+      produced it, so it stays true whichever path is authoritative after U2b converges them.
+      */
+      await strandInTriageOnDefaultWorkflow("FN-MIG-6");
+      const store = h.store();
+
+      // The operator-facing path, with no recovery flags — exactly what a board drag issues.
+      await store.moveTask("FN-MIG-6", "todo" as never, { moveSource: "user" } as never);
+
+      expect(await persistedColumn("FN-MIG-6")).toBe("todo");
     });
 
     it("still re-homes a default-vocabulary card to `todo` (regression floor)", async () => {

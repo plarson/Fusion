@@ -83,7 +83,17 @@ export function enrichRunningAgentTaskShapeFromFlags<T extends RunningAgentTaskS
     columnTerminalKind: flags?.archived ? "archived" : flags?.complete ? "complete" : "none",
     columnIsIntakeOrHold: flags ? flags.intake === true || flags.hold === true : task.column === "triage" || task.column === "todo",
     columnCountsTowardWip: flags ? flags.countsTowardWip === true : task.column === "in-progress",
-    // The literal fallback is fixture-only; board/store callers always supply flags/IR.
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-29-23:10:
+    These id fallbacks are REACHABLE, not fixture-only — callers may pass no flags for a column
+    absent from the board's flag map, which is the renamed or undeclared column case. A card in
+    such a column then matches no arm and is counted as neither running nor waiting, so the
+    footer's queued total under-reports it.
+
+    Converting them means deciding what an ABSENT flag set should mean, and "not intake" is as
+    much a guess as "todo is intake"; either choice moves an operator-visible count. Supply flags
+    rather than relying on these.
+    */
     columnIsReviewOrMerge: flags ? flags.mergeOrchestration === true || flags.mergeBlocker === true : task.column === "in-review",
   };
 }

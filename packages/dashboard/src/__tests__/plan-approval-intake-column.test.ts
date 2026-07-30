@@ -127,3 +127,115 @@ describe("plan approval on the merged planning column (post-#2515)", () => {
     expect(res.status).toBe(400);
   });
 });
+
+/*
+FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (U12 — R8 drift conversion):
+Reset must verify against the column it actually TARGETED.
+
+`resolveReboundColumnForTask` picks the rebound column from the task's workflow, but both
+post-reset checks compared against the literal `todo`. On any workflow whose rebound
+column is not `todo` — Coding (Ideas), any custom or renamed lineage — a reset that
+SUCCEEDED was reported as a "limbo state" conflict: the mover and its own verification
+disagreed about where the card was supposed to land.
+
+REVERT CHECK: restore either `updated.column !== "todo"` and this fails with a 409,
+because the card lands in `backlog`, which is where its workflow says a reset belongs.
+*/
+describe("reset verification uses the resolved rebound column", () => {
+  const REBOUND_IR = {
+    version: "v2",
+    name: "custom",
+    columns: [
+      { id: "backlog", name: "Backlog", traits: [{ trait: "intake" }, { trait: "hold" }] },
+      { id: "building", name: "Building", traits: [{ trait: "wip" }] },
+      { id: "shipped", name: "Shipped", traits: [{ trait: "complete" }] },
+    ],
+    nodes: [{ id: "start", kind: "start", column: "backlog" }, { id: "end", kind: "end", column: "shipped" }],
+    edges: [{ from: "start", to: "end" }],
+  };
+
+  it("does not report a limbo-state conflict when the card lands in its own rebound column", async () => {
+    const resetTask = {
+      ...PLANNING_TASK,
+      id: "FN-300",
+      column: "backlog",
+      status: undefined,
+      worktree: null,
+      branch: null,
+      checkedOutBy: null,
+    } as unknown as TaskDetail;
+
+    const store = createMockStore({
+      getTask: vi.fn().mockResolvedValue(resetTask),
+      moveTask: vi.fn().mockResolvedValue(resetTask),
+      updateTask: vi.fn().mockResolvedValue(resetTask),
+      getTaskWorkflowSelectionAsync: vi.fn().mockResolvedValue({ workflowId: "wf-custom" }),
+      getWorkflowDefinition: vi.fn().mockResolvedValue({ id: "wf-custom", name: "Custom", ir: REBOUND_IR }),
+    });
+
+    // The route is destructive and demands explicit confirmation; without it the request
+    // 400s before ever reaching the column check, which would make this case vacuous.
+    const res = await performRequest(
+      createApp(store),
+      "POST",
+      "/api/tasks/FN-300/reset",
+      JSON.stringify({ confirm: true }),
+      { "content-type": "application/json" },
+    );
+    /*
+    Assert SUCCESS, not "not 409" (PR #2582 review — greptile). A negative assertion also
+    passes on a 404 or 500, so it would stay green while the route failed some other way.
+    */
+    expect(res.status).toBe(200);
+  });
+
+  it("routes drift correction to the resolved rebound column, not `todo`", async () => {
+    /*
+    FNXC:WorkflowResolvedColumns 2026-07-29-00:00 (PR #2582 review — greptile):
+    The drift-correction path is where fixing the CHECK without fixing the WRITER just
+    moved the bug: `RESET_DRIFT_CORRECTION_FIELDS` hardcoded `column: "todo"`, so a card
+    with stale reset metadata was forced to `todo` and the final check — now comparing
+    against `resetColumn` — raised the very 409 this change removes.
+
+    REVERT CHECK: restore `column: "todo"` in the constant and this fails, because the
+    correction writes `todo` while the workflow's rebound column is `backlog`.
+    */
+    const driftedTask = {
+      ...PLANNING_TASK,
+      id: "FN-301",
+      column: "backlog",
+      // Stale binding: this is what triggers drift correction.
+      worktree: "/tmp/stale",
+      branch: null,
+      checkedOutBy: null,
+    } as unknown as TaskDetail;
+    const corrected = { ...driftedTask, worktree: null } as unknown as TaskDetail;
+
+    const updateTask = vi.fn().mockResolvedValue(corrected);
+    let reads = 0;
+    const store = createMockStore({
+      /*
+      The route reads the task before the move AND after it; both must still show the
+      stale worktree for drift correction to trigger. Only reads after the correction
+      writes see the cleaned task.
+      */
+      getTask: vi.fn().mockImplementation(async () => (reads++ < 2 ? driftedTask : corrected)),
+      moveTask: vi.fn().mockResolvedValue(driftedTask),
+      updateTask,
+      getTaskWorkflowSelectionAsync: vi.fn().mockResolvedValue({ workflowId: "wf-custom" }),
+      getWorkflowDefinition: vi.fn().mockResolvedValue({ id: "wf-custom", name: "Custom", ir: REBOUND_IR }),
+    });
+
+    await performRequest(
+      createApp(store),
+      "POST",
+      "/api/tasks/FN-301/reset",
+      JSON.stringify({ confirm: true }),
+      { "content-type": "application/json" },
+    );
+
+    const correctionCall = updateTask.mock.calls.find(([, patch]) => patch && "column" in patch);
+    expect(correctionCall).toBeDefined();
+    expect((correctionCall![1] as { column: string }).column).toBe("backlog");
+  });
+});

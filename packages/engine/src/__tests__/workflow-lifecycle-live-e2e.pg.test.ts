@@ -695,6 +695,23 @@ two self-healing sweeps verified PER SITE — reverting one fails exactly its ow
                              status discriminates.
       mergeOrchestration/mergeBlocker -> needed its own case too (a review card with an
                              active merge-pipeline status)
+  - mesh-lease-manager.ts  resolveReboundTarget — the recovered-lease rebound AND the
+    unreachable-owner audit's `newColumn` (workflow-lease-rebound-live-e2e.pg.test.ts;
+    mutation-verified). The audit half is the one that rotted silently: it named a
+    column the card never reached, which on a renamed board the workflow does not even
+    declare. `decisionPath` deliberately keeps its legacy wording and is pinned as such.
+  - core/task-store/reads.ts  the listTasks hold-column hydration — ALREADY proven by
+    core's store-stale-paused-renamed-hold.pg.test.ts, which is a real-store test that
+    drives listTasks against a renamed hold column. Confirmed by mutation rather than
+    by reading: forcing the hydration back to the `todo` literal fails exactly that
+    file's renamed case. It was listed here as unproven because I had assumed a
+    separate E2E was needed; it was not.
+  - merger-ai.ts  resolveFinalizeReboundColumn — the LIVE merge path's rebound column
+    (workflow-merge-rebound-live-e2e.pg.test.ts; mutation-verified). Weaker,
+    returned-decision evidence: the resolver returns a column and does not move a card,
+    so this proves the renamed board resolves correctly through a real store and a real
+    persisted workflow, NOT that a card lands there. It was in the "needs real git"
+    bucket by association; it is EXPORTED and takes (store, taskId) and touches no git.
   - auto-merge-finalization.ts  completeColumn / mergeColumn / isCompleteColumn
     (workflow-merge-family-live-e2e.pg.test.ts; each of the three mutation-verified
     INDEPENDENTLY — the mergeColumn one needed its own case, see below)
@@ -708,39 +725,41 @@ consumer is still to land, or it should be deleted. Not resolved here: it is pro
 by the U4 slice, and guessing which is a decision for its author.
 
 NOT PROVEN end to end — real callers this suite does not reach:
-  - merger.ts:324-326        resolveCompleteColumn / resolveMergeOrchestrationColumn / resolveReboundTarget
-  - merger-ai.ts:1022,1039   resolveReboundTarget, resolveLifecycleColumns
+  - merger.ts:324-326        resolveCompleteColumn / resolveMergeOrchestrationColumn /
+    resolveReboundTarget — DEAD PATH, do not build a lane for these. Every call sits
+    inside `aiMergeTask`, which is soft-deprecated, exported only with an @deprecated
+    tag, and has NO production caller (verified by grep across all packages; the live
+    merge path is merger-ai's runAiMerge / landWorkspaceTask, which project-engine
+    imports). Phase B converted a path production never executes. Not deleted here —
+    it is production code owned by another slice — but proving it would prove nothing.
+  - merger-ai.ts:1039        isAlreadyFinalizedColumn — LIVE, but module-private and
+    reached only from runAiMerge, so it does need the real-git lane
   - executor.ts:1763,6339,6341        rebound target, merge-orchestration probe, complete column
-  - mesh-lease-manager.ts:61 resolveReboundTarget
-  - core/task-store/reads.ts:130      listTasks hydration
   - core/live-agent-count.ts    columnIsIntakeOrHold (the WAITING predicate) — the running
     predicate never reads it, so the admission-count E2E cannot reach it
   - dashboard register-task-workflow-routes.ts:151,166,175,1797
 
-WHY, and what each would take:
-  - The merge/rebound family (merger, merger-ai, the executor rebound path, mesh-lease-manager)
-    needs a REAL git worktree, branch, and squash.
+FNXC:WorkflowLifecycleColumns 2026-07-29-17:20 — WHY, and what each would take. Two lanes,
+and neither is another table row:
 
-    CORRECTION (2026-07-28): this bullet used to include auto-merge-finalization, and that was
-    too broad. `finalizeProvenAutoMergeTask` needs NO git — the merge proof is a field on the
-    row — so it was reachable all along and is now covered. The lesson is worth keeping: "needs
-    a real-git lane" was inferred from the family the code sits in rather than from what the
-    function actually touches, and that inference parked reachable coverage for a whole slice.
-    Re-check the remaining entries the same way before assuming they need the lane.
+  LANE 1 — REAL GIT (engine-slow), now SMALLER than it looked. Only two things
+  genuinely need it: merger-ai's `isAlreadyFinalizedColumn` and executor's
+  `resolveReboundColumnFor`, both module-private and reached only from inside
+  merge/session machinery. merger.ts's three sites do NOT need the lane because they
+  are dead (see above), and merger-ai's `resolveFinalizeReboundColumn` did not need it
+  at all — it is now covered. Third time the "this family needs git" inference has
+  been wrong; check what the FUNCTION touches before costing a lane for it.
 
-    A second correction from the same slice: `resolveMergeOrchestrationColumn` was FIRST claimed
-    as covered because it sits in the same resolver as the other two. Mutation-testing it showed
-    all cases passing with it hardcoded — it changes only whether finalization records a
-    column-mismatch REPAIR, never where the card lands. It needed a dedicated audit-row
-    assertion. Sitting next to covered code is not coverage. This suite deliberately has
-    none — `merge-gate` is pure policy and the `merge` seam is scripted. They need an engine-slow
-    real-git lane, not another table row.
-  - The dashboard sites need an HTTP route test with a live store: reachable, different lane.
-  - `reads.ts:130` and `live-agent-count.ts` are read/hydration paths already covered at store level
-    by core's `store-stale-paused-renamed-hold.pg.test.ts`; what is missing is the end-to-end claim,
-    not the unit one.
+  LANE 2 — DASHBOARD HTTP. register-task-workflow-routes' four sites live behind
+  `registerTaskWorkflowRoutes(ctx, deps)`, which needs a full ApiRoutesContext plus
+  twelve injected deps. Standing up that shell is the "mock-the-world" pattern
+  FN-5048 tells us not to add, and the narrower alternative — exporting the two
+  private resolvers — would yield UNIT evidence while looking like E2E. Deliberately
+  not done rather than done badly and overclaimed. The same applies to
+  live-agent-count's `columnIsIntakeOrHold`: it is read only by the WAITING
+  predicate, whose consumers are dashboard-side.
 
-TABLE FIT. Three rows fit. The merge/rebound family does NOT — not because the table is too rigid,
+FNXC:WorkflowLifecycleColumns 2026-07-29-17:20 — TABLE FIT. Three rows fit. The merge/rebound family does NOT — not because the table is too rigid,
 but because those sweeps have no observable persisted effect without a real repository, so `acted`
 cannot be written against the row at all. That is a finding about the lane they need, not a reason
 to hand-roll a scenario beside the table.

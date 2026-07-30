@@ -205,7 +205,21 @@ export async function runPrCreate(id: string, options: PrCreateOptions = {}, pro
     because the v1 upgrade path manufactures empty traits for columns that do exist.
     */
     const resolvedReviewColumns = prIr === undefined ? [] : resolveReviewColumns(prIr);
-    const reviewColumns = new Set(resolvedReviewColumns.length > 0 ? resolvedReviewColumns : ["in-review"]);
+    // DELIBERATE-LITERAL: v1-upgraded IRs synthesize the conventional in-review id without traits.
+    const hasLegacyReviewLane = prIr?.version === "v2"
+      && prIr.columns.some((column) => column.id === "in-review");
+    const reviewColumns = new Set(
+      resolvedReviewColumns.length > 0
+        ? resolvedReviewColumns
+        : hasLegacyReviewLane || prIr === undefined
+          ? ["in-review"]
+          : [],
+    );
+    if (reviewColumns.size === 0) {
+      console.error(`Error: Task workflow declares no review lane; cannot create a PR (current: ${task.column})`);
+      await closeProjectStore(context);
+      process.exit(1);
+    }
     if (!reviewColumns.has(task.column)) {
       /*
       FNXC:WorkflowLifecycleColumns 2026-07-30-21:58:

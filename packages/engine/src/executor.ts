@@ -121,6 +121,7 @@ import type { SandboxBackend } from "./sandbox/types.js";
 import { ModelRegistry, SessionManager, type ToolDefinition, type AgentSession } from "@earendil-works/pi-coding-agent";
 import {
   PRIORITY_EXECUTE,
+  computeTopLevelConcurrencyClaimedFromStore,
   dropPreHeldExecutorSlot,
   takePreHeldExecutorSlot,
   type AgentSemaphore,
@@ -11825,7 +11826,7 @@ export class TaskExecutor {
     try {
       await this.executeCore(task);
     } finally {
-      dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+      if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
     }
   }
 
@@ -11853,7 +11854,7 @@ export class TaskExecutor {
     */
     if (task.deletedAt) {
       executorLog.warn(`${task.id}: refusing execute — task is soft-deleted`);
-      dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+      if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
       return;
     }
     /*
@@ -11875,14 +11876,14 @@ export class TaskExecutor {
       await this.clearStalePauseAbortBeforeDispatch(task);
       if (await this.blockOuterDispatchWhenDependenciesUnmet(task)) {
         // FNXC:GlobalConcurrencyControls 2026-07-14-18:30: release any scheduler pre-held slot when outer dispatch aborts before agent work starts.
-        dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+        if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
         return;
       }
       // FNXC:EphemeralAgents 2026-07-01-00:00: gate ALL workflow dispatch paths
       // (graph/authoritative/work-engine) on ephemeralAgentsEnabled before any of
       // them can claim the task, so the single check covers all three entry points.
       if (await this.blockOuterDispatchWhenEphemeralDisabled(task)) {
-        dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+        if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
         return;
       }
       /*
@@ -11962,7 +11963,7 @@ export class TaskExecutor {
     executorLog.debug(`execute() called for ${task.id} (claimed=${claimed}, perInstanceExecuting=${this.executing.has(task.id)})`);
     if (!claimed) {
       // FNXC:GlobalConcurrencyControls 2026-07-15-02:55: graph fallback may have re-registered a pre-held slot; drop it when this process cannot claim the executor lock.
-      dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+      if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
       return;
     }
 
@@ -11976,7 +11977,7 @@ export class TaskExecutor {
       executorLog.warn(`${task.id}: refusing execute — task is soft-deleted`);
       this.executing.delete(task.id);
       executingTaskLock.release(task.id);
-      dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+      if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
       return;
     }
 
@@ -11985,7 +11986,7 @@ export class TaskExecutor {
       this.executing.delete(task.id);
       executingTaskLock.release(task.id);
       // FNXC:GlobalConcurrencyControls 2026-07-15-02:55: work-engine ownership never take()s the legacy handoff registration — release the reserved global slot.
-      dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+      if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
       return;
     }
 
@@ -12004,7 +12005,7 @@ export class TaskExecutor {
       this.executing.delete(task.id);
       executingTaskLock.release(task.id);
       // FNXC:GlobalConcurrencyControls 2026-07-15-02:55: heartbeat defer must free any re-registered pre-held global slot so capacity is not stranded until the next dispatch.
-      dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+      if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
       return;
     }
 
@@ -12077,7 +12078,7 @@ export class TaskExecutor {
         await this.store.updateTask(task.id, { status: "needs-replan" });
         await this.store.logEntry(task.id, staleness.reason, undefined, this.getRunContextFor(task.id));
         // FNXC:GlobalConcurrencyControls 2026-07-15-02:55: replan handoff never starts agent work — free any re-registered pre-held slot before leaving execute().
-        dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+        if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
         return;
       }
     }
@@ -12094,7 +12095,7 @@ export class TaskExecutor {
       if (await this.finalizeMergeConfirmedWorkflowGraphTask(task.id, "execute-preflight")) {
         this.executing.delete(task.id);
         executingTaskLock.release(task.id);
-        dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+        if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
         return;
       }
     }
@@ -14950,7 +14951,7 @@ export class TaskExecutor {
       release any still-registered slot before lock/executing cleanup. execute()'s outer
       finally also drops (no-op once take/drop already cleared the registration).
       */
-      dropPreHeldExecutorSlot(task.id, this.options.semaphore);
+      if (dropPreHeldExecutorSlot(task.id)) this.options.semaphore?.release();
 
       this.executing.delete(task.id);
       executingTaskLock.release(task.id);
@@ -20986,26 +20987,60 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
           };
         }
 
-        // Read spawn limits from settings
-        const maxPerParent = settings.maxSpawnedAgentsPerParent ?? 5;
-        const maxGlobal = settings.maxSpawnedAgentsGlobal ?? 20;
+        /*
+        FNXC:CapacityModel 2026-07-29-14:10 (two numbers — spawned agents count):
+        `maxSpawnedAgentsPerParent` (5) and `maxSpawnedAgentsGlobal` (20) are DELETED.
+        They were a THIRD and FOURTH limiter with their own private budgets, invisible
+        to the two the operator configures — and they measured the wrong thing: a
+        child that finished still counted against `totalSpawnedCount` until its parent
+        task ended, so the cap throttled cumulative spawns rather than concurrent ones.
 
-        // Check per-parent limit
-        const currentPerParent = this.spawnedAgents.get(taskId)?.size ?? 0;
-        if (currentPerParent >= maxPerParent) {
+        A spawned child IS an agent and runs in its own git worktree (branched from the
+        parent's), so it consumes both configured dimensions. It now checks the SAME
+        project agent count every other lane checks, via the shared live-claim helper —
+        one number, one answer, no private budget that can disagree with the board.
+
+        This closes a real hole rather than only deleting knobs: children were counted
+        by NEITHER capacity gate, so a fan-out could put up to 20 extra worktrees on
+        disk while the scheduler believed the project was at its limit.
+        */
+        const spawnClaimed = await computeTopLevelConcurrencyClaimedFromStore({
+          store: this.store,
+          tasks: await this.store.listTasks({ slim: true, includeArchived: false }),
+        });
+        const spawnCap = settings.maxConcurrent ?? 2;
+        const liveChildren = this.totalSpawnedCount;
+        if (spawnClaimed + liveChildren >= spawnCap) {
           return {
-            content: [{ type: "text" as const, text: `Per-parent spawn limit reached (${currentPerParent}/${maxPerParent}). Wait for children to finish or reduce parallelism.` }],
+            content: [{
+              type: "text" as const,
+              text: `Agent capacity reached (${spawnClaimed + liveChildren}/${spawnCap} running, including ${liveChildren} spawned child agent(s)). Wait for work to finish, or raise Max Concurrent Tasks.`,
+            }],
             details: { agentId: "", state: "error" },
           };
         }
+        /*
+        FNXC:CapacityModel 2026-07-29-19:20 (PR #2579 review — greptile P1, TOCTOU):
+        RESERVE THE SLOT SYNCHRONOUSLY, before the first await.
 
-        // Check global limit
-        if (this.totalSpawnedCount >= maxGlobal) {
-          return {
-            content: [{ type: "text" as const, text: `Global spawn limit reached (${this.totalSpawnedCount}/${maxGlobal}). Cannot spawn more agents.` }],
-            details: { agentId: "", state: "error" },
-          };
-        }
+        The check above reads capacity, then several awaits follow (createAgent,
+        createWorktree, updateAgentState) before `totalSpawnedCount` was incremented.
+        Two parents calling fn_spawn_agent with one slot left both passed the check
+        and both spawned — more agents and more worktrees than Max Concurrent Tasks
+        permits, which is the very hole this change set out to close.
+
+        JS is single-threaded, so incrementing here — with NO await between the read
+        and the increment — makes check-and-reserve atomic against every other spawn
+        call. The reservation is rolled back on any failure below, and the success
+        path no longer double-counts.
+        */
+        this.totalSpawnedCount++;
+        let spawnReservationHeld = true;
+        const releaseSpawnReservation = () => {
+          if (!spawnReservationHeld) return;
+          spawnReservationHeld = false;
+          this.totalSpawnedCount = Math.max(0, this.totalSpawnedCount - 1);
+        };
 
         try {
           // Create agent in AgentStore with reportsTo = parent task ID
@@ -21119,7 +21154,9 @@ Child agent: ${agent.id} (${name})`;
             this.spawnedAgents.set(taskId, new Set());
           }
           this.spawnedAgents.get(taskId)!.add(agent.id);
-          this.totalSpawnedCount++;
+          // The slot was already reserved before the awaits above; converting the
+          // reservation into the live count is a no-op rather than a second increment.
+          spawnReservationHeld = false;
 
           // Run child asynchronously (don't await — parent continues working)
           this.runSpawnedChild(agent.id, childSession, taskPrompt).catch((err: unknown) => {
@@ -21140,6 +21177,10 @@ Child agent: ${agent.id} (${name})`;
             details: result,
           };
         } catch (err: unknown) {
+          // FNXC:CapacityModel 2026-07-29-19:20: a failed spawn must return the slot
+          // it reserved, or a project permanently loses capacity to a spawn that
+          // never happened.
+          releaseSpawnReservation();
           const errorMessage = err instanceof Error ? err.message : String(err);
           return {
             content: [{ type: "text" as const, text: `Failed to spawn agent: ${errorMessage}` }],

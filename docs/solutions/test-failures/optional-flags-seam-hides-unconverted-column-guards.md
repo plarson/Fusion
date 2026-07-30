@@ -107,6 +107,69 @@ which is the same churn already removed from the census baseline by dropping its
 So the requirement lives here, as a review criterion, until someone finds a sound signal. The honest
 version of the automated attempt is recorded above so it is not re-attempted from scratch.
 
+## The census counts comparisons, so a literal COLLECTION is invisible to it
+
+Measured on `origin/main` while assessing the next conversion target, and worth stating because the fleet
+treats the census total as the completion bar:
+
+- **47** array/Set literals of two or more lifecycle ids, in 35 files.
+- **100** membership tests against a task's column overall — `SET.has(task.column)` /
+  `ARRAY.includes(task.column)`. MOST ARE ALREADY CORRECT: the set is RESOLVED at runtime from the task's
+  IR, which is the converted shape this program produces.
+- **19** of them, in 16 files, test a set built from HARDCODED ids. Three are seeds or documented fallbacks
+  sitting behind a resolved primary (`triage.ts`, `mission-feature-sync.ts`, `branch-group-ops.ts`), so
+  **~16 are unconverted guards**.
+- The census scans `===` / `!==` against a column. **None of these is a comparison, so none is counted.**
+
+They behave exactly like the guards the census does count. The largest concentrations:
+
+<!--
+FNXC:LifecycleColumnCensus 2026-07-30-20:10 (PR #2763 review):
+COUNTS ARE MEMBERSHIP USES, not occurrences of the identifier — the declaration line does not count.
+Re-measured every row against the tree rather than only the one the review questioned:
+
+    grep -c '<CONST>.has(' <file>
+
+Two were wrong and are corrected above: `retryReviewColumns` 3 -> 4, `OPEN_COLUMNS` 2 -> 1. The row
+the review questioned (`TIME_INDICATOR_COLUMNS`) is CORRECT at 2, and the constant is present at
+TaskCard.tsx:333 with uses at 1712 and 3070.
+-->
+
+| file | constant |
+| --- | --- |
+| `dashboard/app/components/TaskCard.tsx` (2) | `TIME_INDICATOR_COLUMNS` |
+| `engine/src/eval-followups.ts` (1) | `OPEN_COLUMNS` |
+| `engine/src/task-revert.ts` (2) | `REVERTABLE_COLUMNS` |
+| `core/src/agent-role-policy.ts` (1) | `IMPLEMENTATION_TASK_COLUMNS` |
+
+<!--
+FNXC:LifecycleColumnCensus 2026-07-30-20:40 (self-correction after the #2763 review):
+THE REVIEW FIXED THE COUNTS; TWO ROWS WERE WRONG IN KIND. `retryReviewColumns` and `sourceTerminal` are
+already RESOLVED — `columnsWithFlag(ir, ...)` with a legacy array as the no-IR fallback — and my scan
+classified a constant by whether its initializer text contained only lifecycle ids, so the FALLBACK array
+matched and they read as hardcoded. Six sites across the tree were miscounted that way, which is why the
+headline moved 25 -> 19.
+
+That is this section's own thesis one level up: my instrument counted syntax and called it meaning. The
+corrected rule excludes any initializer deriving from an IR or a resolver at runtime. Rows removed rather
+than renumbered, because a wrong KIND is not fixed by a better count.
+-->
+
+**One is a proven live defect.** `isImplementationTask` is `IMPLEMENTATION_TASK_COLUMNS.has(task.column)`,
+and `evaluateImplementationTaskBind` short-circuits to `allowed: true` when it returns false — so on a
+renamed board every agent is bind-compatible with every task and the role check that stops a liaison being
+handed implementation work does not apply. It surfaced only because a reviewer questioned a coverage claim
+in a dispatch test; asserting the claim properly made the defect fail a test.
+
+**So the census total is a floor, not a total.** That is not an argument against it — it is the best
+instrument here and it is AST-based and honest about what it measures. It is an argument against reading
+"backlog: N" as "N guards remain". The same shape appeared in the archived gate (PR #2724), where the rule
+is also encoded in Drizzle predicates and raw `sql` templates that no comparison scan can see.
+
+Extending the census to count membership predicates is a coordinator-level call, not a worker one: it would
+move every worker's number mid-fleet, and the classification work (which sets are lifecycle guards versus
+board-config definitions or type unions) is exactly the judgement the `deliberate` marker exists for.
+
 ## Related
 
 - `docs/solutions/test-failures/store-fake-defects-that-masquerade-as-production-bugs.md` — the adjacent

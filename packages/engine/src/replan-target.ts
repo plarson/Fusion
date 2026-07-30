@@ -1,5 +1,6 @@
 import type { Task, TaskStore } from "@fusion/core";
-import { resolveWorkflowIrForTask, workflowHasColumn } from "@fusion/core";
+import { resolveLifecycleColumns, resolveWorkflowIrForTask, workflowHasColumn } from "@fusion/core";
+import type { WorkflowIr } from "@fusion/core";
 
 /*
 FNXC:WorkflowReplan 2026-07-12-23:15:
@@ -31,6 +32,87 @@ Recorded here for the U12 literal ratchet's allowlist. That ratchet does not exi
 tree yet; grep `DELIBERATE-LITERAL` to enumerate the sites it must admit, with the reason
 attached at the site rather than in a separate list that can drift from it.
 */
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-30-09:20 (Phase C convergence — shared planner lanes):
+
+MOVED, NOT CHANGED. This is triage.ts's private `resolvePlannerLanes` verbatim, lifted here
+so the executor can ask the same question with the same answer. triage.ts now delegates to
+it; every returned value, the fail-soft legacy pair, and the synchronous shape are
+unchanged, because the executor sites that need it sit in a `task:moved` listener where
+introducing an `await` would reorder handlers relative to a synchronous emitter.
+
+Its original note, preserved because it is still the reason for every property:
+  Triage's column decisions are all one of two questions — "is this card in a planner
+  lane?" (hold or intake) and "where does a finished plan get released to?" (hold). Under a
+  renamed workflow every literal answer silently stops matching; after U11 deletes `triage`
+  from the builtins they stop matching everywhere. Fail-soft to the legacy pair so an
+  unresolvable or column-less workflow behaves exactly as before.
+*/
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-30-09:35 (Phase C convergence):
+`wip` is returned alongside the two planner lanes because a caller that PROMOTES a card out
+of planning needs both halves at once. Resolving the planner lane and then moving to a
+literal `in-progress` is the half-conversion this program has already been burned by twice:
+the guard starts admitting cards on a renamed board and the move then sends them to a column
+that board does not declare — strictly worse than refusing, because the refusal was visible.
+*/
+export interface PlannerLanes {
+  hold: string;
+  intake: string;
+  /*
+  FNXC:WorkflowLifecycleColumns 2026-07-30-16:40 (PR #2628 review — greptile P1 x2):
+  `wip`, `review` and `complete` are OPTIONAL, and that is the whole correction. The first
+  version substituted the legacy id whenever a role was missing, so a workflow that declares
+  columns but no WIP role got `moveTask(..., "in-progress")` — a column that board does not
+  declare. The move is rejected, the caller reports failure, and the card can be left half-moved.
+  A MISSING ROLE IS NOT A LICENCE TO INVENT A COLUMN; the caller must refuse instead.
+
+  `resolvedFromWorkflow` distinguishes the two cases a single `?? legacy` collapsed:
+    - false: no column vocabulary at all (v1 IR, unresolvable store). No basis to decide, so the
+      legacy names ARE the answer and every role is populated.
+    - true: the workflow speaks columns. Roles it does not declare stay undefined, because
+      substituting there is the invention above.
+  */
+  wip: string | undefined;
+  review: string | undefined;
+  complete: string | undefined;
+  /** True when the answer came from the task's workflow rather than the legacy fallback. */
+  resolvedFromWorkflow: boolean;
+}
+
+const LEGACY_PLANNER_LANES: PlannerLanes = {
+  hold: "todo",
+  intake: "triage",
+  wip: "in-progress",
+  review: "in-review",
+  complete: "done",
+  resolvedFromWorkflow: false,
+};
+
+export function resolvePlannerLanes(store: TaskStore, taskId: string): PlannerLanes {
+  try {
+    const ir = (store as unknown as { resolveTaskWorkflowIrSync?: (id: string) => WorkflowIr }).resolveTaskWorkflowIrSync?.(taskId);
+    const lifecycle = ir ? resolveLifecycleColumns(ir) : undefined;
+    if (!lifecycle) return LEGACY_PLANNER_LANES;
+    return {
+      /*
+      hold and intake still fall back INDIVIDUALLY: a workflow that declares columns but no hold
+      column has its planning work rest in intake (and vice versa), which is a real shape rather
+      than an invented column — both are planner lanes for the callers that ask. The forward
+      lanes are different: a move needs a column that exists.
+      */
+      hold: lifecycle.hold ?? lifecycle.intake ?? "todo",
+      intake: lifecycle.intake ?? lifecycle.hold ?? "triage",
+      wip: lifecycle.wip,
+      review: lifecycle.review,
+      complete: lifecycle.complete,
+      resolvedFromWorkflow: true,
+    };
+  } catch {
+    return LEGACY_PLANNER_LANES;
+  }
+}
+
 /*
  * FNXC:WorkflowReplan 2026-07-15-13:15:
  * FN-7977: a planning/provider recovery may finish after another engine lane has
@@ -125,11 +207,15 @@ export function hasAdvancedPastPlanning(
   while a replan is a legitimate BACKWARD move. `firstExecutionAt`/`executionStartedAt` are never
   cleared once implementation starts, so a card that executed, failed Plan Review, and was rebounded
   to a planner lane (`needs-replan`) read as "advanced past planning" forever: triage's discovery
-  filter (`column === "triage" && isTaskStillInPlanningStage`) never re-admitted it and the card sat
-  in triage/needs-replan permanently — "stuck in planning" on the board (FN-8594). It hit every
-  triage-column workflow (builtin:coding, the default); plan-in-place Ideas cards escaped only
-  because todo discovery admits `needs-replan` without consulting this guard.
-  This check covers BOTH planner lanes — the "triage" column and the plan-in-place "todo" lane.
+  filter (intake column AND `isTaskStillInPlanningStage`) never re-admitted it and the card sat
+  parked in the intake lane with `needs-replan` permanently — "stuck in planning" on the board
+  (FN-8594). It hit every workflow with a SEPARATE intake column (builtin:coding, the default at
+  the time); plan-in-place cards escaped only because hold-lane discovery admits `needs-replan`
+  without consulting this guard.
+  This check covers BOTH planner lanes — the intake column and the plan-in-place hold lane.
+  FNXC:WorkflowLifecycleColumns 2026-07-30-10:40: the column names in this note were the census
+  pattern's only hits in this file; they were always prose about a filter that lives in triage.ts,
+  never a guard here. Restated by ROLE so the history stays readable after a rename.
   */
   if (task.status != null && REPLAN_PARK_STATUSES.has(task.status)) {
     return false;
@@ -181,12 +267,12 @@ export function hasAdvancedPastPlanning(
     status left a hole that stranded the same card a second time: after the stale-status sweep
     cleared `planning` to null, the card had stale stamps and NO status, so planning excluded it
     (stamps read as advanced) AND `recoverAdvancedTriageTasks` — the designated owner of that
-    "stranded-advanced" class — also excluded it, because it bails on
-    `workflowIrPinColumnId === "triage"` (it cannot resume a card into the column it already sits
-    in). Nobody owned the card and it sat indefinitely.
+    "stranded-advanced" class — also excluded it, because it bails when the pinned column IS the
+    card's own intake column (it cannot resume a card into the column it already sits in). Nobody
+    owned the card and it sat indefinitely.
     Arrival order alone is the honest signal: a stamp written BEFORE the card reached the planner
     column belongs to a previous pass, whatever the status is now. A card that genuinely advanced
-    out of triage is caught by the column check at the top, and one that was claimed by execution
+    out of the planner lane is caught by the column check at the top, and one that was claimed by execution
     AFTER landing here has a stamp NEWER than its arrival, so it still reads advanced and stays with
     the advanced-recovery sweep.
     */

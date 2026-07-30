@@ -52,7 +52,7 @@ import {
 import { WorkflowGraphTaskRunner, type WorkflowColumnBoundaryHooks } from "../workflow-graph-task-runner.js";
 import { createExecutorColumnBoundaryHooks } from "../workflow-column-boundary-hooks.js";
 import { runHoldReleaseSweep } from "../hold-release.js";
-import { DEFAULT_VOCAB, RENAMED_VOCAB, HOLD_STALENESS_MS, lifecycleIr, type Vocabulary } from "./_workflow-vocabulary-fixture.js";
+import { DEFAULT_VOCAB, RENAMED_VOCAB, MERGED_VOCAB, MERGED_RENAMED_VOCAB, HOLD_STALENESS_MS, lifecycleIr, type Vocabulary } from "./_workflow-vocabulary-fixture.js";
 import { SelfHealingManager } from "../self-healing.js";
 import { reconcileRecovery } from "../recovery-reconciler.js";
 
@@ -67,6 +67,25 @@ interface SeamLog {
    ANY entry into the merge region (merge-gate included) onto the legacy `merge` seam, so the walk
    below genuinely reaches the merge lane before the terminal column. Scripting it is the same
    substitution `testMode` makes; the column move that follows is real. */
+/*
+FNXC:ReviewRework 2026-07-30-01:20 (U9 E2E evidence — the review half):
+Seams whose REVIEW fails its first call and succeeds afterwards, so the graph takes
+the `review --failure--> exec` rework edge exactly once. `OK` everywhere else, so the
+only behavioural difference from `scriptedSeams` is the verdict.
+*/
+function revisingSeams(log: SeamLog) {
+  const base = scriptedSeams(log);
+  let reviewCalls = 0;
+  return {
+    ...base,
+    review: async () => {
+      log.calls.push("review");
+      reviewCalls += 1;
+      return reviewCalls === 1 ? { outcome: "failure" as const, value: "REVISE" } : OK;
+    },
+  };
+}
+
 function scriptedSeams(log: SeamLog) {
   const seam = (name: string) => async () => {
     log.calls.push(name);
@@ -101,8 +120,8 @@ pgDescribe("live lifecycle E2E: real graph + real PostgreSQL store", () => {
    *  `createWorkflowDefinition` allocates its own `WF-###` and IGNORES the `id` in the input —
    *  binding a task to the id we passed in silently resolves to the DEFAULT builtin IR, which is
    *  exactly how a renamed-workflow fixture can pass while testing nothing. */
-  async function seedWorkflow(v: Vocabulary, key: string): Promise<{ workflowId: string; ir: WorkflowIr }> {
-    const ir = lifecycleIr(v, `custom:${key}`);
+  async function seedWorkflow(v: Vocabulary, key: string, merged = false, reviewRework = false): Promise<{ workflowId: string; ir: WorkflowIr }> {
+    const ir = lifecycleIr(v, `custom:${key}`, { mergedIntakeAndHold: merged, reviewRework });
     const created = await h.store().createWorkflowDefinition({
       name: `Lifecycle ${key}`,
       kind: "workflow",
@@ -119,6 +138,36 @@ pgDescribe("live lifecycle E2E: real graph + real PostgreSQL store", () => {
       { taskId, applyDefaultWorkflowSteps: false } as never,
     );
     await store.writeTaskWorkflowSelection(taskId, workflowId, []);
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-30-04:10 (release-leg fixture fix):
+    The card needs a PLANNED PROMPT.md before the sweep will release it. Task creation
+    leaves a bootstrap seed ("# <id>\n\n<description>"), and FN-7648's
+    `isUnplannedForExecution` reads that file for any card resting in an intake- OR
+    hold-trait column and refuses to move an unplanned card into a processing column —
+    so the sweep reported `held: [{ reason: "move-rejected-or-no-slot" }]` and released
+    nothing, which is the gate WORKING, not a scheduler defect.
+
+    Diagnosed rather than guessed, and two hypotheses died on the way: adding
+    `maxConcurrent`/`maxWorktrees` to the E2E settings changed nothing (so the
+    in-transaction capacity gate from #2488/#2499 was NOT the cause), and a direct
+    `moveTask(id, wip)` succeeded (so the move itself was never the blocker). Probing the
+    two release gates showed `isTaskBlockedOnApproval=false`,
+    `isUnplannedForExecution=true`, and dumping the file showed the stub.
+
+    This is the fixture modelling a card that cleared specification, which
+    `docs/solutions/architecture-patterns/workflow-node-column-placement-and-graph-entry-contract.md`
+    states outright: "Scheduler/release test fixtures must model a card that cleared the
+    gate ... A held unreviewed card is the gate working."
+    */
+    const { writeFileSync, mkdirSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const dir = join(store.getTasksDir(), taskId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "PROMPT.md"),
+      `# ${taskId}\n\n## Context\nA planned spec, so the release sweep does not classify this card as an unplanned seed.\n\n## Steps\n### Step 1\n- [ ] do the planned work\n`,
+      "utf-8",
+    );
     store.taskCache.delete(taskId);
     return task as Task;
   }
@@ -165,7 +214,13 @@ pgDescribe("live lifecycle E2E: real graph + real PostgreSQL store", () => {
     });
   }
 
-  function makeRunner(taskId: string, workflowId: string, log: SeamLog, moveMarks: string[] = []) {
+  function makeRunner(
+    taskId: string,
+    workflowId: string,
+    log: SeamLog,
+    moveMarks: string[] = [],
+    seamsFactory?: (l: SeamLog) => unknown,
+  ) {
     const store = h.store();
     const runId = `${taskId}:workflow`;
     return new WorkflowGraphTaskRunner({
@@ -176,7 +231,7 @@ pgDescribe("live lifecycle E2E: real graph + real PostgreSQL store", () => {
         getTask: (id: string) => store.getTask(id),
       },
       runId,
-      seams: scriptedSeams(log) as never,
+      seams: (seamsFactory ?? scriptedSeams)(log) as never,
       runCustomNode: async () => {
         throw new Error("no custom node should run in this lifecycle shape");
       },
@@ -195,8 +250,8 @@ pgDescribe("live lifecycle E2E: real graph + real PostgreSQL store", () => {
    * The full lifecycle, driven for one vocabulary. Returns everything observed so the two
    * vocabularies can be compared field-for-field rather than eyeballed.
    */
-  async function driveLifecycle(taskId: string, v: Vocabulary, key: string) {
-    const { workflowId } = await seedWorkflow(v, key);
+  async function driveLifecycle(taskId: string, v: Vocabulary, key: string, merged = false) {
+    const { workflowId } = await seedWorkflow(v, key, merged);
     await seedTask(taskId, v, workflowId);
 
     const events: WorkflowLifecycleEvent[] = [];
@@ -302,6 +357,47 @@ pgDescribe("live lifecycle E2E: real graph + real PostgreSQL store", () => {
       for (const legacyId of Object.values(DEFAULT_VOCAB)) {
         expect(renamedColumns.has(legacyId)).toBe(false);
       }
+    });
+  });
+
+  /*
+  FNXC:MergedPlanningColumn 2026-07-30-00:20 (U9 E2E evidence — the merged board):
+  Scenarios 1 and 2 both drive a board where intake and hold are SEPARATE columns.
+  The operator's real default workflow no longer looks like that: U11 merged them into
+  one Planning column. The release path is where that matters — `runHoldReleaseSweep`
+  has to release a card FROM a column that is simultaneously the intake column, and a
+  resolver that treats "intake" and "hold" as mutually exclusive roles would leave the
+  card parked forever with no error.
+
+  Two variants: MERGED_VOCAB keeps legacy ids so a failure is attributable to the ROLE
+  merge alone, and MERGED_RENAMED_VOCAB moves ids too, which is what a custom workflow
+  author actually produces.
+  */
+  describe("scenario 3 — MERGED intake+hold column (U11's shape)", () => {
+    it("releases and completes a card whose hold column is ALSO the intake column", async () => {
+      const r = await driveLifecycle("FN-E2E-MERGED", MERGED_VOCAB, "merged-vocab", true);
+
+      expect(r.columnsObserved.atCreate).toBe(MERGED_VOCAB.hold);
+      // Planning runs IN PLACE on the merged column — it must not be treated as a
+      // pre-intake staging lane the card has to leave first.
+      expect(r.columnsObserved.afterPlanning).toBe(MERGED_VOCAB.hold);
+      // The claim this scenario exists for: capacity release works from a dual-role column.
+      expect(r.sweep.released).toContain("FN-E2E-MERGED");
+      expect(r.columnsObserved.afterRelease).toBe(MERGED_VOCAB.wip);
+      expect(r.columnsObserved.afterRun).toBe(MERGED_VOCAB.complete);
+      expect(r.seamCalls).toEqual(["planning", "execute", "review", "merge"]);
+    });
+
+    it("does the same on a board that is BOTH merged and renamed", async () => {
+      const r = await driveLifecycle("FN-E2E-MR", MERGED_RENAMED_VOCAB, "merged-renamed", true);
+
+      expect(r.columnsObserved.atCreate).toBe(MERGED_RENAMED_VOCAB.hold);
+      expect(r.sweep.released).toContain("FN-E2E-MR");
+      expect(r.columnsObserved.afterRelease).toBe(MERGED_RENAMED_VOCAB.wip);
+      expect(r.columnsObserved.afterRun).toBe(MERGED_RENAMED_VOCAB.complete);
+      // No leg may touch a legacy id on this board.
+      const legacy = new Set(["triage", "todo", "in-progress", "in-review", "done", "archived"]);
+      for (const observed of Object.values(r.columnsObserved)) expect(legacy.has(observed)).toBe(false);
     });
   });
 
@@ -657,6 +753,77 @@ pgDescribe("live lifecycle E2E: real graph + real PostgreSQL store", () => {
       }
     });
   });
+  /*
+  FNXC:ReviewRework 2026-07-30-01:30 (U9 E2E evidence — the review half):
+  The plan's target lifecycle includes `InReview --> InProgress: review requests
+  changes`, and until now NO board proved it against a live engine: the fixture's
+  review seam always succeeded, so every E2E drove review as a pass-through.
+
+  This drives a real REVISE. The graph takes the `review --failure--> exec` rework
+  edge, which is a BACKWARD column move (review -> wip) through the real boundary
+  controller and the real `store.moveTask` — the move class most likely to be refused
+  by an adjacency or trait guard, and the one a rework loop cannot work without.
+
+  Run on the merged board as well as the renamed one: rework re-enters the wip column,
+  whose trait set differs on a merged board, so a guard that resolves the rework target
+  by elimination ("the column that is not intake and not review") behaves differently
+  there.
+  */
+  describe("scenario 6 — a REVISE verdict routes the card back to wip", () => {
+    async function driveRevise(taskId: string, v: Vocabulary, key: string, merged: boolean) {
+      const { workflowId } = await seedWorkflow(v, key, merged, true);
+      await seedTask(taskId, v, workflowId);
+      const log: SeamLog = { calls: [] };
+      const marks: string[] = [];
+
+      // Leg 1: plan in the hold column, park at the capacity boundary.
+      await makeRunner(taskId, workflowId, log, marks, revisingSeams).run(await detail(taskId), settings);
+      // Leg 2: the real sweep releases into wip.
+      await runHoldReleaseSweep(h.store(), { now: () => Date.now() });
+      const afterRelease = await persistedColumn(taskId);
+      // Leg 3: execute -> review -> REVISE -> rework back to exec.
+      const items = await h.store().listWorkflowWorkItemsForTask(taskId, { kinds: ["task"] });
+      const resumeNode = items.find((i) => ["held", "runnable", "running"].includes(i.state))?.nodeId;
+      const leg3 = await makeRunner(taskId, workflowId, log, marks, revisingSeams)
+        .run(await detail(taskId), settings, resumeNode);
+      return { afterRelease, afterRevise: await persistedColumn(taskId), calls: log.calls, leg3 };
+    }
+
+    /*
+    MEASURED, and it corrected the assertion I first wrote. A REVISE does not leave the
+    card resting in wip: the rework edge re-enters `exec` WITHIN THE SAME run, review is
+    called again, approves, and the card finishes at complete. So the observable proof
+    that rework happened is the SEAM SEQUENCE — execute appears twice, the second time
+    after a review — not an intermediate column, which the run has already moved past by
+    the time the leg returns.
+
+    Asserting the final column alone would have been satisfied by a graph that ignored
+    the REVISE entirely and went straight to merge, which is exactly the failure this
+    scenario is for.
+    */
+    it("re-enters exec on a REVISE and only completes after the second review (renamed board)", async () => {
+      const r = await driveRevise("FN-E2E-REV", RENAMED_VOCAB, "revise-renamed", false);
+
+      expect(r.afterRelease).toBe(RENAMED_VOCAB.wip);
+      // The rework edge was traversed: execute ran a SECOND time, after a review.
+      expect(r.calls).toEqual(["planning", "execute", "review", "execute", "review", "merge"]);
+      // And the loop resolved rather than spinning — the card reached complete.
+      expect(r.afterRevise).toBe(RENAMED_VOCAB.complete);
+    });
+
+    it("does the same on a MERGED board, without bouncing to the dual-role column", async () => {
+      const r = await driveRevise("FN-E2E-REV-M", MERGED_VOCAB, "revise-merged", true);
+
+      expect(r.afterRelease).toBe(MERGED_VOCAB.wip);
+      expect(r.calls).toEqual(["planning", "execute", "review", "execute", "review", "merge"]);
+      expect(r.afterRevise).toBe(MERGED_VOCAB.complete);
+      // Rework must re-enter wip, not the dual-role Planning column: on a merged board
+      // intake and hold share an id, so an elimination-based target resolution lands
+      // there. A second "planning" call in the sequence above would reveal that.
+      expect(r.calls.filter((c) => c === "planning")).toHaveLength(1);
+    });
+  });
+
 });
 
 /*

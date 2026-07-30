@@ -38,7 +38,7 @@ export type {
   MissionLineageApprovalResult,
   MissionLineageSnapshot,
 } from "./symbol-lock-lineage-approval.js";
-export { AGENT_VALID_TRANSITIONS, DUPLICATE_OF_METADATA_KEY, REPORT_ATTACHMENT_SOURCE, assertNotWorkspaceTaskMerge, isWorkspaceTask, WorkspaceTaskMergeError } from "./types.js";
+export { PLANNER_AGENT_ROLE, AGENT_VALID_TRANSITIONS, DUPLICATE_OF_METADATA_KEY, REPORT_ATTACHMENT_SOURCE, assertNotWorkspaceTaskMerge, isWorkspaceTask, WorkspaceTaskMergeError } from "./types.js";
 export {
   resolveEntryPointBranchAssignment,
   sanitizeBranchSegment,
@@ -439,6 +439,8 @@ export {
   resolveColumnAdjacency,
   resolveAllowedColumns,
   workflowHasColumn,
+  workflowPlansInColumn,
+  workflowDeclaresColumnModel,
 } from "./workflow-transitions.js";
 export type { ColumnAdjacency } from "./workflow-transitions.js";
 // ── U8: pre-evaluated plugin gate verdicts (KTD-2) ───────────────────────────
@@ -560,6 +562,9 @@ export {
 } from "./builtin-completion-summary-node.js";
 export {
   resolveWorkflowIrForTask,
+  resolveWorkflowIrForTaskWithProvenance,
+  type ResolvedWorkflowIr,
+  type WorkflowIrResolutionSource,
   resolveWorkflowIrById,
   resolveSeamPromptFromIr,
   resolvePlanningPromptFromIr,

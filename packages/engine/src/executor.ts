@@ -20,7 +20,7 @@ import { RetryStormError, serializeRetryStormError, evaluateCompletedPromotionFa
 import { finalizeProvenAutoMergeTask } from "./auto-merge-finalization.js";
 import { mergeEffectiveSettings } from "./effective-settings.js";
 import { generateFeatureVideo, type GenerateFeatureVideoOptions } from "./review-artifacts/feature-video.js";
-import { moveTaskToReplanColumn, resolveReplanTargetColumn } from "./replan-target.js";
+import { moveTaskToReplanColumn, resolvePlannerLanes, resolveReplanTargetColumn } from "./replan-target.js";
 import type { TaskStep, WorkflowIr, WorkflowFieldDefinition, WorkflowColumnAgent, EffectiveAgentInput, WorkflowWorkEngineDispatchResult, WorkflowWorkItem } from "@fusion/core";
 import { WorkflowGraphTaskRunner, type WorkflowGraphTaskRunResult, type WorkflowColumnBoundaryHooks } from "./workflow-graph-task-runner.js";
 import { createExecutorColumnBoundaryHooks } from "./workflow-column-boundary-hooks.js";
@@ -2874,6 +2874,60 @@ export class TaskExecutor {
   }
 
   /**
+   * FNXC:WorkflowLifecycleColumns 2026-07-30-09:40 (Phase C convergence):
+   * Is `column` one of THIS task's planner lanes (intake or hold)?
+   *
+   * Used by the planning-evacuation branch of the `task:moved` handler, which is why it is
+   * synchronous: that handler runs off a synchronous emitter, and an `await` here would
+   * reorder it against the other listeners.
+   *
+   * WHAT THE GUARD IS FOR, checked rather than assumed: the branch asks "was this card
+   * pulled BACKWARD out of a lane where pre-execution graph work is running?" — Plan Review
+   * and the planning session both run while the card sits there. Named literals answered that
+   * only on the default lineage, so on a renamed board a withdrawn card kept its reviewer
+   * streaming and its pre-execution worktree on disk.
+   */
+  private isPlannerColumnFor(taskId: string, column: string): boolean {
+    const lanes = resolvePlannerLanes(this.store, taskId);
+    return column === lanes.hold || column === lanes.intake;
+  }
+
+  /**
+   * Was this card pulled BACKWARD out of a planner lane — as opposed to advancing forward
+   * out of it?
+   *
+   * FNXC:WorkflowLifecycleColumns 2026-07-30-16:55 (PR #2628 review, greptile P1):
+   * THE FORWARD EXCLUSIONS MUST RESOLVE TOO, and leaving them literal made this branch WORSE
+   * than before I touched it. With a role-aware source check and name-matched destinations, a
+   * renamed board's ordinary FORWARD move (planning -> building) passed the source test and
+   * matched none of the exclusions, so the evacuation fired on a card that was simply
+   * advancing: it aborted live planning work and deleted the valid pre-execution worktree.
+   * Before the conversion the source check failed and nothing happened; a half-conversion
+   * turned a missed rescue into active damage. Third time this program has produced that
+   * shape — gates converted, destinations left literal.
+   *
+   * Forward means the workflow's own wip, review, or complete lane. When a role is not
+   * declared it cannot be a forward target, so it is simply not excluded; when the workflow
+   * has no column vocabulary at all, `resolvePlannerLanes` returns the legacy names and this
+   * reads exactly as it did before.
+   */
+  private isBackwardMoveOutOfPlanning(taskId: string, from: string, to: string): boolean {
+    const lanes = resolvePlannerLanes(this.store, taskId);
+    if (from !== lanes.hold && from !== lanes.intake) return false;
+    const forwardTargets = [lanes.wip, lanes.review, lanes.complete].filter(
+      (column): column is string => typeof column === "string",
+    );
+    /*
+    DELIBERATELY NOT ALSO EXCLUDING planner-to-planner moves. The literal version fired the
+    evacuation on `todo -> triage` (a replan rebound), and whether that is right is a separate
+    question from this review fix — the replan path is engine-initiated, so aborting the planning
+    session there may be exactly wrong, but changing it is a behavior change with its own
+    surfaces to enumerate. This conversion keeps that case behaving as it does today.
+    */
+    return !forwardTargets.includes(to);
+  }
+
+  /**
    * FN-5256: register an in-flight disposal so a subsequent dispatch (task:moved
    * → in-progress) can await it before acquiring/creating a worktree. Swallows
    * errors so a failed disposal doesn't poison the map; surfaces them via the
@@ -3407,7 +3461,7 @@ export class TaskExecutor {
             }
           }),
         );
-      } else if ((from === "todo" || from === "triage") && to !== "in-progress" && to !== "in-review" && to !== "done") {
+      } else if (this.isBackwardMoveOutOfPlanning(task.id, from, to)) {
         /*
         FNXC:PlanningEvacuation 2026-07-25-23:00:
         A card pulled BACKWARD out of a planner lane (the reported case: todo → Ideas) must stop all
@@ -4949,7 +5003,37 @@ export class TaskExecutor {
       }
       await this.persistTokenUsage(task.id);
       const originColumn = task.column;
-      const promotedFromPlannerColumn = originColumn === "todo" || originColumn === "triage";
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-07-30-09:30 (Phase C convergence):
+      Resolved from the task's OWN workflow. On a renamed board the literals matched nothing,
+      so completed work stranded in the planning lane was NOT recognised as needing promotion:
+      the code fell through to `handoffTaskToReview` directly from the planning column, and
+      role adjacency has no planning -> review edge, so the handoff move was rejected and the
+      card stayed stranded with its work finished and nothing left to rescue it. This is the
+      recovery of last resort — a literal here means the last resort does not exist off the
+      default lineage.
+      */
+      const plannerLanes = resolvePlannerLanes(this.store, task.id);
+      const promotedFromPlannerColumn = originColumn === plannerLanes.hold || originColumn === plannerLanes.intake;
+      /*
+      FNXC:WorkflowLifecycleColumns 2026-07-30-16:45 (PR #2628 review, greptile P1):
+      REFUSE BEFORE THE FIRST MOVE when the workflow declares no WIP lane. The previous version
+      let `resolvePlannerLanes` substitute the legacy `in-progress`, so the promotion targeted a
+      column that board does not declare: `moveTask` rejects it, recovery reports failure — and
+      because the intake -> hold re-home happens FIRST, the card could be left half-moved, which
+      is worse than the stranding this recovery exists to fix.
+
+      Checked here rather than at the move so no partial hop is issued. A workflow with planning
+      lanes and no WIP lane has nowhere to promote completed work TO; that is an operator
+      configuration question, not something to guess past. Logged so the card is not silently
+      skipped — the whole point of this recovery is that nothing else owns this state.
+      */
+      if (promotedFromPlannerColumn && plannerLanes.wip === undefined) {
+        const message = `Auto-recovery withheld: completed work is in '${originColumn}' but this workflow declares no WIP column to promote it to`;
+        executorLog.warn(`${task.id}: ${message}`);
+        await this.store.logEntry(task.id, message).catch(() => undefined);
+        return false;
+      }
       let completionTask = task;
       if (promotedFromPlannerColumn) {
         this.recoveringCompleted.add(task.id);
@@ -4961,8 +5045,15 @@ export class TaskExecutor {
         triage -> todo -> in-progress path while the recovery ownership set prevents
         scheduler/executor dispatch. Todo callers retain their existing single hop.
         */
-        if (originColumn === "triage") {
-          completionTask = await this.store.moveTask(task.id, "todo", {
+        /*
+        FNXC:WorkflowLifecycleColumns 2026-07-30-09:30: the two-hop is needed whenever the
+        card sits in a DISTINCT intake lane, because role adjacency gives intake only
+        hold/archived — never wip. Post-U11 the default lineage merges the two roles onto one
+        column, so `hold === intake` and the hop correctly collapses to the single move below;
+        a board that still separates them (pre-U11, or a custom lineage) keeps the re-home.
+        */
+        if (originColumn === plannerLanes.intake && plannerLanes.hold !== plannerLanes.intake) {
+          completionTask = await this.store.moveTask(task.id, plannerLanes.hold, {
             moveSource: "engine",
             recoveryRehome: true,
             bypassGuards: true,
@@ -4971,7 +5062,8 @@ export class TaskExecutor {
             preserveResumeState: true,
           });
         }
-        completionTask = await this.store.moveTask(task.id, "in-progress");
+        // Non-undefined: the guard above returned early when this workflow declares no WIP lane.
+        completionTask = await this.store.moveTask(task.id, plannerLanes.wip as string);
       }
       await this.handoffTaskToReview(completionTask, "completed-task-recovered");
       if (promotedFromPlannerColumn) {

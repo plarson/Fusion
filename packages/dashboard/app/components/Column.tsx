@@ -12,6 +12,7 @@ import { QuickEntryBox } from "./QuickEntryBox";
 import { PluginSlot } from "./PluginSlot";
 import { groupByWorktree } from "../utils/worktreeGrouping";
 import { isTaskAgentActive } from "../utils/taskActivity";
+import { isPreImplementationColumnRole } from "../utils/columnRoles";
 import { isTaskStuck } from "../utils/taskStuck";
 import type { ToastType } from "../hooks/useToast";
 import type { TaskContextMenuColumnMetadata } from "./TaskContextMenu";
@@ -441,11 +442,19 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, showWorktree
       where the card and the destination differ. Ids remain the fallback for the
       no-metadata window.
       */
-      const shouldPrompt = hasStepProgress && (
-        columnFlags
-          ? Boolean(columnFlags.intake || columnFlags.hold)
-          : column === "todo" || column === "triage"
-      );
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-19:20 (Phase B — consolidated, semantics verified):
+      Routed through `isPreImplementationColumnRole`. This is the SAME preserve-progress prompt that
+      helper was written for — ListView asks it about a move target, this component asks it about
+      itself — and the degraded id sets are identical (`{todo, triage}`), so the consolidation is
+      exact rather than approximately right.
+
+      Verified before consolidating, because the sibling case in TaskContextMenu is NOT
+      interchangeable: `isPreExecutionHoldColumn` drives the Plan affordance and its degraded set is
+      `{triage}` alone, so routing THAT through this helper added `plan` to flagless `todo` cards.
+      Same shape, different degraded answer — matched here, kept separate there.
+      */
+      const shouldPrompt = hasStepProgress && isPreImplementationColumnRole(columnFlags, column);
       let moveOptions: { preserveProgress?: boolean } | undefined;
 
       if (shouldPrompt) {
@@ -555,11 +564,25 @@ function ColumnComponent({ column, tasks, projectId, maxConcurrent, showWorktree
   }, [shouldPaginate, tasks, visibleTaskCount]);
 
   const hiddenTaskCount = Math.max(0, tasks.length - visibleTasks.length);
-  const canCreateInColumn = Boolean(
-    onQuickCreate &&
-    !isArchived &&
-    (workflowMode || column === "triage"),
-  );
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-30-19:45 (Phase B — third attempt, this time with the
+  fixtures migrated instead of the arm defended):
+  The `|| column === "triage"` arm was the LEGACY-board path: before workflow lanes, only the
+  hardcoded intake column offered inline create. U12 deleted the legacy board, Board is Column's
+  only consumer, and it passes `workflowMode` at all three render sites — so the arm is unreachable
+  in production.
+
+  I deleted it twice before and reverted both times, because four Column tests render without
+  `workflowMode` and went red. That was the delete-only rule working: a behaviour change means the
+  branch was not dead FOR THOSE CALLERS. The callers in question are fixtures, not production, so
+  the honest fix is to migrate them to the shape Board actually uses rather than keep an arm alive
+  to satisfy them. Done in Column.test.tsx alongside this.
+
+  Deliberately NOT solved by defaulting `workflowMode` to true: `isArchived`, `isHoldColumn` and
+  `isWipProcessingColumn` all switch on that same flag, so a global default would silently
+  reinterpret every other fixture in the file.
+  */
+  const canCreateInColumn = Boolean(onQuickCreate && !isArchived && workflowMode);
 
   const handleQuickCreate = useCallback(
     (input: TaskCreateInput) => {

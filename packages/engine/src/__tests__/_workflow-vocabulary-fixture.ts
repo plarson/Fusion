@@ -53,7 +53,50 @@ export interface LifecycleIrOptions {
      suite's IR stays byte-identical to what it was written against — a shared
      fixture must not silently change an existing suite's subject. */
   readonly mergeOrchestration?: boolean;
+  /* FNXC:MergedPlanningColumn 2026-07-29-23:50 (U9 E2E evidence — the merged board):
+     Adds the `intake` trait to the HOLD column, so ONE column carries intake + hold —
+     which is exactly the shape U11 shipped on the default lineage (Planning, id `todo`,
+     no `triage` column at all). Until now every E2E here drove a board with intake and
+     hold as SEPARATE columns, so nothing proved the merged shape end-to-end; a guard
+     that silently keys on "the column that is only a hold" passes on the default and
+     renamed vocabularies and goes wrong only here.
+
+     OPT-IN for the same reason as `mergeOrchestration`: a shared fixture must not
+     silently change an existing suite's subject. */
+  readonly mergedIntakeAndHold?: boolean;
+  /* FNXC:ReviewRework 2026-07-30-01:10 (U9 E2E evidence — the review half):
+     Adds the `review --failure--> exec` rework edge, so a REVISE verdict routes the
+     card BACK to the wip column. Without it the review node has only a success edge
+     and every E2E here drives review as a pass-through, which means the plan's
+     `InReview --> InProgress: review requests changes` transition had no live-engine
+     evidence on ANY board.
+
+     Opt-in like the other options: this changes the graph's reachable shape, and a
+     shared fixture must not alter an existing suite's subject. */
+  readonly reviewRework?: boolean;
 }
+
+/**
+ * The MERGED board: intake and hold are one column, as on the operator's real default
+ * workflow after U11. Ids deliberately overlap the legacy enum (`todo` is genuinely the
+ * merged Planning id there) so this is not a rename test — it isolates the merge of two
+ * ROLES onto one column from any change of vocabulary.
+ */
+export const MERGED_VOCAB: Vocabulary = {
+  hold: "todo",
+  wip: "in-progress",
+  review: "in-review",
+  complete: "done",
+};
+
+/** A merged board that ALSO renames: both variables move at once, which is the shape a
+ *  custom workflow author actually produces. */
+export const MERGED_RENAMED_VOCAB: Vocabulary = {
+  hold: "planning",
+  wip: "building",
+  review: "checking",
+  complete: "shipped",
+};
 
 export function lifecycleIr(v: Vocabulary, id: string, options: LifecycleIrOptions = {}): WorkflowIr {
   return {
@@ -64,7 +107,10 @@ export function lifecycleIr(v: Vocabulary, id: string, options: LifecycleIrOptio
       {
         id: v.hold,
         name: "Hold",
-        traits: [{ trait: "hold", config: { release: "capacity" } }],
+        traits: [
+          ...(options.mergedIntakeAndHold ? [{ trait: "intake" }] : []),
+          { trait: "hold", config: { release: "capacity" } },
+        ],
         /* U4 workflow-declared recovery policy (#2478). Declared on the HOLD column of both
            vocabularies from the one builder, so the reconciler's role resolution is exercised
            against a renamed column with nothing else differing. */
@@ -89,7 +135,18 @@ export function lifecycleIr(v: Vocabulary, id: string, options: LifecycleIrOptio
     nodes: [
       { id: "start", kind: "start", column: v.hold },
       { id: "plan", kind: "prompt", column: v.hold, config: { seam: "planning" } },
-      { id: "exec", kind: "prompt", column: v.wip, config: { seam: "execute" } },
+      {
+        id: "exec",
+        kind: "prompt",
+        column: v.wip,
+        /* `reworkRegion` is required by the IR validator for any rework-edge TARGET
+           ("only legal ... into a top-level rework region head") — the same shape the
+           builtin coding IR uses on `merge-attempt`. Declared only when the rework edge
+           exists, so the non-rework IR stays byte-identical. */
+        config: options.reviewRework
+          ? { seam: "execute", reworkRegion: true, maxReworkCycles: 3 }
+          : { seam: "execute" },
+      },
       { id: "review", kind: "prompt", column: v.review, config: { seam: "review" } },
       /* A real merge-class node. The IR validator REFUSES a `merge-blocker` column with no
          reachable merge-class node ("the gate can never clear without one") — discovered by this
@@ -105,6 +162,9 @@ export function lifecycleIr(v: Vocabulary, id: string, options: LifecycleIrOptio
       { from: "exec", to: "review", condition: "success" },
       { from: "review", to: "merge-gate", condition: "success" },
       { from: "merge-gate", to: "end", condition: "success" },
+      ...(options.reviewRework
+        ? [{ from: "review", to: "exec", condition: "failure", kind: "rework" }]
+        : []),
     ],
   } as WorkflowIr;
 }

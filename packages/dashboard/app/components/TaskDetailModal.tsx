@@ -959,6 +959,17 @@ export function TaskDetailContent({
   stale. `undefined` here gives every role the same answer it uses before any fetch lands.
   */
   const detailFlagsAreForThisTask = workflowMoveMetadata?.taskId === task.id;
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-30-17:30 (one root cause, SIX review findings):
+  EVERY consumer in this file reads the task-identity-guarded value. `workflowMoveMetadata` outlives a
+  task switch, so while the modal is open its flags describe the PREVIOUS task for a render — and this
+  component gates editability, the execution-mode replan decision, the intake affordance, the actions
+  menu and the review tab on them.
+
+  The guard existed from the start; five call sites simply read around it, and each was found
+  separately: #2744 (review tab), #2696 (handleDelete deps), and the four here. Converting them
+  together retires the class instead of paying another review round per site.
+  */
   const detailColumnFlags = detailFlagsAreForThisTask ? workflowMoveMetadata?.currentColumnFlags : undefined;
   const isDoneColumn = isCompleteColumnRole(detailColumnFlags, task.column);
   const isArchivedColumn = isArchivedColumnRole(detailColumnFlags, task.column);
@@ -1825,7 +1836,7 @@ export function TaskDetailContent({
   // Note: TaskForm handles auto-focus internally via isActive prop
 
   // Check if task can be edited
-  const canEdit = isTaskFieldEditableColumn(task.column, workflowMoveMetadata?.currentColumnFlags) && !isSaving;
+  const canEdit = isTaskFieldEditableColumn(task.column, detailColumnFlags) && !isSaving;
   /** The card's column name as its own workflow declares it; `undefined` when unresolved. */
   const workflowColumnDisplayName = workflowMoveMetadata?.moveColumns?.find((column) => column.id === task.column)?.label;
   const canEditGithubTracking = canTaskEditGithubTracking(task.column, taskWorkflowBadge?.id) && !isSaving;
@@ -2145,7 +2156,7 @@ export function TaskDetailContent({
       }
       return false;
     }
-    const replanAfterExecutionModeChange = Object.prototype.hasOwnProperty.call(updates, "executionMode") && requiresExecutionModeReplan(task.column, workflowMoveMetadata?.currentColumnFlags);
+    const replanAfterExecutionModeChange = Object.prototype.hasOwnProperty.call(updates, "executionMode") && requiresExecutionModeReplan(task.column, detailColumnFlags);
     if (replanAfterExecutionModeChange && !includeDescription) {
       delete updates.executionMode;
     }
@@ -2195,7 +2206,7 @@ export function TaskDetailContent({
         setIsSaving(false);
       }
     }
-  }, [addToast, buildEditUpdates, confirm, onTaskUpdated, projectId, requestClose, task.column, task.executionMode, task.id]);
+  }, [addToast, buildEditUpdates, confirm, detailColumnFlags, onTaskUpdated, projectId, requestClose, task.column, task.executionMode, task.id]);
 
   const handleAutoSaveDescription = useCallback(async (_description: string) => {
     await persistEditChanges(true);
@@ -2283,7 +2294,7 @@ export function TaskDetailContent({
     const currentMode = normalizeExecutionModeValue(task.executionMode);
     const nextMode = currentMode === "fast" ? "standard" : "fast";
     const previousMode = inlineExecutionMode;
-    const shouldReplan = requiresExecutionModeReplan(task.column, workflowMoveMetadata?.currentColumnFlags);
+    const shouldReplan = requiresExecutionModeReplan(task.column, detailColumnFlags);
 
     if (shouldReplan) {
       const shouldChangeMode = await confirm({
@@ -2319,7 +2330,15 @@ export function TaskDetailContent({
         setIsSavingInlineExecutionMode(false);
       }
     }
-  }, [task.id, task.column, task.executionMode, projectId, inlineExecutionMode, onTaskUpdated, addToast, confirm, requestClose]);
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-30-18:10 (PR #2761 review — greptile):
+  `detailColumnFlags` is a DEPENDENCY, not a constant. It starts undefined on a task switch and
+  populates when the metadata lands, so a callback that captures it without listing it keeps applying
+  the pre-resolution answer — deciding the execution-mode replan from the legacy id on a custom hold or
+  WIP column. My narrowing introduced a value that changes over time into callbacks written for one
+  that did not.
+  */
+  }, [task.id, task.column, task.executionMode, detailColumnFlags, projectId, inlineExecutionMode, onTaskUpdated, addToast, confirm, requestClose]);
 
   const handleInlineNoCommitsExpectedToggle = useCallback(async () => {
     const nextValue = !inlineNoCommitsExpected;
@@ -3154,8 +3173,8 @@ export function TaskDetailContent({
   Reachable only with no resolved flags; guessing "not intake" hides Approve/Reject from a parked
   planning card, which is an operator dead end. Retires with the pre-load window.
   */
-  const isIntakeColumn = workflowMoveMetadata?.currentColumnFlags
-    ? workflowMoveMetadata.currentColumnFlags.intake === true
+  const isIntakeColumn = detailColumnFlags
+    ? detailColumnFlags.intake === true
     : task.column === "triage";
   const isAwaitingApproval = isIntakeColumn && task.status === "awaiting-approval";
   const isPlanReviewReplanCapApproval = isReviewBudgetExhaustedApproval(task);
@@ -3784,8 +3803,15 @@ export function TaskDetailContent({
     task,
     t,
     columnLabel,
-    currentColumnFlags: workflowMoveMetadata?.currentColumnFlags,
-    workflowMoveColumns: workflowMoveMetadata?.moveColumns,
+    /*
+    FNXC:WorkflowResolvedColumns 2026-07-30-18:10 (PR #2761 review — greptile, and the finding is on my
+    own change): BOTH FIELDS OR NEITHER. Guarding `currentColumnFlags` alone left `moveColumns` coming
+    from the PREVIOUS task, so the action model mixed one task's roles with another's move targets —
+    an inconsistency my narrowing created, and arguably worse than leaving both unguarded, because the
+    menu then offers destinations from a card the operator is no longer looking at.
+    */
+    currentColumnFlags: detailColumnFlags,
+    workflowMoveColumns: detailFlagsAreForThisTask ? workflowMoveMetadata?.moveColumns : undefined,
     canRetryTask,
     hasDuplicateHandler: Boolean(onDuplicateTask),
     hasRetryHandler: Boolean(onRetryTask),

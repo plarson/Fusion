@@ -47,6 +47,7 @@ import {
   censusFiles as censusFilesText,
   summarize as summarizeText,
   mixedVocabularyFiles,
+  hasDeferralNote,
 } from "./lib/lifecycle-column-census.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -179,7 +180,7 @@ wrote down why it must not move is the #3108 -> #3114 -> #3126 sequence, which c
 Added phrases are specific to declining a conversion ("honest literal", "would be inert"), not generic
 words, because over-matching hides real work instead. Verified in both directions below.
 */
-const FLAG_MARKERS = /FLAGGED|LEFT COUNTED|left counted|deliberately NOT converted|Recorded instead|Left as a literal|DELIBERATE-LITERAL|accurate debt|blocked on|NOT CONVERTED|not converted|do not convert|do NOT convert|STAYS INLINE|STILL A LITERAL|archived-column-gate-parity|non-renameable system column|SIZED, NOT|honest literal|honest about being one|would be inert|is inert|the two honest/;
+/* Moved to ./lib/lifecycle-column-census.mjs so the rule is testable; imported above. */
 
 /** Split the column guards into documented-deferral vs unexamined, by comment proximity. */
 function triageFindings() {
@@ -197,8 +198,7 @@ function triageFindings() {
       lines = readFileSync(join(REPO_ROOT, f.file), "utf8").split("\n");
       sourceCache.set(f.file, lines);
     }
-    const window = lines.slice(Math.max(0, f.line - 41), f.line).join(" ");
-    (FLAG_MARKERS.test(window) ? flagged : open).push(f);
+    (hasDeferralNote(lines, f.line) ? flagged : open).push(f);
   }
   return { flagged, open };
 }
@@ -220,6 +220,31 @@ if (json) {
   while both engine defects (#2670, #2672) were literals in a separate statement instead.
   */
   console.log(`  of the column guards, ${summary.traitFallbackCount ?? 0} are trait-fallback branches (already converted)`);
+  /*
+  FNXC:LifecycleColumnCensus 2026-07-31-10:45 (u12 — the bare command could not say "done"):
+  The availability verdict lived ONLY behind `--claims`, which shells to `gh`. The fleet instruction
+  says to run this script with NO flags, so a worker following it saw per-file counts, read a nonzero
+  backlog as a work queue, and picked a file whose guard was already documented as deferred. Counts
+  alone cannot distinguish "work left" from "debt left" — that is what `--triage` measures, and it was
+  opt-in too.
+
+  Measured cost: the conversion queue reached ZERO unexamined guards while the fleet was still being
+  dispatched to "claim the largest cluster", because nothing in the default output said so. The last
+  three files re-audited this way (merge-queue-ops-2, lifecycle-ops, notification-service) were all
+  already documented; only one was reclassifiable, and by DELETION rather than conversion (#3205).
+
+  Uses LOCAL signals only, so it is honest without network. It reports what it can prove — that no
+  UNEXAMINED guard remains — and explicitly does NOT claim the files are unclaimed, because only
+  `--claims` can see open PRs.
+  */
+  const { open: unexaminedGuards } = triageFindings();
+  if (summary.totals.column > 0 && unexaminedGuards.length === 0) {
+    console.log(`\n  CONVERSION QUEUE EMPTY: all ${summary.totals.column} remaining column guard(s) carry a documented deferral note.`);
+    console.log(`  There is no unexamined guard to claim. A nonzero backlog above is DEBT, not a work queue.`);
+    console.log(`  Re-read the note at a site before converting it; run --claims to also check open-PR ownership.`);
+  } else if (unexaminedGuards.length > 0) {
+    console.log(`\n  ${unexaminedGuards.length} unexamined guard(s) remain (no deferral note) — run --triage to list them by file.`);
+  }
   if (triage) {
     const { flagged, open } = triageFindings();
     console.log(`\n  TRIAGE (heuristic, opt-in; changes no count and no exit code)`);

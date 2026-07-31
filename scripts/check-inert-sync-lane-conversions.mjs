@@ -120,23 +120,143 @@ function syncLaneSources(sf) {
 }
 
 /** Locals assigned from one of those sources: `const parked = resolveTaskParkedColumnsSync(...)`. */
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-23:59 (the check evaded its own check, SECOND shape):
+THE INITIALIZER IS NOT ALWAYS THE CALL.
+
+This registered a local only when the initializer WAS a call expression. The correct
+payload-first/sync-fallback shape puts the call inside a conditional:
+
+    const sync = moveLanes ? undefined : resolvePlannerLanes(this.store, taskId);
+    const hold = moveLanes?.hold ?? sync?.hold ?? "todo";
+
+`sync` was never registered, so its guards were never counted. MEASURED: writing `executor.ts` in
+exactly that shape took it from 4 counted guards to ZERO while the sync resolver was still there and
+still answering with the default board whenever the payload is absent.
+
+That is the same class of evasion the note below records for the inline spelling, and it matters more
+here because the shape it misses is the RECOMMENDED one — a fallback to the sync resolver is better
+than a fallback to legacy literals, so authors are actively steered toward the form the scan cannot
+see. A ratchet that goes quiet exactly when the code is written well is worse than no ratchet.
+
+Conditionals and `??`/`||` chains are now unwrapped, so any branch containing a sync source registers
+the local. Still a NAME match, not dataflow — the limits section above still applies.
+*/
+function unwrapForSyncCall(node) {
+  const out = [];
+  const walk = (n) => {
+    if (!n) return;
+    if (ts.isAwaitExpression(n) || ts.isParenthesizedExpression(n)) return walk(n.expression);
+    if (ts.isConditionalExpression(n)) { walk(n.whenTrue); walk(n.whenFalse); return; }
+    if (ts.isBinaryExpression(n)) { walk(n.left); walk(n.right); return; }
+    out.push(n);
+  };
+  walk(node);
+  return out;
+}
+
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-23:59 (the SECOND hop — a sync lane laundered through an
+object literal):
+One hop was not enough. The real shape in `executor.ts` rebuilds the lanes into a fresh object before
+comparing, so the sync local never appears in a guard:
+
+    const sync  = payload ? undefined : resolvePlannerLanes(this.store, taskId);
+    const lanes = { hold: payload?.hold ?? sync?.hold ?? "todo", … };
+    if (from !== lanes.hold && from !== lanes.intake) return false;
+
+`sync` is registered, `lanes` is not, and every guard reads `lanes`. MEASURED: `executor.ts` reported
+ZERO counted guards while the sync resolver was still present.
+
+So a local built from an object literal that mentions a sync local is itself a sync local. Iterated to
+a fixpoint because the laundering can chain (`a -> b -> c`); a single pass catches only the first link.
+
+DELIBERATELY NOT full dataflow: `const` object construction only — no function returns, no
+cross-module spread, no reassignment. The LIMITS section above still governs.
+*/
 function syncLaneLocals(sf, sources) {
-  const locals = new Set();
+  /*
+  FNXC:LifecycleColumnCensus 2026-07-31-23:59 (review finding on #3169 — provenance is PER PROPERTY):
+  The map is name -> tainted role set, not a flat set of names. `null` means "every role", which is
+  what a DIRECT sync local is; an object rebuilt from one taints only the properties whose VALUES read
+  it. Marking a whole object over-approximated: `{ hold: sync?.hold, review: "todo" }` made
+  `lanes.review` count as inert though it is a literal, and `{ sync: "todo" }` matched a local's NAME
+  in a key without reading it. Over-counting is not a safe direction here — it inflates the baseline
+  and trains readers to skip the report, which this program's learnings record as how the next real
+  finding gets missed.
+  */
+  const taint = new Map();
+  const objectDecls = [];
+
   const visit = (node) => {
     if (ts.isVariableDeclaration(node) && node.initializer && ts.isIdentifier(node.name)) {
-      let call = node.initializer;
-      if (ts.isAwaitExpression(call)) call = call.expression;
-      if (ts.isCallExpression(call)) {
+      for (const call of unwrapForSyncCall(node.initializer)) {
+        if (!ts.isCallExpression(call)) continue;
         const callee = ts.isPropertyAccessExpression(call.expression)
           ? call.expression.name.getText(sf)
           : call.expression.getText(sf);
-        if (sources.has(callee)) locals.add(node.name.getText(sf));
+        if (sources.has(callee)) taint.set(node.name.getText(sf), null);
+      }
+      if (ts.isObjectLiteralExpression(node.initializer)) {
+        /* Property-level provenance: which KEY, and the text of its VALUE only. A key that merely
+           shares a local's name (`{ sync: "todo" }`) must not taint anything, and a sibling literal
+           (`{ hold: sync?.hold, review: "todo" }`) must not make `review` inert. */
+        const props = [];
+        for (const p of node.initializer.properties) {
+          if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))) {
+            props.push({ key: p.name.text, valueText: p.initializer.getText(sf) });
+          } else if (ts.isShorthandPropertyAssignment(p)) {
+            props.push({ key: p.name.getText(sf), valueText: p.name.getText(sf) });
+          }
+        }
+        objectDecls.push({ name: node.name.getText(sf), props });
       }
     }
     ts.forEachChild(node, visit);
   };
   ts.forEachChild(sf, visit);
-  return locals;
+
+  /* Fixpoint: an object built from a sync local is one too, and that can chain. Bounded by the
+     number of object declarations, so it always terminates. */
+  for (let pass = 0; pass < objectDecls.length + 1; pass += 1) {
+    let grew = false;
+    for (const decl of objectDecls) {
+      const tainted = taint.get(decl.name) ?? new Set();
+      const before = tainted.size;
+      for (const prop of decl.props) {
+        if (tainted.has(prop.key)) continue;
+        for (const known of taint.keys()) {
+          if (mentionsIdentifier(prop.valueText, known)) { tainted.add(prop.key); break; }
+        }
+      }
+      if (tainted.size > before) { taint.set(decl.name, tainted); grew = true; }
+    }
+    if (!grew) break;
+  }
+  return taint;
+}
+
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-23:59 (review finding on #3169 — the match could not fire):
+`\b` IS THE WRONG BOUNDARY FOR A JS IDENTIFIER, and the name was interpolated unescaped.
+
+`new RegExp(`\\b${name}\\b`)` is wrong in BOTH directions, and `$` is where each shows up:
+
+  MISS   name `$sync` builds `\b$sync\b`, where `$` is an ANCHOR — the pattern can never match, so a
+         laundered guard is silently uncounted. That is the failure this scanner exists to prevent.
+  FALSE  name `sync` builds `\bsync\b`, which DOES match inside `$sync` — `$` is a non-word character,
+         so a word boundary falls between it and `s`. An unrelated local taints the object.
+
+A CORRECTION TO AN EARLIER VERSION OF THIS NOTE, which claimed `_sync` also fails: it does not.
+`_` IS a word character, so `\b_sync\b` matches `_sync` correctly. Checked rather than reasoned
+about, after asserting the opposite here without checking.
+
+So the name is escaped, and the boundary is an explicit identifier class — `$` and `_` are identifier
+characters in JS and must not count as separators in either direction.
+*/
+function mentionsIdentifier(haystack, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![A-Za-z0-9_$])${escaped}(?![A-Za-z0-9_$])`).test(haystack);
 }
 
 /** `x === parked.review` / `parked.hold !== y` — a guard consuming a sync-resolved role.
@@ -154,8 +274,15 @@ function countInertGuards(sf, locals, sources) {
     if (!ROLE_FIELDS.has(field)) return undefined;
 
     const base = expr.expression;
-    /* `parked.review` — resolved once into a local. */
-    if (ts.isIdentifier(base) && locals.has(base.getText(sf))) return `${base.getText(sf)}.${field}`;
+    /* `parked.review` — resolved once into a local.
+       A DIRECT sync local taints every role (`null`); an object rebuilt from one taints only the
+       properties whose values read it, so the role must be in that set or this is a sibling literal
+       and not inert at all. */
+    if (ts.isIdentifier(base) && locals.has(base.getText(sf))) {
+      const tainted = locals.get(base.getText(sf));
+      if (tainted === null || tainted.has(field)) return `${base.getText(sf)}.${field}`;
+      return undefined;
+    }
 
     /* `resolveTaskParkedColumnsSync(store, id).review` — resolved inline at the guard. */
     let call = base;

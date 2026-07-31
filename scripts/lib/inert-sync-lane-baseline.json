@@ -1,6 +1,6 @@
 {
-  "total": 20,
+  "total": 18,
   "byFile": {
-    "packages/engine/src/scheduler.ts": 20
+    "packages/engine/src/scheduler.ts": 18
   }
 }

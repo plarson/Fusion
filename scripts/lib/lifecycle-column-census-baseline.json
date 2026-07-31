@@ -1,14 +1,15 @@
 {
   "generatedFrom": "node scripts/lifecycle-column-census.mjs --strict --update-baseline",
   "byFile": {
-    "packages/dashboard/app/components/ResearchTaskActionModal.tsx": 1,
-    "packages/engine/src/self-healing.ts": 1
+    "packages/dashboard/app/components/ResearchTaskActionModal.tsx": 1
   },
   "deliberateByFile": {
+    "packages/engine/src/self-healing.ts\u0000in-review": 9,
     "packages/core/src/task-store/async-comments-attachments.ts\u0000archived": 6,
+    "packages/engine/src/self-healing.ts\u0000done": 6,
     "packages/dashboard/app/components/TaskContextMenu.tsx\u0000in-review": 3,
     "packages/engine/src/scheduler.ts\u0000in-progress": 3,
-    "packages/engine/src/self-healing.ts\u0000in-review": 3,
+    "packages/engine/src/self-healing.ts\u0000archived": 3,
     "packages/core/src/live-agent-count.ts\u0000in-progress": 2,
     "packages/core/src/live-agent-count.ts\u0000in-review": 2,
     "packages/core/src/store.ts\u0000in-review": 2,
@@ -31,7 +32,6 @@
     "packages/engine/src/scheduler.ts\u0000archived": 2,
     "packages/engine/src/scheduler.ts\u0000done": 2,
     "packages/engine/src/scheduler.ts\u0000in-review": 2,
-    "packages/engine/src/self-healing.ts\u0000done": 2,
     "packages/engine/src/triage.ts\u0000triage": 2,
     "packages/engine/src/usage-limit-detector.ts\u0000archived": 2,
     "packages/engine/src/usage-limit-detector.ts\u0000done": 2,
@@ -113,17 +113,16 @@
     "packages/engine/src/notification/notification-service.ts\u0000in-review": 1,
     "packages/engine/src/project-engine.ts\u0000in-review": 1,
     "packages/engine/src/scheduler.ts\u0000todo": 1,
-    "packages/engine/src/self-healing.ts\u0000archived": 1,
     "packages/engine/src/triage.ts\u0000in-progress": 1,
     "plugins/fusion-plugin-even-realities-glasses/src/notifications/diff.ts\u0000done": 1,
     "plugins/fusion-plugin-reports/src/store/report-types.ts\u0000archived": 1
   },
   "queryByFile": {
+    "packages/engine/src/self-healing.ts": 3,
     "packages/core/src/task-store/async-persistence.ts": 2,
     "packages/core/src/task-store/archive-lifecycle-2.ts": 1,
     "packages/core/src/task-store/async-archive-lineage.ts": 1,
     "packages/core/src/task-store/async-self-healing.ts": 1,
-    "packages/engine/src/agent-tools.ts": 1,
-    "packages/engine/src/self-healing.ts": 1
+    "packages/engine/src/agent-tools.ts": 1
   }
 }

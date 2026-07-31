@@ -29,6 +29,7 @@
   "packages/core/src/store.ts": 2,
   "packages/core/src/task-store/archive-lifecycle-2.ts": 2,
   "packages/core/src/task-store/branch-group-ops.ts": 1,
+  "packages/core/src/task-store/lifecycle-ops.ts": 1,
   "packages/core/src/task-store/merge-queue-ops-2.ts": 3,
   "packages/core/src/task-store/task-artifacts-ops.ts": 6,
   "packages/core/src/task-store/task-store-helpers.ts": 2,

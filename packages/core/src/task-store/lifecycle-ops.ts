@@ -464,7 +464,16 @@ export async function reconcileOrphanedTaskDirsImpl(store: TaskStore, opts: { ig
           const ageMs = Date.now() - mtimeMs;
           if (ageMs > RECONCILE_ORPHAN_TASK_DIR_MAX_AGE_MS) {
             result.skipped.push({ id, reason: "stale-orphan-dir-beyond-recency-window" });
-            storeLog.warn("Skipping stale orphaned task-dir reconcile (beyond recency window)", {
+            /*
+            FNXC:Diagnostics 2026-08-01-00:50 (operator report — warn spam):
+            This skip is STEADY-STATE: a months-old orphan dir (e.g. a pre-tombstone hard-delete
+            leftover) trips it on EVERY maintenance sweep, forever, until someone deletes the dir.
+            Per the self-healing logging policy (self-healing.ts header), per-sweep
+            no-action/skip lines are debug (FUSION_DEBUG=task-store), not warn — warn is for real
+            recoveries and failures. The skip stays visible in the sweep's returned `skipped`
+            summary either way.
+            */
+            storeLog.debug("Skipping stale orphaned task-dir reconcile (beyond recency window)", {
               phase: "reconcileOrphanedTaskDirs:recency",
               taskId: id,
               taskJsonPath,

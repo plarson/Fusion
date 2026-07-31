@@ -1287,7 +1287,7 @@ export class Scheduler {
          hottest write path (26 emit sites against 7, measured), not a signature change here. */
       if (task.column === "in-progress") this.failedTaskIds.add(task.id);
         /*
-        FNXC:MissionReconciliation 2026-08-01-00:00:
+        FNXC:MissionReconciliation 2026-07-31-22:00:
         In-place failure parks do not emit task:moved, but they release the
         task's durable symbol lock. Reconcile any mission-linked failure update
         so the roadmap records withheld provenance without fabricating completion.
@@ -2240,6 +2240,19 @@ export class Scheduler {
       membership — wip cards without a worktree yet still reserve (they are about to acquire), and
       terminal lanes are excluded because their retained worktrees are cleanup-owned, not capacity.
       */
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-20:55 (u12 — the ratchet caught this, correctly):
+      DELIBERATE-LITERAL — the unresolvable-workflow default. The trait path above is the real answer;
+      this arm is reached only when `columnFlagsForTask` returns undefined, i.e. the task's workflow
+      could not be read at all, and it then gives the same answer the pre-trait code gave.
+
+      Recorded rather than converted because there is nothing to convert TO: a task with no readable
+      workflow has no resolved lane, and treating it as non-terminal would count a finished card's
+      retained worktree against live capacity — the opposite of what the surrounding fix does.
+
+      Marker sits in the DECLARATION's leading comments, not inline: markers are read from a node's
+      leading comments, so a mid-expression one attaches to the wrong node and is silently ignored.
+      */
       const isTerminalColumnTask = (task: Task): boolean => {
         const flags = columnFlagsForTask(task);
         if (flags) return flags.complete === true || flags.archived === true;
@@ -2251,6 +2264,16 @@ export class Scheduler {
           && !isTerminalColumnTask(task)
           && typeof task.worktree === "string" && task.worktree.length > 0)
         .map((task) => task.id);
+      /*
+      FNXC:WorkflowScheduling 2026-08-01-01:05 (self-deadlock in the widened ledger, observed live):
+      A planned Ready card RETAINS its planning worktree for execution reuse, so counting it as a
+      holder must not block ITS OWN release — on release the slot TRANSFERS (the card executes in
+      the same worktree), it does not add. Without this exclusion the first unpause released only
+      2 of 4 slots' worth of work: the two remaining Ready cards were gated out by the very
+      worktrees they would reuse (2 wip + 3 idle-held = 5/4). Candidates in this set subtract
+      their own slot from the gate and skip the dispatch increment.
+      */
+      const nonWipWorktreeHolderIdSet = new Set(nonWipWorktreeHolderIds);
       let reservedWorktreeSlots = wipTaskIds.length + nonWipWorktreeHolderIds.length;
       let reservedConcurrentSlots = wipTaskIds.length;
       const inProgressTaskIds = wipTaskIds;
@@ -2862,10 +2885,11 @@ export class Scheduler {
             store: this.store,
             tasks,
           });
+          const candidateHoldsWorktree = nonWipWorktreeHolderIdSet.has(task.id);
           const concurrencyDiagnostic = computeConcurrencyGateDiagnostic({
             agentSlots: reservedConcurrentSlots,
             maxConcurrent,
-            activeWorktrees: reservedWorktreeSlots,
+            activeWorktrees: reservedWorktreeSlots - (candidateHoldsWorktree ? 1 : 0),
             maxWorktrees,
             worktreeHolderTaskIds: [...inProgressTaskIds, ...nonWipWorktreeHolderIds],
             semaphore: this.options.semaphore,
@@ -2950,7 +2974,8 @@ export class Scheduler {
             task: freshTask,
           });
 
-          reservedWorktreeSlots += 1;
+          // Transfer, not addition, for a candidate that already holds its worktree.
+          if (!candidateHoldsWorktree) reservedWorktreeSlots += 1;
           reservedConcurrentSlots += 1;
           let released = false;
           return {

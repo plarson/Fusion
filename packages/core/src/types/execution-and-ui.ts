@@ -142,6 +142,8 @@ export const COLOR_THEMES = [
   "calm",
   // FNXC:DashboardTheming 2026-07-20-00:00: Dawn is persisted immediately after Calm; keep this ID and order synchronized across core, selectors, and both first-paint validators so saved selections survive pre-hydration validation.
   "dawn",
+  // FNXC:DashboardTheming 2026-07-31-21:28: Sage must stay order-synchronized across core, selector metadata, and both first-paint validators so saved preferences survive pre-hydration validation.
+  "sage",
   // FNXC:DashboardTheming 2026-07-31-20:39: Factory Dark must stay order-synchronized across core, selector metadata, and both first-paint validators so saved preferences survive pre-hydration validation.
   "factory-dark",
   "shadcn",

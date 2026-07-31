@@ -108,7 +108,6 @@ const KNOWN_UNWIRED = [
   "packages/dashboard/app/utils/taskActivity.ts columnFlags",
   "packages/dashboard/app/utils/taskTiming.ts columnFlags",
   "packages/engine/src/runtimes/in-process-runtime.ts terminalColumns",
-  "packages/engine/src/scheduler.ts satisfactionColumnsByTaskId",
 ].sort();
 
 describe("no lane-resolution parameter is left unwired", () => {

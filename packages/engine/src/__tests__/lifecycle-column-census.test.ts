@@ -563,8 +563,15 @@ describe("the baseline can always be re-recorded", () => {
       const claimed = out.slice(out.indexOf("CLAIMED by an open PR"), out.indexOf("UNCLAIMED:"));
       expect(claimed).toContain(target);
       expect(claimed).toContain("#9999");
-      /* And it must LEAVE that file out of the start-here list, which is the half that matters. */
-      expect(out.slice(out.indexOf("UNCLAIMED:"))).not.toContain(`  ${target}\n`);
+      /*
+      And it must LEAVE that file out of the start-here list, which is the half that matters. A claimed
+      file can still appear later in the inert/deferred inventory: those sections explain why a guard is
+      not immediately convertible and are not themselves an assignment queue.
+      */
+      const unclaimed = out.slice(out.indexOf("UNCLAIMED:"));
+      const deferred = unclaimed.indexOf("unclaimed but every guard");
+      const startHere = unclaimed.slice(0, deferred < 0 ? undefined : deferred);
+      expect(startHere).not.toContain(`  ${target}\n`);
     });
 
     /*

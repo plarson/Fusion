@@ -57,7 +57,6 @@
     "packages/engine/src/scheduler.ts\u0000archived": 2,
     "packages/engine/src/scheduler.ts\u0000done": 2,
     "packages/engine/src/scheduler.ts\u0000in-progress": 2,
-    "packages/engine/src/scheduler.ts\u0000in-review": 2,
     "packages/engine/src/self-healing.ts\u0000in-review": 2,
     "packages/engine/src/usage-limit-detector.ts\u0000archived": 2,
     "packages/engine/src/usage-limit-detector.ts\u0000done": 2,
@@ -141,7 +140,6 @@
     "packages/core/src/task-store/async-archive-lineage.ts": 1,
     "packages/core/src/task-store/async-self-healing.ts": 1,
     "packages/engine/src/agent-tools.ts": 1,
-    "packages/engine/src/auto-merge-finalization.ts": 1,
-    "packages/engine/src/workflow-node-handlers.ts": 1
+    "packages/engine/src/auto-merge-finalization.ts": 1
   }
 }

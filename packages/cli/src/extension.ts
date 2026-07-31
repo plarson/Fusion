@@ -5441,10 +5441,51 @@ export default function kbExtension(pi: ExtensionAPI) {
         return {
           content: [{
             type: "text" as const,
-            text: `Delegated to ${agent!.name} (${agent!.id}): Created ${task.id}${deps}${workflow}. ` +
-              `The task will be picked up by ${agent!.name} on their next heartbeat cycle.`,
+            /*
+            FNXC:WorkflowLifecycleColumns 2026-07-30-22:10 (#2894 review, second round — greptile):
+            THE CAVEAT BELONGS IN THE SENTENCE, NOT ONLY IN `details`.
+
+            `landingVerified: false` was the right fact in the wrong place: the caller is usually
+            another agent, and agents read the first sentence. A structured field beside a confident
+            "will be picked up" is the same "success with a caveat" shape the error branch was
+            rewritten to remove — the caveat is present and nobody sees it.
+
+            The pickup claim is therefore CONDITIONAL on having verified the landing. Where it could
+            not be verified the text says what is true — the card exists, is assigned, and sits on a
+            lane we could not confirm — without either promising dispatch or failing a configuration
+            that is probably fine.
+            */
+            text: substituted
+              ? `Delegated to ${agent!.name} (${agent!.id}): Created ${task.id}${deps}${workflow} in `
+                + `"${landedColumn}". Its workflow could not be resolved, so I could NOT confirm that `
+                + `column is the lane ${agent!.name} picks work up from — check the board if it does `
+                + "not start."
+              : `Delegated to ${agent!.name} (${agent!.id}): Created ${task.id}${deps}${workflow}. `
+                + `The task will be picked up by ${agent!.name} on their next heartbeat cycle.`,
           }],
-          details: { taskId: task.id, agentId: agent!.id, agentName: agent!.name, column: landedColumn },
+          /*
+          FNXC:WorkflowLifecycleColumns 2026-07-30-20:45 (#2894 review — greptile, "fallback equality
+          strands delegations"): THE GAP IS DELIBERATE; THE SILENCE WAS NOT.
+
+          The finding restates the limitation recorded above: with no `workflow_id` argument,
+          "substituted" and "this project has no resolvable workflow" are the same observation, and the
+          second is a valid configuration whose cards belong where they are. Failing it would trade a
+          false success for a false alarm on a working setup, and distinguishing them needs the read
+          that just failed.
+
+          What IS fixable is that the card came back indistinguishable from a verified landing. The
+          caller — usually another agent — now gets `landingVerified: false`, so "we could not confirm
+          this card is on a lane anything picks up from" is a readable fact rather than an absence.
+          Same principle as the contamination sweep in #2891: when you cannot answer, say so instead of
+          picking a side.
+          */
+          details: {
+            taskId: task.id,
+            agentId: agent!.id,
+            agentName: agent!.name,
+            column: landedColumn,
+            ...(substituted ? { landingVerified: false } : {}),
+          },
         };
       } catch (error) {
         if (error instanceof Error && error.message.startsWith("Task ID already exists:")) {

@@ -42,6 +42,7 @@ import {
   type SecretScope,
   declaresAnyLifecycleTrait,
   resolveTaskLifecycleColumns,
+  resolveNodeOverrideLanes,
   resolveLifecycleColumns,
   resolveWorkflowIrForTaskWithProvenance,
   resolveWorkflowIrForTask,
@@ -1838,10 +1839,35 @@ export default function kbExtension(pi: ExtensionAPI) {
         scripts/lib/lane-wiring-census.mjs, which matches an object-literal argument and cannot see a
         ternary. This site was a known-unwired entry in that gate's baseline.
         */
-        const nodeOverrideLifecycle = await resolveTaskLifecycleColumns(store, task.id);
+        /*
+        FNXC:WorkflowResolvedColumns 2026-07-31-01:30:
+        EVERY wip/complete lane, not the FIRST — and via the guard's own resolver, like its two other callers.
+
+        #3019 wired this call with `resolveTaskLifecycleColumns(...).wip`, whose per-role accessor is
+        `resolved.find(...)` (workflow-lifecycle-traits.ts:353) — the FIRST column carrying the trait.
+        The guard's contract is every column: `resolveNodeOverrideLanes` builds its sets from
+        `columnsWithFlag(ir, "countsTowardWip")`. On a board with a build lane beside a verify lane
+        the two answers differ, and a task sitting in the SECOND wip lane slipped the mid-flight
+        check — the exact defect #3019 set out to close, still open one lane over.
+
+        Interchangeable on any single-wip-lane board, which is why it read as correct. Same arity trap
+        #2975 removed from the surfacing family.
+
+        `resolveNodeOverrideLanes` is what `task-update.ts` and `branch-and-pr-entities.ts` already
+        call, so all three callers now resolve identically and the fallback lives in one place.
+        */
+        const overrideLanes = await resolveNodeOverrideLanes(store, task.id);
+        /*
+        Spelled as an object literal naming both keys, not `…, overrideLanes)`. The two are identical
+        at runtime, but `scripts/lib/lane-wiring-census.mjs` matches an object-literal argument and
+        cannot see through a variable — passing the resolved object directly reads to that gate as an
+        UNWIRED call and turns it red. #3019's header records the same constraint, and it is what
+        pushed that PR toward resolving the lanes inline; the constraint is real, the bespoke
+        resolution it produced was not required by it.
+        */
         const validation = validateNodeOverrideChange(task, normalizedNodeId ?? null, {
-          wipColumns: nodeOverrideLifecycle?.wip ? new Set([nodeOverrideLifecycle.wip]) : undefined,
-          completeColumns: nodeOverrideLifecycle?.complete ? new Set([nodeOverrideLifecycle.complete]) : undefined,
+          wipColumns: overrideLanes.wipColumns,
+          completeColumns: overrideLanes.completeColumns,
         });
         if (!validation.allowed) {
           return {

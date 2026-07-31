@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { CommandCenterControls } from "../CommandCenterControls";
 import { ConfirmDialogProvider } from "../../../hooks/useConfirm";
 import { readAppFile } from "../../../test/cssFixture";
@@ -68,6 +68,13 @@ function expectCommandCenterUseOffset(testId: string, ratio: number) {
   );
 }
 
+function cssRule(css: string, selector: string) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = css.match(new RegExp(`${escapedSelector}\\s*\\{([\\s\\S]*?)\\}`));
+  expect(match, `Expected CSS rule for ${selector}`).not.toBeNull();
+  return match?.[1] ?? "";
+}
+
 // FNXC:Theme 2026-07-16-14:30: FN-8146 pins the historical Settings-grid set, including restored shadcn-mono, so a removal from COLOR_THEMES cannot make the all-themes checks pass circularly.
 const EXPECTED_THEME_IDS = ['default', 'ocean', 'forest', 'sunset', 'zen', 'berry', 'high-contrast', 'industrial', 'monochrome', 'slate', 'ash', 'air', 'graphite', 'silver', 'solarized', 'factory', 'factory-mono', 'ayu', 'one-dark', 'nord', 'dracula', 'gruvbox', 'tokyo-night', 'catppuccin-mocha', 'github-dark', 'everforest', 'rose-pine', 'kanagawa', 'night-owl', 'palenight', 'monokai-pro', 'slime', 'brutalist', 'neon-city', 'parchment', 'terminal', 'glass', 'glass-silver', 'horizon', 'vitesse', 'outrun', 'snazzy', 'porple', 'espresso', 'mars', 'poimandres', 'ember', 'rust', 'copper', 'foundry', 'carbon', 'sandstone', 'lagoon', 'frost', 'lavender', 'neon-bloom', 'sepia', 'cobalt', 'clay', 'moss', 'aurora', 'calm', 'dawn', 'factory-dark', 'shadcn', 'shadcn-ember', 'shadcn-custom', 'shadcn-blue', 'shadcn-green', 'shadcn-red', 'shadcn-purple', 'shadcn-pink', 'shadcn-orange', 'shadcn-yellow', 'shadcn-mono', 'shadcn-mono-red', 'shadcn-mono-blue', 'shadcn-mono-green', 'shadcn-mono-purple', 'shadcn-mono-pink', 'shadcn-mono-orange', 'shadcn-mono-yellow', 'shadcn-black', 'shadcn-gray', 'shadcn-gray-blue'] as const;
 
@@ -119,6 +126,44 @@ describe("CommandCenterControls concurrency markers", () => {
 
 
 
+
+  /*
+  FNXC:CommandCenter 2026-07-31-20:57:
+  FN-8632 requires the desktop slider grid to contain only the two surviving capacity
+  controls. Each label stretches and its range control consumes remaining block space
+  so loaded running-count captions cannot place either track above the shared baseline.
+  */
+  it("keeps concurrency tracks baseline-aligned with and without loaded counts", async () => {
+    const slidersRule = cssRule(commandCenterControlsCss, ".cc-controls-sliders");
+    const sliderRule = cssRule(commandCenterControlsCss, ".cc-controls-slider");
+    const rangeBaselineRule = cssRule(
+      commandCenterControlsCss,
+      ".cc-controls-range-wrap,\n.cc-controls-slider > input[type=\"range\"]",
+    );
+
+    expect(slidersRule).toContain("grid-template-columns: repeat(2, minmax(0, 1fr));");
+    expect(slidersRule).toContain("align-items: stretch;");
+    expect(sliderRule).toContain("align-self: stretch;");
+    expect(rangeBaselineRule).toContain("margin-block-start: auto;");
+    expect(commandCenterControlsCss).not.toContain(".cc-controls-slider--global");
+
+    let resolveCounts!: (value: { currentlyActive: number; queuedCount: number; projectsActive: Record<string, number> }) => void;
+    legacyMocks.fetchGlobalConcurrency.mockReturnValue(new Promise((resolve) => {
+      resolveCounts = resolve;
+    }));
+    renderControls();
+    expect(screen.getAllByRole("slider")).toHaveLength(2);
+    expect(screen.queryByTestId("cc-project-running")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cc-global-running")).not.toBeInTheDocument();
+
+    resolveCounts({ currentlyActive: 10, queuedCount: 0, projectsActive: { proj_123: 10 } });
+    await screen.findByTestId("cc-project-running");
+    expect(screen.getAllByRole("slider")).toHaveLength(2);
+    expect(screen.getByTestId("cc-global-running")).toBeInTheDocument();
+    for (const slider of screen.getAllByRole("slider")) {
+      expect(slider.closest(".cc-controls-slider")).toBeTruthy();
+    }
+  });
 
   it("matches the desktop and mobile native thumb-size CSS contract", () => {
     expect(commandCenterControlsCss).toContain(

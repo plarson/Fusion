@@ -8405,6 +8405,146 @@ VERIFIED UNCOVERED rather than assumed: mutating `canEdit` back to the hardcoded
 nothing caught it. These four assert the real `aria-label`, and that mutation now fails with
 "Unable to find an accessible element ... name 'Edit task'".
 */
+/*
+FNXC:TaskCardLayout 2026-07-31-20:57:
+FN-8631 protects the board-density contract at both supported card breakpoints. jsdom has no layout
+engine, so this suite enforces the structural form of the visual invariant: progress toggles are
+content-sized and no known trailing row mounts without visible content.
+*/
+describe("TaskCard trailing-row layout (FN-8631)", () => {
+  const trailingRowSelectors = [
+    ".card-meta",
+    ".card-agent-row",
+    ".card-action-row",
+    ".card-promote-cost-row",
+    ".card-agent-badge-row",
+    ".card-workflow-badge-row",
+  ];
+  const originalInnerWidth = window.innerWidth;
+  const originalMatchMedia = window.matchMedia;
+
+  function setCardBreakpoint(width: number) {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes("max-width: 768px") ? width <= 768 : false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+  }
+
+  function expectContentBackedTrailingRows(container: HTMLElement) {
+    for (const selector of trailingRowSelectors) {
+      for (const row of Array.from(container.querySelectorAll(selector))) {
+        expect(row.children.length, `${selector} must not render as an empty trailing shell`).toBeGreaterThan(0);
+      }
+    }
+  }
+
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
+    window.matchMedia = originalMatchMedia;
+  });
+
+  it.each([1280, 390])("keeps every trailing-card variant content-backed at %ipx", (width) => {
+    setCardBreakpoint(width);
+    const cleanupCss = mountCssForBadgeTests();
+    try {
+      const progressTask = makeTask({
+        id: `FN-progress-${width}`,
+        column: "todo",
+        status: "executing" as any,
+        steps: [{ name: "Implementation", status: "in-progress" }],
+      });
+      const variants = [
+        {
+          name: "collapsed progress",
+          renderCard: () => render(<TaskCard task={progressTask} onOpenDetail={noop} addToast={noop} />),
+          assert: (container: HTMLElement) => expect(container.querySelector(".card-steps-toggle")).not.toBeNull(),
+        },
+        {
+          name: "no progress, meta, or action row",
+          renderCard: () => render(<TaskCard task={makeTask({ id: `FN-minimal-${width}`, column: "todo" })} onOpenDetail={noop} addToast={noop} />),
+          assert: (container: HTMLElement) => {
+            expect(container.querySelector(".card-steps-toggle")).toBeNull();
+            expect(container.querySelector(".card-meta")).toBeNull();
+            expect(container.querySelector(".card-action-row")).toBeNull();
+          },
+        },
+        {
+          name: "promote cost",
+          renderCard: () => render(
+            <CostBadgeProvider value={{ enabled: true }}>
+              <TaskCard
+                task={makeTask({
+                  id: `FN-cost-${width}`,
+                  column: "todo",
+                  tokenUsage: { inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, totalTokens: 1_000_000, firstUsedAt: "2026-01-01T00:00:00Z", lastUsedAt: "2026-01-01T00:00:00Z", modelProvider: "openai", modelId: "gpt-5-mini" },
+                } as Partial<Task>)}
+                onOpenDetail={noop}
+                addToast={noop}
+                onPromote={vi.fn()}
+              />
+            </CostBadgeProvider>,
+          ),
+          assert: (container: HTMLElement) => expect(container.querySelector(".card-promote-cost-row .card-cost-indicator")).not.toBeNull(),
+        },
+        {
+          name: "workflow and agent rows",
+          renderCard: () => render(
+            <TaskCard
+              task={makeTask({ id: `FN-workflow-agent-${width}`, modelProvider: "openai" })}
+              onOpenDetail={noop}
+              addToast={noop}
+              workflowBadge={{ workflowId: "wf-1", workflowName: "Workflow" }}
+            />,
+          ),
+          assert: (container: HTMLElement) => {
+            expect(container.querySelector(".card-agent-row")).not.toBeNull();
+            expect(container.querySelector(".card-workflow-badge-row")).not.toBeNull();
+          },
+        },
+      ];
+
+      for (const variant of variants) {
+        const view = variant.renderCard();
+        variant.assert(view.container);
+        expectContentBackedTrailingRows(view.container);
+        view.unmount();
+      }
+
+      const expanded = render(<TaskCard task={progressTask} onOpenDetail={noop} addToast={noop} />);
+      fireEvent.click(expanded.container.querySelector(".card-steps-toggle") as HTMLButtonElement);
+      expect(expanded.container.querySelector(".card-steps-list")).not.toBeNull();
+      expectContentBackedTrailingRows(expanded.container);
+      expanded.unmount();
+
+      const editing = render(
+        <TaskCard task={makeTask({ id: `FN-editing-${width}`, column: "todo" })} onOpenDetail={noop} addToast={noop} onUpdateTask={noop} />,
+      );
+      // Editing returns early with only edit content, so none of the normal trailing rows can leave an empty shell.
+      fireEvent.click(editing.container.querySelector(".card-edit-btn") as HTMLButtonElement);
+      expect(editing.container.querySelector(".card-editing")).not.toBeNull();
+      for (const selector of trailingRowSelectors) expect(editing.container.querySelector(selector)).toBeNull();
+
+      const css = loadAllAppCss();
+      const stepsToggleRule = css.match(/\.card-steps-toggle\s*\{[^}]*\}/)?.[0] ?? "";
+      expect(stepsToggleRule).not.toContain("min-height");
+      expect(declaredStyle(".card-steps-toggle", "padding")).toBe("var(--space-xs) 0");
+      if (width <= 768) {
+        // FN-4351: mobile keeps the existing compact, token-sized toggle rather than adding a fixed minimum.
+        expect(stepsToggleRule).toContain("padding: var(--space-xs) 0");
+      }
+    } finally {
+      cleanupCss();
+    }
+  });
+});
+
 describe("TaskCard field editability resolves column traits (U12 — R8)", () => {
   const EDIT_LABEL = { name: "Edit task" };
 

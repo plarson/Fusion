@@ -14906,7 +14906,19 @@ const movedTask = await this.store.moveTask(task.id, completeLane);
       for (const tempRoot of roots) {
         let entries: string[];
         try {
-          entries = readdirSync(tempRoot).filter((entry) => entry.startsWith("fusion-ai-merge-"));
+          /*
+          FNXC:TempWorktreeSweep 2026-07-31-22:55:
+          `fn-verify-` (and `fn-verify-app-`) checkouts from mission-verification's
+          GitCheckoutMaterializer leak when the process dies between materialize and dispose — seven
+          registered worktrees aged Jul 24-27 were found holding registrations, and on the live board
+          the visible symptom was planning admission queueing behind exhausted worktree slots
+          ("queued to plan" for ~6 minutes). Their dispose() is best-effort in-process only; this
+          sweep is the only out-of-process reaper, so it must know the prefix. Verification checkouts
+          are detached throwaways that only ever live under tmpdir(), so the extra prefixes apply to
+          that root alone; the same age gates, active-session refusal, and audit rows govern them.
+          */
+          const sweepPrefixes = tempRoot === tmpdir() ? ["fusion-ai-merge-", "fn-verify-"] : ["fusion-ai-merge-"];
+          entries = readdirSync(tempRoot).filter((entry) => sweepPrefixes.some((prefix) => entry.startsWith(prefix)));
         } catch (err: unknown) {
           if (!existsSync(tempRoot)) continue;
           const errorMessage = err instanceof Error ? err.message : String(err);

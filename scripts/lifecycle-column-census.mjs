@@ -28,7 +28,7 @@ Consequence for conversion PRs, stated because it is a real cost: lowering a cou
 re-recording the baseline in the same PR (`--strict --update-baseline`). That is deliberate — it puts
 the new number in the diff, where a reviewer sees it, instead of in a hand-written claim.
 */
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -96,7 +96,34 @@ const updateBaseline = process.argv.includes("--update-baseline");
 /* `--exact` keeps hard failure on a DROP, for the end state where the count is pinned. */
 const exact = process.argv.includes("--exact");
 const triage = process.argv.includes("--triage");
+const claims = process.argv.includes("--claims");
 
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-23:58 (the census says WHERE the work is but not WHO HAS IT):
+`--claims` maps each remaining file to the OPEN PRs already touching it, so "claim the largest
+cluster" can be answered without discovering the collision at merge time.
+
+WHY. Duplicate claims are now the dominant coordination cost of the fleet phase, and they are
+measured, not suspected. `self-healing.ts` took THREE overlapping conversions from different lanes
+while one branch was open (#3049, #3075, #3078) — every one forced a full rebuild of #3094, and each
+conflict was the same shape: same guard, two spellings, different variable names. On 2026-07-31 the
+executor listener took TWO independent conversions in one afternoon (#3112, #3118), reached by two
+workers who each read the census, saw the top cluster, and started. Neither could see the other.
+
+The census is what sends everyone to the same file, so the claim signal belongs here rather than in a
+side channel nobody reads. `--triage` above already measured the underlying fact — 53 of 88 guards
+were inside an open PR — which is the same observation one step short of being actionable.
+
+REPORT-ONLY AND FAIL-SOFT, on the same terms as `--triage`: opt-in, prints beside the totals, changes
+no count and no exit code. It shells to `gh`, so it is unavailable offline, in CI without a token, and
+in sandboxes — all of which print a NOTICE and continue rather than failing the census. A gate must
+not depend on network state, and this is a work-selection aid, not a gate.
+
+HEURISTIC, AND SAID SO. A PR touching a file is not proof it converts THAT file's guards — it may
+edit an unrelated function. It over-reports (a claim that is only adjacent) rather than under-reports,
+which is the safe direction for "check before you start": the cost of a false claim is one comment
+asking, and the cost of a missed one is a rebuilt branch.
+*/
 /*
 FNXC:LifecycleColumnCensus 2026-07-31-23:30 (the headline number stopped tracking work):
 `--triage` splits the backlog into sites that carry a DOCUMENTED reason for staying a literal and
@@ -116,7 +143,29 @@ guard whose text marks a deliberate deferral. It cannot tell a good reason from 
 far above its guard reads as unflagged. It is a triage aid for choosing work, never a gate — which is
 why it is opt-in and why nothing downstream consumes it.
 */
-const FLAG_MARKERS = /FLAGGED|LEFT COUNTED|left counted|deliberately NOT converted|Recorded instead|Left as a literal|DELIBERATE-LITERAL|accurate debt|blocked on/;
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-23:51 (the marker list was a guess, and it under-matched):
+MEASURED by working the start-here list this flag produces: ALL SIX files it offered carry an explicit
+deferral note, in phrasing none of the original markers matched.
+
+  - `moves.ts`                    "THIS ARM STAYS INLINE, deliberately"
+  - `mission-store.ts`            "audited — DEAD SYNC PATH, do not convert"
+  - `ResearchTaskActionModal.tsx` "SIZED, NOT CONVERTED" / "STILL A LITERAL"
+  - `audit-ops.ts`, `async-comments-attachments.ts`, `eval-signal-collector.ts`
+                                  defer to `archived-column-gate-parity.test.ts` by name
+
+The cost of missing them is not cosmetic. Five of the six are `packages/core` `archived` sites inside
+that parity guard's three-encoding inventory, where converting the TypeScript half ALONE is the
+documented split brain. So the start-here list was most confidently offering the one class of
+conversion this repo maintains a dedicated ratchet to prevent — an under-matching marker list does not
+merely overstate the backlog, it aims a worker at the trap.
+
+WHY PHRASES AND NOT A CASE-INSENSITIVE CATCH-ALL. Adding `i` would let "flagged" match casual prose
+anywhere in a 40-line window and quietly reclassify live guards as reviewed, which is the same failure
+in the opposite direction. These are the literal phrasings present in the tree, added as evidence
+rather than as a net.
+*/
+const FLAG_MARKERS = /FLAGGED|LEFT COUNTED|left counted|deliberately NOT converted|Recorded instead|Left as a literal|DELIBERATE-LITERAL|accurate debt|blocked on|NOT CONVERTED|not converted|do not convert|do NOT convert|STAYS INLINE|STILL A LITERAL|archived-column-gate-parity|non-renameable system column|SIZED, NOT/;
 
 /** Split the column guards into documented-deferral vs unexamined, by comment proximity. */
 function triageFindings() {
@@ -235,6 +284,132 @@ if (!json) {
       console.log(`    ${String(entry.count).padStart(4)}  ${entry.file}`);
     }
     if (mixed.length > 10) console.log(`    … and ${mixed.length - 10} more`);
+  }
+}
+
+/** Guard total across a [file, count] list. */
+function unclaimedGuardTotal(entries) {
+  return entries.reduce((sum, [, count]) => sum + count, 0);
+}
+
+/** Open PRs keyed by the census-relevant files they touch. Returns null when `gh` cannot answer. */
+function openPrClaims(files) {
+  const wanted = new Set(files);
+  let raw;
+  try {
+    /* One bulk call — per-PR `gh pr view` would be a request per PR and is what made this too slow
+       to be habitual. --limit is generous because a partial list reads as "unclaimed". */
+    raw = execFileSync("gh", ["pr", "list", "--state", "open", "--limit", "200", "--json", "number,title,files"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 30_000,
+    });
+  } catch {
+    return null;
+  }
+  let prs;
+  try {
+    prs = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const byFile = new Map();
+  for (const pr of prs) {
+    for (const entry of pr.files ?? []) {
+      const path = entry.path ?? entry;
+      if (!wanted.has(path)) continue;
+      if (!byFile.has(path)) byFile.set(path, []);
+      byFile.get(path).push({ number: pr.number, title: pr.title });
+    }
+  }
+  return byFile;
+}
+
+if (claims && !json) {
+  const remaining = summary.byFile.map(([file]) => file);
+  const byFile = openPrClaims(remaining);
+  if (byFile === null) {
+    /* Loud rather than silent: a claim report that quietly degrades to "nothing is claimed" is worse
+       than no report, because it actively tells the reader to start work someone else holds. */
+    console.log("\n  CLAIMS: unavailable — `gh` did not answer (offline, no token, or not installed).");
+    console.log("  Treat every file below as POSSIBLY CLAIMED and check before starting.");
+  } else {
+    const claimed = summary.byFile.filter(([file]) => byFile.has(file));
+    const unclaimed = summary.byFile.filter(([file]) => !byFile.has(file));
+    const claimedGuards = claimed.reduce((sum, [, count]) => sum + count, 0);
+    console.log(`\n  CLAIMED by an open PR: ${claimed.length} files holding ${claimedGuards} guards`);
+    for (const [file, count] of claimed.slice(0, 12)) {
+      const prs = byFile.get(file).map((p) => `#${p.number}`).join(" ");
+      console.log(`    ${String(count).padStart(4)}  ${file}  ← ${prs}`);
+    }
+    if (claimed.length > 12) console.log(`    … and ${claimed.length - 12} more claimed files`);
+
+    /*
+    FNXC:LifecycleColumnCensus 2026-07-31-23:50 (UNCLAIMED IS NOT THE SAME AS AVAILABLE):
+    The first version of this flag printed the unclaimed list under "start here". That is wrong, and it
+    misled ME within minutes of shipping it: the top unclaimed file was `taskRevert.ts`, whose two
+    guards carry a written blocker — they classify a NEIGHBOUR row, and supplying the modal's own flags
+    would answer "is this neighbour finished?" with the wrong task's traits. Converting it would be a
+    correctness regression, not progress.
+
+    So the start-here list is crossed with `--triage`'s classification: a file is available only when no
+    open PR holds it AND at least one of its guards lacks a documented deferral note. The two signals
+    answer different questions ("has someone taken it?" vs "is it takeable?") and only their
+    intersection is a work queue. Files that are unclaimed but fully flagged are shown separately, so
+    they stay visible as debt without reading as an invitation.
+    */
+    const { flagged } = triageFindings();
+    const fullyFlagged = new Set();
+    for (const [file, count] of unclaimed) {
+      if (flagged.filter((f) => f.file === file).length >= count) fullyFlagged.add(file);
+    }
+    const available = unclaimed.filter(([file]) => !fullyFlagged.has(file));
+    const deferred = unclaimed.filter(([file]) => fullyFlagged.has(file));
+
+    /*
+    FNXC:LifecycleColumnCensus 2026-07-31-23:50 (the third filter, and the one with teeth):
+    A file can be unclaimed and unflagged and STILL be the wrong place to start, because converting a
+    guard through `resolveTaskWorkflowIrSync` is INERT — that resolver answers with the default
+    workflow in production, so the converted guard behaves exactly as the literal did while leaving the
+    census. Three PRs already did this (#3051, refuted live in #3058; #3062/#3068/#3079 now fail the
+    build on it), which is more damage than any missing conversion in the remaining backlog.
+
+    Caught by dogfooding this flag: with only the two filters above, `scheduler.ts` sat at the TOP of
+    "start here" — and it is the canonical inert file. The report would have walked the next worker
+    straight into the trap the ratchets exist to catch.
+
+    Same warning-not-subtraction stance as the SYNC-RESOLVED section below: attributing individual
+    guards to the resolver needs dataflow this parser does not do, so these are separated and labelled
+    rather than hidden.
+    */
+    const syncCallRe = /resolveTaskWorkflowIrSync\s*\??\.?\s*\(/;
+    const isSyncResolved = (file) => {
+      try {
+        return syncCallRe.test(readFileSync(join(REPO_ROOT, file), "utf8"));
+      } catch {
+        return false;
+      }
+    };
+    const clean = available.filter(([file]) => !isSyncResolved(file));
+    const inertRisk = available.filter(([file]) => isSyncResolved(file));
+
+    const availableGuards = clean.reduce((sum, [, count]) => sum + count, 0);
+    console.log(`\n  UNCLAIMED: ${unclaimed.length} files holding ${unclaimedGuardTotal(unclaimed)} guards`);
+    console.log(`  of those, AVAILABLE (no open PR, no deferral note, no sync resolver): ${clean.length} files / ${availableGuards} guards — start here`);
+    for (const [file, count] of clean.slice(0, 12)) {
+      console.log(`    ${String(count).padStart(4)}  ${file}`);
+    }
+    if (clean.length > 12) console.log(`    … and ${clean.length - 12} more available files`);
+    if (inertRisk.length > 0) {
+      console.log(`  unclaimed but the file calls the SYNC resolver — converting here may be INERT: ${inertRisk.length} files`);
+      for (const [file, count] of inertRisk.slice(0, 6)) console.log(`    ${String(count).padStart(4)}  ${file}`);
+    }
+    if (deferred.length > 0) {
+      console.log(`  unclaimed but every guard carries a deferral note (debt, NOT a work queue): ${deferred.length} files`);
+      for (const [file, count] of deferred.slice(0, 6)) console.log(`    ${String(count).padStart(4)}  ${file}`);
+      if (deferred.length > 6) console.log(`    … and ${deferred.length - 6} more`);
+    }
+    console.log("  A touched file is not proof the PR converts ITS guards — over-reports rather than misses.");
   }
 }
 

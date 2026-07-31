@@ -468,10 +468,35 @@ describe("the baseline can always be re-recorded", () => {
       }
     }
 
+    /*
+    FNXC:LifecycleColumnCensus 2026-07-31-23:59 (the fixture rotted, and it took main red with it):
+    These two cases pinned the FILE `self-healing.ts` and the NUMBER 1 — "stale baseline says 1, tree
+    has more". Conversions took that file to exactly 1, so `toBeGreaterThan(1)` failed and `main` went
+    red on a test whose subject (does `--update-baseline` write on a rise?) had not changed at all.
+
+    Measured on a clean detached `origin/main`: 1 failed | 39 passed, with nothing from this branch
+    applied. The backlog shrinking is the POINT of this program, so any fixture keyed to a specific
+    file's count is guaranteed to expire — the only question is which cycle.
+
+    So the target and the number are now DERIVED: ask the census which file currently holds guards,
+    then construct a baseline one below that file's real count. The rise is manufactured rather than
+    assumed, and the assertion is exact (`toBe(real)`) instead of an open inequality that was only ever
+    a proxy for it. Same discipline as the self-syncing fixture below — a test about control flow must
+    not depend on how much work the fleet has finished.
+    */
+    function fileWithGuards(): { file: string; count: number } {
+      const out = execFileSync("node", [cliPath, "--json"], { encoding: "utf8", cwd: repoRoot }) as string;
+      const parsed = JSON.parse(out) as { byFile: [string, number][] };
+      const entry = parsed.byFile.find(([, count]) => count > 0);
+      if (!entry) throw new Error("census reports no file with guards — fixture cannot manufacture a rise");
+      return { file: entry[0], count: entry[1] };
+    }
+
     it("exits 0 and REWRITES the baseline under --update-baseline, even when the count rose", () => {
       /* The case the ordering bug broke: a rise used to exit before the write, so the
          one command whose whole job is re-recording could not re-record. */
-      const stale = { totals: { column: 1, role: 0, status: 0, deliberate: 0 }, byFile: { "packages/engine/src/self-healing.ts": 1 }, byColumnId: {}, queryByFile: {} };
+      const { file, count } = fileWithGuards();
+      const stale = { totals: { column: count - 1, role: 0, status: 0, deliberate: 0 }, byFile: { [file]: count - 1 }, byColumnId: {}, queryByFile: {} };
       const r = runCli(["--strict", "--update-baseline"], stale) as unknown as { status: number; stdout: string; baselinePath: string };
       expect(r.status).toBe(0);
       const written = JSON.parse(fs.readFileSync(r.baselinePath, "utf8"));
@@ -479,19 +504,108 @@ describe("the baseline can always be re-recorded", () => {
       FNXC:LifecycleColumnCensus 2026-07-30-19:10:
       Asserted on the per-file entry rather than `totals`, which the pin no longer stores — the
       derived aggregates were the only lines every conversion PR rewrote, and so the sole cause of
-      fleet-wide conflicts in this file. The claim is unchanged and still specific: the stale pin
-      said 1, and the rewritten pin must carry the tree's real (higher) count for that same file.
+      fleet-wide conflicts in this file. The claim is unchanged and still specific: the stale pin was
+      one BELOW the tree, and the rewritten pin must carry the tree's real count for that same file.
       */
-      expect(written.byFile["packages/engine/src/self-healing.ts"]).toBeGreaterThan(1);
+      expect(written.byFile[file]).toBe(count);
       expect(r.stdout).toContain("ACCEPTED RISES");
     });
 
     it("exits 1 and LEAVES the baseline alone on a rise without --update-baseline", () => {
-      const stale = { totals: { column: 1, role: 0, status: 0, deliberate: 0 }, byFile: { "packages/engine/src/self-healing.ts": 1 }, byColumnId: {}, queryByFile: {} };
+      const { file, count } = fileWithGuards();
+      const stale = { totals: { column: 1, role: 0, status: 0, deliberate: 0 }, byFile: { [file]: count - 1 }, byColumnId: {}, queryByFile: {} };
       const r = runCli(["--strict"], stale) as unknown as { status: number; stdout: string; baselinePath: string };
       expect(r.status).toBe(1);
       const after = JSON.parse(fs.readFileSync(r.baselinePath, "utf8"));
       expect(after.totals.column).toBe(1);
+    });
+
+    /*
+    FNXC:LifecycleColumnCensus 2026-07-31-23:58:
+    `--claims` reports which remaining files an open PR already touches. Both cases here run against a
+    STUBBED `gh` on PATH, so the suite makes no network call and does not depend on the repo's live PR
+    list — a test that asserted real PR numbers would go red every time one merged.
+
+    THE FAIL-SOFT CASE IS THE IMPORTANT ONE. When `gh` cannot answer, the degraded report must say so
+    loudly. A claim report that silently renders "nothing is claimed" is worse than no report at all:
+    it actively tells the reader to start work another lane already holds, which is the exact failure
+    this flag exists to prevent (three overlapping conversions on self-healing.ts, two on executor.ts).
+    */
+    function runWithStubbedGh(stub: string, extraArgs: string[] = []): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fusion-census-gh-"));
+      const ghPath = path.join(dir, "gh");
+      fs.writeFileSync(ghPath, stub);
+      fs.chmodSync(ghPath, 0o755);
+      try {
+        return execFileSync("node", [cliPath, "--claims", ...extraArgs], {
+          encoding: "utf8",
+          cwd: repoRoot,
+          env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` },
+        }) as string;
+      } catch (err) {
+        return (err as { stdout?: string }).stdout ?? "";
+      }
+    }
+
+    /** The census's own current top file, so the fixture cannot rot as the backlog shrinks. */
+    function topRemainingFile(): string {
+      const plain = execFileSync("node", [cliPath], { encoding: "utf8", cwd: repoRoot }) as string;
+      const match = plain.match(/top files:\n\s+\d+\s+(\S+)/);
+      if (!match) throw new Error("could not read a remaining file from the census output");
+      return match[1];
+    }
+
+    it("attributes a remaining file to the open PR that touches it", () => {
+      const target = topRemainingFile();
+      const payload = JSON.stringify([{ number: 9999, title: "stub pr", files: [{ path: target }] }]);
+      const out = runWithStubbedGh(`#!/bin/sh\ncat <<'JSON'\n${payload}\nJSON\n`);
+
+      const claimed = out.slice(out.indexOf("CLAIMED by an open PR"), out.indexOf("UNCLAIMED:"));
+      expect(claimed).toContain(target);
+      expect(claimed).toContain("#9999");
+      /* And it must LEAVE that file out of the start-here list, which is the half that matters. */
+      expect(out.slice(out.indexOf("UNCLAIMED:"))).not.toContain(`  ${target}\n`);
+    });
+
+    /*
+    FNXC:LifecycleColumnCensus 2026-07-31-23:50:
+    "Unclaimed" is not "available", and the first version of --claims conflated them — it put
+    `taskRevert.ts` (two guards with a written blocker) and `scheduler.ts` (the canonical INERT
+    sync-resolver file) at the top of "start here". Both would have been active mistakes to convert.
+
+    Asserted as an INVARIANT over the report's own sections rather than against a file list, so it
+    cannot rot as files move between categories: whatever the report calls deferred or inert-risk must
+    not also appear under start-here. A hardcoded expectation here would go stale the first time one of
+    those six files is converted.
+    */
+    it("never lists a deferral-noted or sync-resolver file under start-here", () => {
+      const payload = JSON.stringify([]);
+      const out = runWithStubbedGh(`#!/bin/sh\ncat <<'JSON'\n${payload}\nJSON\n`);
+
+      const section = (start: string, end?: string) => {
+        const from = out.indexOf(start);
+        if (from < 0) return "";
+        const to = end ? out.indexOf(end, from) : -1;
+        return out.slice(from, to < 0 ? undefined : to);
+      };
+      const startHere = section("no deferral note, no sync resolver", "unclaimed but");
+      const excluded = [
+        ...section("converting here may be INERT", "unclaimed but every guard").matchAll(/\s{4}\d+\s+(\S+)/g),
+        ...section("every guard carries a deferral note", "A touched file").matchAll(/\s{4}\d+\s+(\S+)/g),
+      ].map((m) => m[1]);
+
+      /* Anti-vacuity: an empty exclusion list would make the assertion below trivially true. */
+      expect(excluded.length).toBeGreaterThan(0);
+      expect(startHere).not.toBe("");
+      for (const file of excluded) expect(startHere).not.toContain(file);
+    });
+
+    it("says so loudly when gh cannot answer, instead of reporting everything as unclaimed", () => {
+      const out = runWithStubbedGh("#!/bin/sh\nexit 1\n");
+      expect(out).toContain("CLAIMS: unavailable");
+      expect(out).toContain("POSSIBLY CLAIMED");
+      /* The dangerous output is the one that invites a duplicate claim. */
+      expect(out).not.toContain("UNCLAIMED:");
     });
   });
 

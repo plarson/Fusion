@@ -10,6 +10,7 @@
  */
 import {TaskStore, storeLog, WORKFLOW_COMPILED_STEP_TEMPLATE_PREFIX, WORKFLOW_MOVE_POLICY_TIMEOUT_MS} from "../store.js";
 import { resolveCapacityPoolId } from "../workflow-capacity.js";
+import {resolveWorkflowIntakeFacts} from "./task-creation.js";
 import {TransitionRejectionError} from "./errors.js";
 import * as schema from "../postgres/schema/index.js";
 import {and, eq, isNull, ne, or, sql} from "drizzle-orm";
@@ -208,7 +209,12 @@ export async function duplicateTaskImpl(store: TaskStore, id: string): Promise<T
           title: normalizedTitle.title ?? undefined,
           description: `${sourceTask.description}\n\n(Duplicated from ${id})`,
           priority: normalizeTaskPriority(sourceTask.priority),
-          column: "triage",
+          /*
+          FNXC:MergedPlanningColumn 2026-07-31-22:35 (missed creation surface — duplicate):
+          Same fix as refine: resolve the default workflow's intake lane instead of the legacy
+          `"triage"` literal, which the merged coding workflow no longer declares.
+          */
+          column: ((await resolveWorkflowIntakeFacts(store)).intake ?? "triage") as Task["column"],
           modelPresetId: sourceTask.modelPresetId,
           sourceType: "task_duplicate",
           sourceParentTaskId: id,

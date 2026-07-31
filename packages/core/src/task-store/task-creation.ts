@@ -100,7 +100,17 @@ directly and survives any rename or merge.
 Unresolvable workflow returns `{ manual: false }` with no intake, so callers keep their existing
 conservative behavior rather than acting on a guess.
 */
-async function resolveWorkflowIntakeFacts(
+/*
+FNXC:MergedPlanningColumn 2026-07-31-22:30 (missed creation surfaces):
+Exported so refine (`update-task-deps.ts`) and duplicate (`project-store-ops.ts`) resolve the same
+intake lane as the main create. Both built Task rows directly inside `createTaskWithId` callbacks
+with a hardcoded `column: "triage"` — a column the merged coding workflow no longer declares — so a
+refined/duplicated card landed in an UNDECLARED column: rendered with the legacy amber badge,
+invisible to trait-driven sweeps until the undeclared-column re-home rescued it. #2589/#2603 fixed
+the main create; these two surfaces were the enumeration gap (found via a two-tone Planning badge on
+the live board).
+*/
+export async function resolveWorkflowIntakeFacts(
   store: TaskStore,
   workflowIdOverride?: string,
 ): Promise<{ intake?: string; hold?: string; manual: boolean }> {

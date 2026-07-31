@@ -12,6 +12,7 @@ import {resolveWorkflowIrForTask} from "../workflow-ir-resolver.js";
 import {buildRefinementSeedPrompt} from "../mesh-task-replication.js";
 import {SelfDefeatingDependencyError, detectSelfDefeatingDependency} from "./errors.js";
 import {resolveTaskLifecycleColumns} from "../workflow-lifecycle-traits.js";
+import {resolveWorkflowIntakeFacts} from "./task-creation.js";
 import type {WorkflowIr} from "../workflow-ir-types.js";
 import {mkdir, readFile, writeFile} from "node:fs/promises";
 import {join} from "node:path";
@@ -111,6 +112,15 @@ export async function refineTaskImpl(store: TaskStore, id: string, feedback: str
       });
     }
 
+    /*
+    FNXC:MergedPlanningColumn 2026-07-31-22:35 (missed creation surface — refine):
+    Resolve the inherited workflow's intake lane instead of the legacy `"triage"` literal. The
+    hardcoded id landed refinements in a column the merged coding workflow no longer declares —
+    surfaced on the live board as an amber PLANNING badge (badge color keys off the raw column id)
+    on a card invisible to trait-driven sweeps until the undeclared-column re-home. Literal survives
+    only as the last resort for a store that cannot resolve any workflow, matching createTask.
+    */
+    const refineIntakeColumn = (await resolveWorkflowIntakeFacts(store, pendingWorkflowSelection?.workflowId)).intake ?? "triage";
     const newTask = await store.createTaskWithDistributedReservation({ description: feedback.trim() }, {
       createTaskWithId: async (newId) => {
         // FN-5077: keep deterministic "Refinement" fallback when normalized refinement label is unusable (null).
@@ -138,7 +148,7 @@ export async function refineTaskImpl(store: TaskStore, id: string, feedback: str
           title: normalizedTitle.title ?? "Refinement",
           description: `${feedback.trim()}\n\nRefines: ${id}`,
           priority: normalizeTaskPriority(sourceTask.priority),
-          column: "triage",
+          column: refineIntakeColumn as Task["column"],
           dependencies: [id],
           sourceType: "task_refine",
           sourceParentTaskId: id,

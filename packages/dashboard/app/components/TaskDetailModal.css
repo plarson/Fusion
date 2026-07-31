@@ -89,11 +89,26 @@ Task detail workflow badges share the board badge's slight token-based icon-to-l
   color: var(--done);
 }
 
+/*
+FNXC:TaskDetailLayout 2026-07-31-20:52:
+FN-8630 removes the residual desktop/tablet end-side inset that FN-8624 did not
+cover: `.detail-body`'s thin native scrollbar reserved space only at inline-end.
+`stable both-edges` keeps effective Task Detail shell insets symmetric for modal,
+pop-out, and embedded variants at every breakpoint without measuring or compensating
+for a UA scrollbar width.
+
+The overlay-clearance exception remains deliberately child-local: non-Interventions
+`.detail-activity` first rows retain `calc(var(--space-2xl) + var(--space-md))`
+end clearance on desktop/tablet and `calc(var(--space-2xl) + var(--space-sm))` on
+mobile so `.activity-expand-toggle--overlay` never covers log text (FN-8166/FN-8624).
+The FN-7581 `.detail-activity--interventions` container remains at zero end inset.
+*/
 .detail-body {
   padding: calc(var(--space-lg) + var(--space-xs));
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
   scrollbar-color: var(--border) transparent;
   scrollbar-width: thin;
   flex: 1;

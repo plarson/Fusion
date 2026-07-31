@@ -8,7 +8,7 @@
    Theme token translucency uses color-mix(in srgb, var(--token) N%, transparent) or exact literal color-mix values for glass surfaces. Raw RGB alpha color functions are banned outside var() fallbacks by FN-6489.
    ============================================================ */
 
-/* Aurora, Calm, and Dawn swatches stay globally resolvable while a different theme is active. */
+/* Aurora, Calm, Dawn, and Factory Dark swatches stay globally resolvable while a different theme is active. */
 :root {
   --aurora-swatch-sample-1: #0a1022;
   --aurora-swatch-sample-2: #162044;
@@ -22,6 +22,10 @@
   --dawn-swatch-sample-2: #2a2248;
   --dawn-swatch-sample-3: #efb66a;
   --dawn-swatch-sample-4: #c8a4ff;
+  --factory-dark-swatch-sample-1: #0d0f10;
+  --factory-dark-swatch-sample-2: #1a1d1f;
+  --factory-dark-swatch-sample-3: #e89532;
+  --factory-dark-swatch-sample-4: #7fa6b8;
 }
 
 [data-theme="light"] {
@@ -37,6 +41,10 @@
   --dawn-swatch-sample-2: #f1ddd7;
   --dawn-swatch-sample-3: #9b5618;
   --dawn-swatch-sample-4: #704eaa;
+  --factory-dark-swatch-sample-1: #eceef0;
+  --factory-dark-swatch-sample-2: #d9dde0;
+  --factory-dark-swatch-sample-3: #a95612;
+  --factory-dark-swatch-sample-4: #35687d;
 }
 
 /* OCEAN - Deep blues and cyans */
@@ -7590,6 +7598,82 @@ Dawn pairs deep indigo and plum dark surfaces with muted peach, amber, and viole
   --shadow-glow: 0 0 12px color-mix(in srgb, var(--accent) 28%, transparent);
   --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
   --focus-ring-strong: 0 0 0 2px color-mix(in srgb, var(--accent) 36%, transparent);
+}
+
+/*
+FNXC:DashboardTheming 2026-07-31-20:39:
+Factory Dark is the low-ambient-light industrial sibling of Factory: graphite and steel surfaces, cool gunmetal borders, and restrained safety-orange actions. Its concrete-gray light counterpart keeps the same visual identity with readable dark text; global previews remain independent of the active theme.
+*/
+[data-color-theme="factory-dark"] {
+  --bg: #0d0f10;
+  --surface: #141719;
+  --card: #1a1d1f;
+  --card-hover: #252a2d;
+  --surface-hover: color-mix(in srgb, var(--surface) 90%, var(--text) 10%);
+  --border: #3b454a;
+  --text: #f2f3f2;
+  --text-muted: #b6bec1;
+  --text-dim: #7d898e;
+
+  --todo: #8db6ca;
+  --in-progress: #6eb2ca;
+  --in-progress-rgb: 110, 178, 202;
+  --in-review: #a8b8c0;
+  --triage: #e89532;
+  --done: #89969a;
+  --color-success: #8fbf9a;
+  --color-warning: #e89532;
+  --color-error: #e47a6e;
+  --color-info: #6eb2ca;
+
+  --cta-bg: #d77b20;
+  --cta-border: #f1ad5a;
+  --cta-text: #1a1007;
+  --cta-bg-hover: #e89532;
+  --cta-border-hover: #ffd08c;
+  --cta-glow: 0 0 8px color-mix(in srgb, var(--cta-border) 30%, transparent);
+  --accent: #e89532;
+  --accent-text: #1a1007;
+  --logo-accent: var(--accent);
+  --shadow-glow: 0 0 12px color-mix(in srgb, var(--accent) 28%, transparent);
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+  --focus-ring-strong: 0 0 0 2px color-mix(in srgb, var(--accent) 36%, transparent);
+}
+
+[data-color-theme="factory-dark"][data-theme="light"] {
+  --bg: #eceef0;
+  --surface: #e2e5e7;
+  --card: #f7f8f8;
+  --card-hover: #d9dde0;
+  --surface-hover: color-mix(in srgb, var(--surface) 92%, var(--text) 8%);
+  --border: #aeb8bd;
+  --text: #20282c;
+  --text-muted: #536168;
+  --text-dim: #738087;
+
+  --todo: #35687d;
+  --in-progress: #24728c;
+  --in-progress-rgb: 36, 114, 140;
+  --in-review: #526871;
+  --triage: #a95612;
+  --done: #68767b;
+  --color-success: #386c48;
+  --color-warning: #a95612;
+  --color-error: #ad403a;
+  --color-info: #24728c;
+
+  --cta-bg: #a95612;
+  --cta-border: #85430d;
+  --cta-text: #ffffff;
+  --cta-bg-hover: #8f480e;
+  --cta-border-hover: #6f370a;
+  --cta-glow: 0 0 8px color-mix(in srgb, var(--cta-border) 24%, transparent);
+  --accent: #a95612;
+  --accent-text: #ffffff;
+  --logo-accent: var(--accent);
+  --shadow-glow: 0 0 10px color-mix(in srgb, var(--accent) 20%, transparent);
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+  --focus-ring-strong: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
 [data-color-theme="dawn"][data-theme="light"] {

@@ -78,6 +78,7 @@ export const COLOR_THEMES: { value: ColorTheme; label: string; className: string
   { value: "aurora", label: "Aurora", className: "theme-swatch-aurora" },
   { value: "calm", label: "Calm", className: "theme-swatch-calm" },
   { value: "dawn", label: "Dawn", className: "theme-swatch-dawn" },
+  { value: "factory-dark", label: "Factory Dark", className: "theme-swatch-factory-dark" },
   { value: "shadcn", label: "Shadcn", className: "theme-swatch-shadcn" },
   { value: "shadcn-ember", label: "Shadcn Ember (Default)", className: "theme-swatch-shadcn-ember" },
   { value: "shadcn-custom", label: "Shadcn Custom", className: "theme-swatch-shadcn-custom" },

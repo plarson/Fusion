@@ -711,6 +711,9 @@ function computeConcurrencyGateDiagnostic(params: {
    * semaphore gate uses this instead of only in-progress agentSlots.
    */
   topLevelClaimedSlots?: number;
+  /** FNXC:WorkflowScheduling 2026-07-31-23:50: every live worktree holder (wip + planning/review
+   *  lanes), so the maxWorktrees holders diagnostic names who actually occupies the slots. */
+  worktreeHolderTaskIds?: string[];
   /** U6: additive per-column capacity gates (flag-ON only). Omitted → the legacy
    *  three-gate report is byte-identical. */
   perColumnGates?: PerColumnCapacityGate[];
@@ -768,7 +771,7 @@ function computeConcurrencyGateDiagnostic(params: {
     semaphoreGate,
     holders: {
       maxConcurrent: [...params.inProgressTaskIds],
-      maxWorktrees: maxWorktreesGate ? [...params.inProgressTaskIds] : undefined,
+      maxWorktrees: maxWorktreesGate ? [...(params.worktreeHolderTaskIds ?? params.inProgressTaskIds)] : undefined,
       semaphore: semaphoreGate ? [...params.inProgressTaskIds] : undefined,
     },
     // U6: additive only — present when flag-ON, omitted otherwise.
@@ -2222,8 +2225,34 @@ export class Scheduler {
       const isReviewColumnTask = (task: Task): boolean =>
         isReviewColumnRole(columnFlagsForTask(task), task.column);
       const wipTaskIds = tasks.filter(isWipColumnTask).map((task) => task.id);
-      let reservedWorktreeSlots = wipTaskIds.length;
-      let reservedConcurrentSlots = reservedWorktreeSlots;
+      /*
+      FNXC:WorkflowScheduling 2026-07-31-23:50 (maxWorktrees counted only WIP — live board breach):
+      Under plan-in-place EVERY lane's live card holds a real worktree — planning runs in the task
+      worktree (triage.ts) and review/merge keeps it — but this ledger counted WIP cards only. The
+      protection that used to catch the difference was the GLOBAL SEMAPHORE gate, whose FNXC below
+      says exactly this ("must include every live top-level agent holder (planning triage and active
+      in-review), otherwise the hold/release sweep can admit an executor on top of a full planner
+      fleet"); the two-number capacity model deleted the semaphore, and this gate never learned to
+      count planners. Observed live: maxWorktrees=4, four planning sessions each holding a worktree,
+      and a replan dispatch admitted as the FIFTH worktree because the gate read used=0/4.
+
+      Count every non-terminal task that HOLDS a worktree (`task.worktree` set) in addition to WIP
+      membership — wip cards without a worktree yet still reserve (they are about to acquire), and
+      terminal lanes are excluded because their retained worktrees are cleanup-owned, not capacity.
+      */
+      const isTerminalColumnTask = (task: Task): boolean => {
+        const flags = columnFlagsForTask(task);
+        if (flags) return flags.complete === true || flags.archived === true;
+        return task.column === "done" || task.column === "archived";
+      };
+      const wipTaskIdSet = new Set(wipTaskIds);
+      const nonWipWorktreeHolderIds = tasks
+        .filter((task) => !wipTaskIdSet.has(task.id)
+          && !isTerminalColumnTask(task)
+          && typeof task.worktree === "string" && task.worktree.length > 0)
+        .map((task) => task.id);
+      let reservedWorktreeSlots = wipTaskIds.length + nonWipWorktreeHolderIds.length;
+      let reservedConcurrentSlots = wipTaskIds.length;
       const inProgressTaskIds = wipTaskIds;
       const dispatchPrepByTaskId = new Map<string, {
         baseBranch: string | null;
@@ -2838,6 +2867,7 @@ export class Scheduler {
             maxConcurrent,
             activeWorktrees: reservedWorktreeSlots,
             maxWorktrees,
+            worktreeHolderTaskIds: [...inProgressTaskIds, ...nonWipWorktreeHolderIds],
             semaphore: this.options.semaphore,
             inProgressTaskIds,
             topLevelClaimedSlots,

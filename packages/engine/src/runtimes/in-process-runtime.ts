@@ -2308,6 +2308,20 @@ export class InProcessRuntime
    */
   private async drainWorkflowContinuations(): Promise<void> {
     if (this.workflowContinuationDrainActive || this.status !== "active") return;
+    /*
+    FNXC:EnginePause 2026-08-01-00:20:
+    A pause-suspended run persists a runnable continuation (same mechanism as capacity). Without
+    this gate the drain would re-dispatch it on the next tick and the graph would bounce
+    suspend→dispatch→suspend forever while paused — and worse, dispatch genuinely new work under
+    Stop AI Engine. Settings are re-read here (not event-driven) for the same reason as the
+    boundary probe: the pause must bind even if `settings:updated` never reaches this instance.
+    */
+    try {
+      const settings = await this.taskStore.getSettings();
+      if (settings.globalPause === true || settings.enginePaused === true) return;
+    } catch {
+      /* unreadable settings: proceed as before rather than wedging the pump */
+    }
     this.workflowContinuationDrainActive = true;
     try {
       await drainDuePlanningContinuations({

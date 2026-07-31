@@ -291,7 +291,7 @@ export interface WorkflowGraphExecutorResult {
   context: Record<string, unknown>;
   visitedNodeIds: string[];
   suspended?: {
-    reason: "capacity";
+    reason: "capacity" | "pause";
     nodeId: string;
     fromColumn: string;
     toColumn: string;

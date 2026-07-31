@@ -119,10 +119,29 @@ function percentile(sortedValues: number[], p: number): number {
   return sortedValues[Math.min(sortedValues.length - 1, Math.max(0, index))] ?? 0;
 }
 
-/* FNXC:ReliabilityMetrics 2026-07-30-03:10 DELIBERATE-LITERAL: historical log values — `from`/`to`
-   as RECORDED on a past move event, matched as recorded. Full reasoning above
-   `tasksEnteredInReviewPerDay`. */
-export function inReviewDurationMetrics(activity: ActivityLogEntry[], startMs: number, endMs: number): InReviewDurationMetric {
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-30-23:55 (#2875 review — greptile P1, "resolved lanes discarded
+downstream"): THE PRODUCER WAS CONVERTED AND THIS CONSUMER THREW THE ANSWER AWAY.
+
+`getInReviewDurationEvents` now fetches moves using the project's RESOLVED review lanes, and this
+function then matched `to === "in-review"` and `to === "done"` against them. On a renamed board every
+fetched event was discarded, the sample count stayed under three, and the Reliability panel reported
+`insufficient-samples` forever — a metric that is silently absent rather than visibly wrong, which is
+why nothing surfaced it.
+
+The lane sets are OPTIONAL and the production caller supplies them: `server.ts` already resolves
+`reviewLanes` for `countEntriesInto`/`countBouncesOut` two statements above this call, so wiring costs
+no extra read. Omitted, the legacy ids answer — the documented degraded path for the pure function's
+own tests, not a floor anything in production takes.
+*/
+export function inReviewDurationMetrics(
+  activity: ActivityLogEntry[],
+  startMs: number,
+  endMs: number,
+  lanes?: { review?: ReadonlySet<string>; complete?: ReadonlySet<string> },
+): InReviewDurationMetric {
+  const reviewLanes = lanes?.review ?? new Set(["in-review"]);
+  const completeLanes = lanes?.complete ?? new Set(["done"]);
   const moved = activity
     .filter((entry) => entry.type === "task:moved")
     .map((entry) => ({ entry, ms: new Date(entry.timestamp).getTime() }))
@@ -141,12 +160,30 @@ export function inReviewDurationMetrics(activity: ActivityLogEntry[], startMs: n
     const from = metadataColumn(entry, "from");
     const to = metadataColumn(entry, "to");
 
-    if (to === "in-review") {
-      latestInReviewEntryByTask.set(taskId, ms);
+    /*
+    FNXC:WorkflowLifecycleColumns 2026-07-30-21:30 (#2875 review — greptile P1, "internal review moves
+    reset duration"): ENTERING REVIEW IS A CROSSING, NOT AN ARRIVAL.
+
+    A board may declare several review-role lanes — merge orchestration beside a human sign-off lane —
+    and a card moving BETWEEN them has not re-entered review. Overwriting the timestamp on every move
+    whose destination is a review lane made the metric measure only the LAST lane, so the number shrank
+    exactly on the boards that review most carefully. It read plausible, which is why it needed the
+    review to find.
+
+    The start is therefore recorded only when the card was NOT already in a review lane. An unknown
+    `from` (absent metadata) still records, because a first observation with no prior lane is an entry
+    as far as this data can tell — dropping it would lose the sample entirely, which is worse than
+    dating it slightly late.
+    */
+    if (to !== undefined && reviewLanes.has(to)) {
+      const alreadyInReview = from !== undefined && reviewLanes.has(from);
+      if (!alreadyInReview) latestInReviewEntryByTask.set(taskId, ms);
       continue;
     }
 
-    if (from === "in-review" && to === "done" && ms >= startMs && ms <= endMs) {
+    if (from !== undefined && to !== undefined
+      && reviewLanes.has(from) && completeLanes.has(to)
+      && ms >= startMs && ms <= endMs) {
       const start = latestInReviewEntryByTask.get(taskId);
       if (typeof start === "number" && ms >= start) {
         durations.push(ms - start);

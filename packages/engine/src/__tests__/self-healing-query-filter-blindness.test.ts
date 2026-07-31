@@ -37,6 +37,37 @@ import { EventEmitter } from "node:events";
 import type { Settings, Task, TaskStore } from "@fusion/core";
 import { resolveLifecycleColumns } from "@fusion/core";
 
+/*
+FNXC:WorkflowResolvedColumns 2026-07-31-04:40:
+`classifyForeignOnlyContamination` is a STATIC named import in the sweep, so `vi.spyOn` on the module
+object cannot intercept it under ESM — the binding is already resolved. Only the other named exports are
+passed through, so the sweeps in this file that use `inspectBranchConflict` are unaffected.
+*/
+/*
+FNXC:WorkflowResolvedColumns 2026-07-31-05:45:
+The sweep logs through `createLogger("self-healing")`, which writes to console.error. Spying on
+console.error does NOT work here — vitest installs its own console interceptor above the spy, so the
+line appears in the run output while the spy records nothing (it did, and read as "no warn emitted").
+Mocking the logger module captures the call itself, one level below the console.
+*/
+const selfHealingWarn = vi.fn();
+vi.mock("../logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../logger.js")>();
+  return {
+    ...actual,
+    createLogger: (prefix: string) => {
+      const real = actual.createLogger(prefix);
+      return prefix === "self-healing" ? { ...real, warn: (...args: unknown[]) => { selfHealingWarn(...args); real.warn(...args as [string]); } } : real;
+    },
+  };
+});
+
+const classifyForeignOnlyContamination = vi.fn(async () => ({ kind: "clean" as const }));
+vi.mock("../branch-conflicts.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../branch-conflicts.js")>();
+  return { ...actual, classifyForeignOnlyContamination: (...args: unknown[]) => classifyForeignOnlyContamination(...args as []) };
+});
+
 vi.mock("../run-audit.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../run-audit.js")>();
   return {
@@ -86,8 +117,9 @@ function productionFaithfulStore(tasks: Task[]) {
     being a ratchet silently.
     */
     listWorkflowDefinitions: vi.fn(async () => [{ ir: RENAMED_IR }]),
+    logEntry: vi.fn(async () => undefined),
   }) as unknown as TaskStore & EventEmitter;
-  return { store, listTasks };
+  return { store, listTasks, updateTask: store.updateTask as unknown as ReturnType<typeof vi.fn> };
 }
 
 function shippedCard(): Task {
@@ -719,5 +751,152 @@ describe("self-healing sweeps are bounded by a hardcoded column QUERY, not by th
     await manager.recoverMergedReviewTasks();
 
     expect(resolveTarget).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-31-09:45 (the query-filter class, twenty-first sweep):
+  `recoverStaleMergingStatus` clears a `merging`/`merging-pr` stamp left on a review card with no live
+  merger behind it. The literal read meant that on a renamed board the stamp was never cleared, so the
+  card read as mid-merge forever — and that stamp is what the merger AND the dashboard's manual Retry
+  gate both consult, so the card could neither progress on its own nor be retried by hand.
+
+  `updatedAt` is deliberately ancient: `isStaleMergeActiveStatus` requires the stamp to have sat
+  untouched for `minAgeMs`, so a fresh fixture would be filtered out for a reason unrelated to lanes.
+
+  REVERT CHECKS, both measured, each alone:
+    - literal read restored -> fails, the card is never listed
+    - verdict back to `task.column !== "in-review"` -> fails, the renamed review lane is filtered out
+  */
+  it("clears a stale merge stamp on a RENAMED review lane", async () => {
+    const stuck = {
+      ...shippedCard(),
+      id: "FN-STALESTAMP",
+      column: RENAMED_VOCAB.review,
+      status: "merging",
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    } as unknown as Task;
+    const { store, updateTask } = productionFaithfulStore([stuck]);
+
+    await new SelfHealingManager(store, { rootDir: "/repo" }).recoverStaleMergingStatus();
+
+    expect(updateTask).toHaveBeenCalledWith("FN-STALESTAMP", expect.objectContaining({ status: null }));
+  });
+
+  it("does not clear a merge stamp on a card outside the RENAMED review lanes", async () => {
+    /*
+    Non-vacuous companion: without it, a read returning every column would satisfy the case above. A
+    merge stamp on a wip card is not this sweep's business — recoverInProgressLimbo and the executor own
+    that lane.
+    */
+    const stuck = {
+      ...shippedCard(),
+      id: "FN-STALESTAMP",
+      column: RENAMED_VOCAB.wip,
+      status: "merging",
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    } as unknown as Task;
+    const { store, updateTask } = productionFaithfulStore([stuck]);
+
+    await new SelfHealingManager(store, { rootDir: "/repo" }).recoverStaleMergingStatus();
+
+    expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-31-04:35 (the query-filter class, fourteenth sweep):
+  `recoverForeignOnlyContaminatedInReviewTasks` classifies a branch that carries ONLY foreign commits and
+  clears the contamination park nothing else clears. Two literal reads meant that on a renamed board it
+  classified nothing and the task stayed parked indefinitely.
+
+  The two `task.column === …` checks inside its filters were redundant while the query pinned the column;
+  under a resolved read they ARE the per-card verdict, so they convert here rather than being deleted.
+
+  `classifyForeignOnlyContamination` is a module function needing git, so the observable is CANDIDACY —
+  it is called once per accepted card and not at all for a card the filters reject, which is exactly the
+  read-plus-verdict this change is about.
+
+  REVERT CHECK, measured: with the literal reads restored, this fails — the card is never listed, so the
+  classifier is never called for it.
+  */
+  it("classifies a foreign-only contaminated branch on a RENAMED review lane", async () => {
+    const parked = {
+      ...shippedCard(),
+      id: "FN-FOREIGN",
+      column: RENAMED_VOCAB.review,
+      branch: "fusion/FN-FOREIGN",
+      worktree: "/tmp/worktrees/FN-FOREIGN",
+      mergeDetails: {},
+    } as unknown as Task;
+    const { store } = productionFaithfulStore([parked]);
+    classifyForeignOnlyContamination.mockClear();
+
+    await new SelfHealingManager(store, { rootDir: "/repo" }).recoverForeignOnlyContaminatedInReviewTasks();
+
+    expect(classifyForeignOnlyContamination).toHaveBeenCalledWith(expect.objectContaining({ taskId: "FN-FOREIGN" }));
+  });
+
+  it("does not classify a card whose lane is neither review nor wip on a RENAMED board", async () => {
+    /*
+    Non-vacuous companion: without it, a read returning every column would satisfy the case above. Same
+    board, same card — only its lane changes, to the board's own hold lane.
+    */
+    const parked = {
+      ...shippedCard(),
+      id: "FN-FOREIGN",
+      column: RENAMED_VOCAB.hold,
+      branch: "fusion/FN-FOREIGN",
+      worktree: "/tmp/worktrees/FN-FOREIGN",
+      mergeDetails: {},
+    } as unknown as Task;
+    const { store } = productionFaithfulStore([parked]);
+    classifyForeignOnlyContamination.mockClear();
+
+    await new SelfHealingManager(store, { rootDir: "/repo" }).recoverForeignOnlyContaminatedInReviewTasks();
+
+    expect(classifyForeignOnlyContamination).not.toHaveBeenCalled();
+  });
+
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-31-05:50 (#2891 review P1 — the card the sweep disowned):
+  `resolveWorkflowIrForTask` does not fail; it SUBSTITUTES the built-in IR. So a card whose workflow
+  selection is missing or unreadable came back measured against `in-review`/`in-progress`, and the
+  per-card verdicts then REJECTED the very card the project-scoped query had just admitted from a renamed
+  lane. The sweep found it and immediately disowned it.
+
+  The fix falls back to the PROJECT sets that admitted the card, so it is CLASSIFIED rather than dropped.
+  This asserts that outcome rather than a log line — the observable is stronger and does not depend on
+  wording.
+
+  SUPERSEDED 2026-07-30 (#2891 review, second round): this asserted that the card IS classified, which
+  was true of the project-union fallback I shipped first and is no longer the behaviour. Review pushed
+  back that widening on an ACTION site — these verdicts clear a contamination pause — lets a column
+  carrying a recovery role only in ANOTHER workflow admit this card. The union was replaced by
+  skip-and-report: without the card's own board we do not decide, and the card is logged so it is
+  visible rather than silently mis-decided in either direction.
+
+  So the assertion is inverted rather than deleted. What it now pins is the same property from the
+  other side — a renamed-lane card with no resolvable workflow must NOT be acted on — and it still
+  fails if someone restores either earlier answer, because both of those classify it.
+  */
+  it("does NOT classify a renamed-lane card whose own workflow cannot be resolved", async () => {
+    const parked = {
+      ...shippedCard(),
+      id: "FN-NOWORKFLOW",
+      column: RENAMED_VOCAB.review,
+      branch: "fusion/FN-NOWORKFLOW",
+      worktree: "/tmp/worktrees/FN-NOWORKFLOW",
+      mergeDetails: {},
+    } as unknown as Task;
+    const { store } = productionFaithfulStore([parked]);
+    /* The PROJECT's definitions still resolve (so the card is listed); the CARD's own selection does not. */
+    Object.assign(store, {
+      getTaskWorkflowSelectionAsync: vi.fn(async () => undefined),
+      getTaskWorkflowSelection: vi.fn(() => undefined),
+    });
+    classifyForeignOnlyContamination.mockClear();
+
+    await new SelfHealingManager(store, { rootDir: "/repo" }).recoverForeignOnlyContaminatedInReviewTasks();
+
+    expect(classifyForeignOnlyContamination).not.toHaveBeenCalled();
   });
 });

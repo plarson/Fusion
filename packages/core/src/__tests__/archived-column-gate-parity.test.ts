@@ -6,10 +6,10 @@ Every other file in the column-literal backlog can be converted on its own: reso
 lifecycle columns, compare against the role. `archived` is different, and the difference is not a
 matter of degree.
 
-MEASURED on this tree — THREE encodings, 48 sites, all in packages/core:
-  - 33 TypeScript comparisons against the literal `"archived"` across 21 files.
+MEASURED on this tree — THREE encodings, 36 sites, all in packages/core:
+  - 21 TypeScript comparisons against the literal `"archived"` across 16 files.
 
-  (Was 37 when this guard landed. Aggregate conversions and file moves have since removed four net
+  (Was 25 before the renamed-archive producer/consumer conversion. That conversion removed four net
   comparisons, and the guard FAILED until this inventory was updated to match — the ratchet working:
   it notices the TypeScript half moving in either direction, not only up.)
   - 7 Drizzle predicates pushing the same rule into SQL as `ne(tasks.column, 'archived')`, in 6 files.
@@ -56,7 +56,7 @@ import { describe, expect, it } from "vitest";
  */
 const AUDITED_TS_SITES: Readonly<Record<string, number>> = {
   "packages/core/src/agent-store.ts": 1,
-  "packages/core/src/async-mission-store-queries.ts": 2,
+  "packages/core/src/async-mission-store-queries.ts": 1,
   "packages/core/src/dependency-status.ts": 1,
   "packages/core/src/eval-signal-collector.ts": 1,
   "packages/core/src/live-agent-count.ts": 1,
@@ -64,7 +64,7 @@ const AUDITED_TS_SITES: Readonly<Record<string, number>> = {
   "packages/core/src/store.ts": 1,
   "packages/core/src/task-merge.ts": 2,
   "packages/core/src/task-store/archive-lifecycle-2.ts": 1,
-  "packages/core/src/task-store/async-comments-attachments.ts": 8,
+  "packages/core/src/task-store/async-comments-attachments.ts": 5,
   "packages/core/src/task-store/audit-ops.ts": 1,
   "packages/core/src/task-store/branch-and-pr-entities.ts": 1,
   "packages/core/src/task-store/lifecycle-ops.ts": 1,

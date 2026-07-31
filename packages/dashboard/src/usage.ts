@@ -1718,16 +1718,11 @@ async function fetchGrokCliBillingUsage(token: string, usage: ProviderUsage): Pr
     const parsedReset = _parseResetTimestamp(config.billingPeriodEnd ?? config.currentPeriod?.end);
     const isWeekly = config.currentPeriod?.type === "USAGE_PERIOD_TYPE_WEEKLY";
     /*
-    FNXC:UsageProviders 2026-07-14-14:47:
-    Grok's billing endpoint omits `creditUsagePercent` when the weekly allowance is exhausted. Grok Build renders that valid reduced config as “Weekly limit: 0%” (zero allowance remaining), while Fusion's usage model stores percent consumed. Therefore the omitted exhausted value maps to 100% used—not 0% used. Only infer exhaustion when the response still proves a weekly billing period and reset boundary, so malformed payloads continue to fail closed.
+    FNXC:UsageProviders 2026-07-31-20:31:
+    A real account reported zero Grok credit usage while its billing response omitted `creditUsagePercent`, disproving the former omitted-field-to-100% inference. Emit a credits window only for a finite API-supplied percentage; field absence must fall through to the API-key validity or CLI-auth error card rather than fabricate consumption.
     */
-    const rawPercentUsed = config.creditUsagePercent;
-    const pctUsed = typeof rawPercentUsed === "number" && Number.isFinite(rawPercentUsed)
-      ? rawPercentUsed
-      : isWeekly && parsedReset
-        ? 100
-        : undefined;
-    if (pctUsed === undefined) return false;
+    const pctUsed = config.creditUsagePercent;
+    if (typeof pctUsed !== "number" || !Number.isFinite(pctUsed)) return false;
 
     usage.windows.push({
       label: isWeekly ? "Weekly (credits)" : "Credits",

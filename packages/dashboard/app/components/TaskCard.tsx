@@ -3572,7 +3572,22 @@ function TaskCardComponent({
                       "tasks.awaitingApprovalTitle",
                       "This plan needs your approval before implementation can start.",
                     )
-                  : undefined
+                  /*
+                  FNXC:TaskStatusBadge 2026-07-31-23:20:
+                  `needs-replan` is a durable WAITING state (the graph's replan signal), not a live
+                  session — the actual revise run surfaces as "planning" once triage re-admits it.
+                  Operators read "Revising" as activity and counted it against the concurrency
+                  panel ("five planning badges, four running agents"); mirror QUEUED TO PLAN's
+                  disambiguation as a tooltip so the label (FN-8493 copy) stays untouched while an
+                  idle Revising card explains itself. Gated on !isAgentActive so a genuinely
+                  running revise cycle keeps no misleading "waiting" text.
+                  */
+                  : task.status === "needs-replan" && !isAgentActive
+                    ? t(
+                        "tasks.needsReplanQueuedTitle",
+                        "Waiting to revise the plan — the revision starts when a planning slot frees up.",
+                      )
+                    : undefined
             }
             aria-label={isTransientPlannerActive ? t("tasks.statusPlanning", "Planning") : undefined}
             data-testid={isAwaitingApproval ? `card-awaiting-approval-${task.id}` : undefined}

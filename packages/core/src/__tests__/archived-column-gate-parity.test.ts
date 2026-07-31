@@ -39,6 +39,108 @@ deliberate, are both real decisions with real blast radius. Neither is a fleet c
 templates are worse again: one of them is a hand-written `SELECT` string, so its comparison is not even
 a Drizzle expression that could take a bound value without rewriting the query.
 
+FNXC:WorkflowResolvedColumns 2026-07-31-23:59 (THE TS HALF — mostly already converted; the inventory
+counts FALLBACK ARMS, which is why 20 reads as 20 outstanding guards and is not):
+Sampled the TS inventory the same way. It does not decompose into LANE/STATE the way the SQL half
+does, because most entries are not pending conversions at all:
+
+  FALLBACK ARM of an already-converted guard — the literal is reached only when a caller supplies no
+  resolved set, and it is the documented degraded answer:
+    async-comments-attachments.ts   `archivedColumns ? has(row.column) : row.column === "archived"`
+                                    — already marked DELIBERATE-LITERAL / FALLBACK ARM in place.
+    update-task-deps.ts:406-408     resolved arm first (`lifecycle?.archived ?? "archived"`), literal
+                                    last.
+    task-merge.ts:478,489           `if (!columns) return dependency.column === "done" || ...` — the
+                                    whole branch is the no-metadata fallback.
+
+  STATE / SENTINEL, not a lane:
+    task-id-integrity.ts:444        compares `getLiveTaskColumn`'s MANUFACTURED "archived", which that
+                                    function returns for archived OR SOFT-DELETED rows. A normalized
+                                    sentinel; resolving it would compare a lane id against a value no
+                                    lane produces.
+    archive-lifecycle-2.ts:47       `column: "archived"` is a WRITE — it SETS the archive state.
+
+So the TS count overstates outstanding work in the OPPOSITE direction from the SQL count: the SQL half
+had two sites that must never be converted, and the TS half has several that are already correct.
+
+WHAT THIS MEANS FOR THE DECISION. "52 sites across three encodings" is the number the gate must keep
+in LOCKSTEP, not the number a conversion has to CHANGE. After triage the conversion is the six LANE
+Drizzle sites plus whatever small TS remainder is neither a fallback arm nor a sentinel — with the
+inventories updated in the same commit so the three encodings stay in step.
+
+That is a materially smaller and better-understood change than the headline implies, and it is now
+specified rather than estimated. Still not done here: the gate requires one coordinated commit, and
+the remaining judgement is per-site verification of the TS remainder, which wants the owner making the
+conversion rather than a third pass of sampling.
+
+FNXC:WorkflowResolvedColumns 2026-07-31-23:59 (THE TRIAGE, DONE — 8 SQL sites classified with evidence):
+The scoping note below says the first question is "which of these are LANE questions and which are
+STATE markers?" and that nobody had answered it. Answered here for the Drizzle half, per site, by
+reading what each query is FOR. Nothing is converted; this is the input the conversion needs.
+
+LANE (6) — these select or exclude LIVE work, so a renamed archive lane must be resolved:
+  store.ts                    revert lookup: ne(archived) + ne(done) picking live revert candidates.
+  branch-group-ops.ts:82      near-duplicate marker cleanup over live rows: ne(archived) + ne(done).
+  branch-and-pr-entities:438  content-fingerprint duplicate guard, gated on `!includeArchived`.
+  branch-and-pr-entities:470  recent sibling lookup: ne(archived) + ne(done).
+  async-lifecycle.ts:68       `liveLineageChildFilter` — the name is the classification.
+  async-search.ts:82          `liveSearchPredicate(includeArchived)` — same.
+  Four of these already hold `store`/`this.asyncLayer`; the two predicate builders need one
+  optional parameter each, the shape used throughout this program.
+
+STATE (2) — these are ABOUT the marker `archiveTask` writes, and converting them would be a BUG:
+  task-mutation-ops.ts:1072   `cleanupArchivedTasksImpl` selects eq(column,"archived") and then `rm`s
+                              each row's files. Widening to the resolved archived set would feed cards
+                              merely RESTING in a board's archive lane into a filesystem delete. This
+                              is the most destructive site in the family and it looks identical to the
+                              LANE ones at a glance — same column, same operator.
+  async-self-healing.ts:61    soft-deleted rows whose column DRIFTED from the archive marker
+                              (`isNotNull(deletedAt) && ne(column,"archived")`). Resolving it would
+                              classify a soft-deleted row sitting in a renamed archive lane as drift
+                              and "repair" it.
+
+The raw-SQL half is already partly triaged in place: `async-maintenance.ts` is marked
+DELIBERATE-LITERAL as a STATE marker, and `async-archive-lineage.ts`'s soft-delete path writes
+`column = 'archived', deleted_at IS NOT NULL` as the storage state it has just set — STATE by
+construction.
+
+SO THE SHAPE OF THE WORK: roughly three quarters LANE, one quarter STATE, and the STATE sites are the
+ones that destroy data if converted. That is why "convert all three encodings" cannot be done as a
+sweep, and why the count alone made it look bigger than it is — the number to convert is smaller than
+52, and the number that must NOT be touched is the part worth being careful about.
+
+NOT CONVERTED HERE, and deliberately: the gate requires all three encodings to move together, so a
+conversion is one coordinated change with its inventories updated in the same commit. This supplies
+the classification that change needs; it does not pre-empt it.
+
+FNXC:WorkflowResolvedColumns 2026-07-31-23:55 (SCOPING — the choice is not 52-or-nothing):
+"Convert all three encodings" and "declare `archived` non-renameable" are the two options offered, and
+both sound enormous because 52 sites are counted as one lump. They are not one lump: the sites answer
+TWO DIFFERENT QUESTIONS, and only one of them is a lane question.
+
+  LANE:  "is this row resting in the board's archive lane?" — renameable, must resolve.
+  STATE: "did Fusion archive this row?" — the marker `archiveTask` writes, NOT renameable.
+
+`async-maintenance.ts` already draws that line and marks its site DELIBERATE-LITERAL: "the STATE
+marker here, not a lane... a card merely sitting in a workflow's archived-TRAIT lane is live work and
+must not be collected." Converting that site would be a BUG, not progress.
+
+MEASURED, on the SQL half this file calls the hard part — 8 Drizzle sites across 7 files:
+  FOUR already have a `store` in scope and could take a resolved set with no signature change:
+      branch-group-ops.ts        clearNearDuplicateReferencesToImpl(store, ...)
+      branch-and-pr-entities.ts  findRecentTasksByContentFingerprintImpl(store, ...)   [2 sites]
+      task-mutation-ops.ts       cleanupArchivedTasksImpl(store)
+  FOUR need one parameter each, the optional-lane-set shape used throughout this program:
+      async-lifecycle.ts    liveLineageChildFilter(parentId, projectId?)
+      async-search.ts       liveSearchPredicate(includeArchived, projectId?)
+      async-self-healing.ts listSoftDeletedColumnDriftCandidates(db, ...)
+      store.ts              the revert-lookup conditions (already holds `this.asyncLayer`)
+
+That is not "threading a resolver into the persistence layer". It is four call sites that already have
+what they need plus four one-parameter widenings — before the triage above removes the STATE sites
+from the count. (Two of the four "already have a store" sites turned out to be STATE on inspection;
+the triage note above is the authority, this is the reachability survey that preceded it.)
+
 FNXC:WorkflowResolvedColumns 2026-07-31-23:50 (one wrong reason for picking the cheap option, removed):
 The second option looks like it has already been taken — `trait-types.ts` annotates the flag
 "RESTRICTED (built-in only)", which reads as "a custom board cannot have its own archive lane". It does

@@ -14,7 +14,39 @@ import { findLaneAcceptingFunctions, findUnwiredCallSites } from "./lib/lane-wir
 
 const ROOT = process.cwd();
 const BASELINE = join(ROOT, "scripts/lib/lane-wiring-baseline.json");
-const ROOTS = ["packages/core/src", "packages/engine/src", "packages/dashboard/src", "packages/cli/src"];
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-30-24:00:
+`packages/dashboard/app` and `plugins` are scanned, and `.tsx` counts — their absence was the
+blind spot the OLDER guard already learned about and this one re-opened.
+
+`unwired-lane-parameter-guard.test.ts` scans exactly six roots including these two, and its note
+records why: an unwired `completeColumnsByTaskId` sat on `main` unreported because the glasses plugin
+was not in the list. Plugins hold real lane logic — they resolve workflow IRs, filter by column, and
+decide what "finished" means — and `dashboard/app` is where the board is actually rendered.
+
+The extension is TWO changes, and either alone still misses most of it: those trees are overwhelmingly
+`.tsx`, which the file filter below excluded, so adding the roots without the extension would have
+scanned a handful of files and reported a reassuring near-zero.
+
+Measured on the widened scan, re-measured after rebasing onto main: 15 further call sites, none of
+which any gate could see before. They are recorded in the baseline rather than fixed here — they span
+three other batches — and audited in the PR that widened this, because baselining a site nobody looked
+at is how a ratchet becomes decoration.
+
+FNXC:WorkflowLifecycleColumns 2026-07-30-23:55 (#2978 review — coderabbitai, "correct the audited
+call-site count"): the note said 9 and the review said 10, from the pre-rebase baseline. BOTH are now
+wrong: main gained sites in these very trees while the PR sat, so the widening currently uncovers 15.
+A hand-written count beside a generated baseline dates the moment it is written — this one is stamped
+so the next reader knows to re-measure rather than trust it.
+*/
+const ROOTS = [
+  "packages/core/src",
+  "packages/engine/src",
+  "packages/dashboard/src",
+  "packages/dashboard/app",
+  "packages/cli/src",
+  "plugins",
+];
 
 function sources(dir, out = []) {
   for (const entry of readdirSync(dir)) {
@@ -22,14 +54,37 @@ function sources(dir, out = []) {
     if (statSync(p).isDirectory()) {
       if (entry === "__tests__" || entry === "node_modules" || entry === "dist") continue;
       sources(p, out);
-    } else if (entry.endsWith(".ts") && !entry.endsWith(".d.ts") && !entry.includes(".test.")) {
+    } else if (
+      (entry.endsWith(".ts") || entry.endsWith(".tsx"))
+      && !entry.endsWith(".d.ts")
+      && !entry.includes(".test.")
+      && !entry.includes(".spec.")
+    ) {
       out.push(p);
     }
   }
   return out;
 }
 
-const files = ROOTS.flatMap((r) => { try { return sources(join(ROOT, r)); } catch { return []; } });
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-30-23:58 (#2978 review — coderabbitai, "fail closed when a
+required root cannot be scanned"): AN UNREADABLE ROOT IS A GATE THAT LIES, NOT A GATE THAT PASSES.
+
+`catch { return [] }` turned a missing or unreadable root into an empty file list, so a typo'd path or
+a permissions failure produced a smaller scan and a confident `none added`. Every root here is part of
+the coverage contract — `plugins` and `dashboard/app` were added BECAUSE they were unscanned — so
+silently dropping one restores exactly the blindness this change exists to remove.
+
+Fails closed with the root path in the message. A gate whose errors land on "nothing to report" is the
+one failure mode a ratchet must not have.
+*/
+const files = ROOTS.flatMap((r) => {
+  try {
+    return sources(join(ROOT, r));
+  } catch (error) {
+    throw new Error(`[check-lane-wiring] required root "${r}" could not be scanned: ${error.message}`);
+  }
+});
 const accepting = findLaneAcceptingFunctions(files);
 const unwired = findUnwiredCallSites(files, accepting);
 

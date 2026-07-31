@@ -4735,11 +4735,24 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const hasActiveFileScopeOverlapBlocker = async (dependent: Task, blockerId: string | null | undefined): Promise<boolean> => {
         if (!blockerId) return false;
         const blocker = taskById.get(blockerId);
+        /*
+        FNXC:WorkflowResolvedColumns 2026-07-30-22:20 (shared predicate, HALF-converted):
+        `shouldHoldActiveFileScopeLease` is the scheduler's lease predicate, shared with this path on
+        purpose so stale-blocker cleanup cannot preserve blockers the scheduler would ignore — or, as
+        here, RELEASE blockers the scheduler still honours. Its two role answers are optional
+        parameters defaulting to the legacy ids; the scheduler's own call sites pass resolved answers
+        and these did not, so on a renamed board the two disagreed: the scheduler kept the lease while
+        this sweep saw `false` for every card, cleared `overlapBlockedBy`, and released a dependent to
+        edit files another agent still holds. Membership comes from the sets this sweep already
+        resolved a few lines above.
+        */
         if (!blocker || !shouldHoldActiveFileScopeLease(blocker, allTasks, {
           mergeRequestContractShadowEnabled: settings.mergeRequestContractShadowEnabled,
           handoffAccepted: settings.mergeRequestContractShadowEnabled === true
             ? (await this.store.getCompletionHandoffAcceptedMarker(blocker.id)) !== null
             : false,
+          isWipColumn: completedWipColumns.has(blocker.column),
+          isReviewColumn: completedReviewColumns.has(blocker.column),
         })) return false;
         const dependentScope = await getFilteredFileScope(dependent.id);
         if (dependentScope.length === 0 || isCoordinationOnlyTask(dependent, dependentScope)) return false;
@@ -5794,11 +5807,24 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const hasActiveFileScopeOverlapBlocker = async (task: Task, blockerId: string | null | undefined): Promise<boolean> => {
         if (!blockerId) return false;
         const blocker = taskById.get(blockerId);
+        /*
+        FNXC:WorkflowResolvedColumns 2026-07-30-22:20 (shared predicate, HALF-converted):
+        `shouldHoldActiveFileScopeLease` is the scheduler's lease predicate, shared with this path on
+        purpose so stale-blocker cleanup cannot preserve blockers the scheduler would ignore — or, as
+        here, RELEASE blockers the scheduler still honours. Its two role answers are optional
+        parameters defaulting to the legacy ids; the scheduler's own call sites pass resolved answers
+        and these did not, so on a renamed board the two disagreed: the scheduler kept the lease while
+        this sweep saw `false` for every card, cleared `overlapBlockedBy`, and released a dependent to
+        edit files another agent still holds. Membership comes from the sets this sweep already
+        resolved a few lines above.
+        */
         if (!blocker || !shouldHoldActiveFileScopeLease(blocker, allTasks, {
           mergeRequestContractShadowEnabled: settings.mergeRequestContractShadowEnabled,
           handoffAccepted: settings.mergeRequestContractShadowEnabled === true
             ? (await this.store.getCompletionHandoffAcceptedMarker(blocker.id)) !== null
             : false,
+          isWipColumn: blockedWipColumns.has(blocker.column),
+          isReviewColumn: blockedReviewColumns.has(blocker.column),
         })) return false;
 
         const taskScope = await getFilteredFileScope(task.id);
@@ -8703,8 +8729,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         logPrefix: "Stale paused todo surfaced",
         role: "hold",
         isEligible: (task) => task.paused === true,
-        evaluate: (task, thresholdMs, now, activation, roleColumn) =>
-          getStalePausedTodoSignal(task, { now, thresholdMs, holdColumn: roleColumn, ...activation }),
+        evaluate: (task, thresholdMs, now, activation, roleColumns) =>
+          getStalePausedTodoSignal(task, { now, thresholdMs, holdColumns: roleColumns, ...activation }),
         describe: (_task, signal, thresholdMs) =>
           `paused ${hours(signal.ageMs)}h beyond ${hours(thresholdMs)}h threshold; disposition options — unpause, move to triage, archive, or create follow-up task. pausedReason=${(_task as { pausedReason?: string }).pausedReason ?? "none"}`,
       },
@@ -8720,8 +8746,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         logPrefix: "Stale paused review surfaced",
         role: "review",
         isEligible: (task) => task.paused === true,
-        evaluate: (task, thresholdMs, now, activation, roleColumn) =>
-          getStalePausedReviewSignal(task, { now, thresholdMs, reviewColumn: roleColumn, ...activation }),
+        evaluate: (task, thresholdMs, now, activation, roleColumns) =>
+          getStalePausedReviewSignal(task, { now, thresholdMs, reviewColumns: roleColumns, ...activation }),
         describe: (_task, signal) =>
           `paused ${hours(signal.ageMs)}h; disposition options — unpause, retry, archive, or create follow-up task. pausedReason=${(_task as { pausedReason?: string }).pausedReason ?? "none"}`,
       },
@@ -8755,14 +8781,14 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           task.id !== activeMergeTaskId &&
           !executingTaskIds.has(task.id),
         isEligibleAsync: async (task) => !(await this.isMergeLaneOwned(task.id)),
-        evaluate: (task, thresholdMs, now, activation, roleColumn) => {
+        evaluate: (task, thresholdMs, now, activation, roleColumns) => {
           const signal = getInReviewStalledSignal(task, {
             now,
             thresholdMs,
             autoMerge: true,
             activeMergeTaskId,
             executingTaskIds,
-            reviewColumn: roleColumn,
+            reviewColumns: roleColumns,
             ...activation,
           });
           return signal ? { ...signal, code: signal.code, ageMs: signal.quietMs } : undefined;

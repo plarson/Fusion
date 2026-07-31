@@ -295,7 +295,7 @@ export function readTaskFromDbImpl(store: TaskStore, id: string, options?: { act
 }
 
 export async function getMergeQueuedTaskIdsAsyncImpl(store: TaskStore): Promise<Set<string>> {
-    
+
     const layer = store.asyncLayer!;
     const rows = await layer.db
       .select({ taskId: schema.project.mergeQueue.taskId })
@@ -320,7 +320,7 @@ archive.archived_tasks (cold). Both must reserve task IDs the same way the
 legacy SQLite archivedTasks / archive.db tables did.
 */
 export async function isTaskIdPresentInArchivedTasksTableAsyncImpl(store: TaskStore, id: string): Promise<boolean> {
-    
+
     const layer = store.asyncLayer!;
     const partition = projectPartition(layer.projectId);
     const [projectArchive, coldArchive] = await Promise.all([
@@ -450,10 +450,23 @@ Authoritative archived check for PostgreSQL: live column gate via
 getLiveTaskColumn, plus cold archive.archived_tasks presence.
 */
 export async function isTaskArchivedAsyncImpl(store: TaskStore, id: string): Promise<boolean> {
-    
+
     const layer = store.asyncLayer!;
     const live = await getLiveTaskColumn(layer.db, id, layer.projectId, await resolveArchivedLanes(store));
     // getLiveTaskColumn returns "archived" for archived OR soft-deleted rows.
+    /*
+    FNXC:LifecycleColumnCensus 2026-07-31-03:10 DELIBERATE-LITERAL: a SENTINEL, not a board lane.
+
+    This compares `getLiveTaskColumn`'s RETURN VALUE. That helper normalizes: it manufactures the string
+    "archived" for an archived row AND for a soft-deleted one, and returns null for a missing task —
+    which is why the neighbouring line tests null separately. It is a protocol value, not a column id.
+
+    STILL TRUE NOW THAT THE HELPER RESOLVES LANES. `getLiveTaskColumn` now takes the board's archived
+    lanes, which was the one genuinely-owed conversion this family pointed at (#2820). That changes which
+    rows it CLASSIFIES as archived; it does not change the SENTINEL it returns, which still collapses
+    archived and soft-deleted into one string. Converting this comparison would therefore keep passing on
+    the built-in board and start FAILING on a renamed one — a soft-deleted task would read as not-archived.
+    */
     if (live === "archived") return true;
     if (live !== null) return false;
     return isTaskIdPresentInArchivedTasksTableAsyncImpl(store, id);

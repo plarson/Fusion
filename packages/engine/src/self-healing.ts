@@ -30,8 +30,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, resolveTaskLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr,
+import { resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PREFIX, IN_REVIEW_STALL_LOG_PREFIX, IN_REVIEW_STALL_TERMINAL_LOG_PREFIX, allowsAutoMergeProcessing, resolveEffectiveAutoMerge, countRecentIdenticalStallEntries, detectDependencyCycle, detectSelfDefeatingDependency, evaluateNoCommitsNoOpFinalize, evaluateCompletedPromotionFailureProvenance, evaluateSkipBypassTaint, getInReviewStalledSignal, getInReviewStallReason, getPrimaryPrInfo, getStalePausedReviewSignal, getStalePausedTodoSignal, getTaskHardMergeBlocker, getTaskMergeBlocker, isEphemeralAgent, isMergeRequestContractShadowEnabled, isWorkspaceTask, isSharedBranchGroupMemberIntegration, isNearDuplicateCanonicalInactive, parseExplicitDuplicateMarker, flagTriageDuplicate, isTriageDuplicateKeepAcknowledged, resolveMaxAutoMergeRetries, resolveOptionalStepRevisionBudget, resolveOptionalReviewRevisionBudget, getBuiltinWorkflow, isBuiltinWorkflowId, resolveWorkflowIrForTask, resolveWorkflowIrForTaskWithProvenance, resolveReboundTarget, columnsWithFlag, resolveLifecycleColumns, workflowHasColumn, planLegacyAdoption, resolveOrphanedPendingStepResults, classifyReviewLease, PLAN_REVIEW_LEASE_STALENESS_MS, DEFAULT_MAX_POST_REVIEW_FIXES, ACTIVE_WORKFLOW_WORK_ITEM_STATES, AWAITING_APPROVAL_PAUSE_REASON, type Agent, type AgentStore, type ChatStore, type MessageStore, type TaskStore, type Settings, type Task, type MergeDetails, type TaskPriority, type MergeResult, type WorkflowStepResult, type WorkflowIr,
   LEGACY_COLUMN_IDS_BY_ROLE,
+  TERMINAL_ROLES,
   resolveProjectColumnsForRoles,
   REVIEW_ROLES,
 } from "@fusion/core";
@@ -99,7 +100,7 @@ import {
   type NtfyNotifier,
 } from "./notifier.js";
 import type { GhostBugDecision } from "./triage-preflight.js";
-import { filterPathsByIgnoreList, getUnmetSchedulingDependencies, isCoordinationOnlyTask, pathsOverlap, shouldHoldActiveFileScopeLease } from "./scheduler.js";
+import { filterPathsByIgnoreList, getUnmetSchedulingDependencies, isCoordinationOnlyTask, pathsOverlap, resolveDependencySatisfactionColumns, shouldHoldActiveFileScopeLease } from "./scheduler.js";
 import { runSurfacingSweep, hours, type SurfacingCycle } from "./surfacing-sweeps.js";
 /* U4 substrate PR1: the git-evidence readers and their helpers now live in
    self-healing-git-evidence.ts. Imported back here because call sites remain. */
@@ -173,6 +174,23 @@ import {
 
 
 const log = createLogger("self-healing");
+
+/*
+DELIBERATE-LITERAL — the no-metadata fallback for dependency satisfaction, mirroring
+`isLegacyDependencySatisfied` in scheduler.ts (reviewed there 2026-07-30-20:40).
+
+Reached ONLY when `resolveDependencySatisfactionColumns` left a dependency unmapped, i.e. its workflow
+could not be read at all. DELETING these literals does not "finish the conversion" — it makes an
+unresolvable dependency read as never-satisfied, which blocks its dependent forever. That is strictly
+worse than the legacy behaviour it would replace.
+
+Hoisted to module scope so the marker sits in the node's LEADING comments, which is where the census
+looks; inline in the conditional it was attached to the wrong node and scored as three unconverted
+guards (86 -> 89 on #2883).
+*/
+function isDependencySatisfiedWithoutWorkflowMetadata(column: string): boolean {
+  return column === "done" || column === "archived" || column === "in-review";
+}
 const worktreeMetadataReconcileLog = createLogger("worktree-metadata-reconcile");
 /*
 FNXC:EngineDiagnostics 2026-07-26-10:25:
@@ -2814,11 +2832,43 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     if (!recoverFn) return 0;
 
     try {
-      const tasks = await this.store.listTasks({ column: "in-progress", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-07:10 (the query-filter class, seventeenth sweep):
+      A task whose steps are ALL done but whose session died before the executor could hand it to review.
+      The literal read meant that on a renamed board it was never found, so finished implementation work
+      sat in the wip lane with no session and nothing to move it on — the shape this sweep exists to
+      catch, made unreachable by the query above it.
+
+      The `t.column === "in-progress"` check was redundant while the query pinned the column; under a
+      resolved read it becomes the per-card verdict, so it converts rather than being deleted.
+      */
+      const stuckWipColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
+      const stuckById = new Map<string, Task>();
+      for (const column of stuckWipColumns) {
+        for (const task of await this.store.listTasks({ column, slim: true })) stuckById.set(task.id, task);
+      }
+      const tasks = [...stuckById.values()];
+      /*
+      NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT — the shape #2891 settled on.
+      `resolveWorkflowIrForTask` SUBSTITUTES the built-in IR rather than failing, so a card with an
+      unreadable selection would otherwise be rejected by the verdict that the project-scoped query had
+      just admitted it under.
+      */
+      const stuckLanes = new Map<string, Set<string>>();
+      for (const task of tasks) {
+        let lanes: Set<string>;
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id);
+          lanes = source === "default" ? new Set(stuckWipColumns) : new Set(columnsWithFlag(ir, "countsTowardWip"));
+        } catch {
+          lanes = new Set(stuckWipColumns);
+        }
+        stuckLanes.set(task.id, lanes);
+      }
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
 
       const stuckCompleted = tasks.filter((t) =>
-        t.column === "in-progress" &&
+        (stuckLanes.get(t.id) ?? stuckWipColumns).has(t.column) &&
         !t.paused &&
         !executingIds.has(t.id) &&
         t.steps.length > 0 &&
@@ -3519,7 +3569,22 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         throw inspection.error;
       }
 
-      const inProgressCandidates = await this.store.listTasks({ column: "in-progress", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-17:40 (the query-filter class, thirty-second sweep):
+      This read answers "is another LIVE task holding this worktree?" — the same question
+      `findActiveWorktreeOwner` answers for the executor, and the same failure if it comes back empty: the
+      checkout reads as unowned and this sweep reclaims a worktree another task is working in.
+
+      No per-card lane verdict downstream: the map below is keyed by WORKTREE PATH, and nothing after it
+      compares a column. So this is a read-only conversion — there is no pair to convert, which the
+      derived ratchet from #2879 also confirms.
+      */
+      const prConflictWipColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
+      const prConflictById = new Map<string, Task>();
+      for (const column of prConflictWipColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) prConflictById.set(entry.id, entry);
+      }
+      const inProgressCandidates = [...prConflictById.values()];
       const inProgressByWorktree = new Map<string, string>();
       for (const inProgressTask of inProgressCandidates) {
         if (inProgressTask.worktree) inProgressByWorktree.set(inProgressTask.worktree, inProgressTask.id);
@@ -3684,23 +3749,101 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     try {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
-      const todoCandidates = await this.store.listTasks({ column: "todo", slim: true });
-      const inProgressCandidates = await this.store.listTasks({ column: "in-progress", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-01:30 (the query-filter class, twelfth sweep):
+      Three lane reads AND three lane guards in the body, so both halves convert together — widening the
+      read alone would admit renamed-board cards and then mis-decide every one of them (the phantom-binding
+      check, the blocked-hold skip, and the review triple-proof are all keyed on lane).
+
+      On a renamed board all three reads returned empty, so a task whose own worktree held its own branch
+      hostage was never reclaimed and stayed wedged behind a conflict only this sweep resolves.
+      */
+      const reclaimHoldColumns = await resolveProjectColumnsForRoles(this.store, ["hold"]);
+      const reclaimWipColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
+      const reclaimReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      /*
+      Buckets are built FROM THE READ that produced each row, not by re-deriving from `task.column`.
+      A row returned by `listTasks({ column: X })` is by definition in X, so re-deriving adds nothing and
+      would silently drop any row whose column field is absent.
+      */
+      const readBucket = async (columns: ReadonlySet<string>): Promise<Task[]> => {
+        const byId = new Map<string, Task>();
+        for (const column of columns) {
+          for (const task of await this.store.listTasks({ column, slim: true })) byId.set(task.id, task);
+        }
+        return [...byId.values()];
+      };
+      const todoCandidates = await readBucket(reclaimHoldColumns);
+      const inProgressCandidates = await readBucket(reclaimWipColumns);
+      const inReviewPausedCandidates = (await readBucket(reclaimReviewColumns))
+        .filter((task) => task.paused === true && task.pausedReason === "branch-conflict-unrecoverable");
+      /*
+      Per-card lanes, used by the three lane GUARDS below (phantom-binding, blocked-hold skip, review
+      triple-proof). Legacy ids unioned so a degraded or mid-rename board still decides correctly.
+      */
+      const reclaimLanes = new Map<string, { hold: Set<string>; wip: Set<string>; review: Set<string> }>();
+      const unresolvedReclaimCards: string[] = [];
+      for (const task of [...todoCandidates, ...inProgressCandidates, ...inReviewPausedCandidates]) {
+        if (reclaimLanes.has(task.id)) continue;
+        const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id);
+        if (source === "default") unresolvedReclaimCards.push(task.id);
+        const lanes = {
+          hold: new Set<string>(LEGACY_COLUMN_IDS_BY_ROLE.hold ?? []),
+          wip: new Set<string>(LEGACY_COLUMN_IDS_BY_ROLE.countsTowardWip ?? []),
+          review: new Set<string>(LEGACY_COLUMN_IDS_BY_ROLE.mergeOrchestration ?? []),
+        };
+        for (const id of columnsWithFlag(ir, "hold")) lanes.hold.add(id);
+        for (const id of columnsWithFlag(ir, "countsTowardWip")) lanes.wip.add(id);
+        for (const role of REVIEW_ROLES) for (const id of columnsWithFlag(ir, role)) lanes.review.add(id);
+        reclaimLanes.set(task.id, lanes);
+      }
+      if (unresolvedReclaimCards.length > 0) {
+        log.warn(
+          `self-owned branch reclaim: ${unresolvedReclaimCards.length} card(s) decided against the built-in workflow (${unresolvedReclaimCards.slice(0, 5).join(", ")})`,
+        );
+      }
+      const lanesOfReclaim = (id: string) => reclaimLanes.get(id) ?? {
+        hold: new Set<string>(LEGACY_COLUMN_IDS_BY_ROLE.hold ?? []),
+        wip: new Set<string>(LEGACY_COLUMN_IDS_BY_ROLE.countsTowardWip ?? []),
+        review: new Set<string>(LEGACY_COLUMN_IDS_BY_ROLE.mergeOrchestration ?? []),
+      };
       const inProgressByWorktree = new Map<string, string>();
       for (const inProgressTask of inProgressCandidates) {
         if (inProgressTask.worktree) {
           inProgressByWorktree.set(inProgressTask.worktree, inProgressTask.id);
         }
       }
-      const inReviewPausedCandidates = (await this.store.listTasks({ column: "in-review", slim: true }))
-        .filter((task) => task.paused === true && task.pausedReason === "branch-conflict-unrecoverable");
       // Per-task auto-merge gating applies to ALL candidate columns, not just
       // in-review: the FN-5704 regression contract ("short-circuits reclaim
       // when autoMerge is false") deliberately keeps execution-stage reclaim
       // and resume-limbo escalation inert in manual-review projects. The
       // per-task override preserves that for override-less tasks while letting
       // explicit autoMerge:true tasks recover.
-      const candidates = [...todoCandidates, ...inProgressCandidates, ...inReviewPausedCandidates]
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-01:15 (#2879 review — greptile, "multi-role tasks run
+      recovery twice"): DEDUPED ACROSS THE BUCKETS, NOT JUST WITHIN EACH.
+
+      `readBucket` dedupes by id, but only inside one role's read. A custom workflow may put more than
+      one queried flag on ONE column — `hold` plus `countsTowardWip` on a lane that both parks and
+      counts as work, or a review role beside either — and that column is then returned by two reads.
+      The task lands in two buckets, and the concatenation below hands the recovery loop the SAME
+      STALE SNAPSHOT twice.
+
+      That is not a wasted iteration: the second pass re-reads `task.branch`/`task.worktree` from a
+      snapshot taken before the first pass mutated anything, so a worktree the first pass reclaimed is
+      reclaimed again against state that no longer exists. The lane-resolution loop above already
+      guards with `reclaimLanes.has(task.id)`; this is the same guard the consumption side was missing.
+
+      Deduping by id preserves iteration order, and the FIRST bucket's snapshot is the one kept. Spelled
+      out with an explicit `has` guard rather than `new Map(entries)`: that constructor keeps first
+      INSERTION ORDER but the LAST value for a repeated key, so it would have silently given last-bucket
+      precedence while this comment claimed the opposite.
+      */
+      const reclaimCandidateById = new Map<string, Task>();
+      for (const task of [...todoCandidates, ...inProgressCandidates, ...inReviewPausedCandidates]) {
+        if (!reclaimCandidateById.has(task.id)) reclaimCandidateById.set(task.id, task);
+      }
+      const candidates = [...reclaimCandidateById.values()]
         .filter((task) => allowsAutoMergeProcessing(task, settings));
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
       const activeTaskIds = await this.listActiveHeartbeatTaskIds();
@@ -3718,7 +3861,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           includeCheckedOutLease: true,
         });
         if (liveExecutionSignal) {
-          const canEvaluatePhantomBinding = task.column === "in-progress"
+          const canEvaluatePhantomBinding = lanesOfReclaim(task.id).wip.has(task.column)
             && (liveExecutionSignal.reason === "executor-active" || liveExecutionSignal.reason === "live-worktree-and-branch");
           if (canEvaluatePhantomBinding) {
             const nowMs = Date.now();
@@ -3790,7 +3933,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           );
           continue;
         }
-        if (task.column === "todo" && task.blockedBy) {
+        if (lanesOfReclaim(task.id).hold.has(task.column) && task.blockedBy) {
           log.debug(`[self-healing] skipping blocked todo task ${task.id} during self-owned branch reclaim (blockedBy=${task.blockedBy})`);
           continue;
         }
@@ -3812,7 +3955,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         }
         if (!await isUsableTaskWorktree(this.options.rootDir, task.worktree)) continue;
 
-        const reviewProof = task.column === "in-review"
+        const reviewProof = lanesOfReclaim(task.id).review.has(task.column)
           ? await this.evaluateBackwardMoveTripleProof(task, {
             stage: "reclaim-self-owned-branch-conflict",
             graceMs: settings.taskStuckTimeoutMs ?? STALE_ACTIVE_BRANCH_EXECUTION_GRACE_MS,
@@ -3933,7 +4076,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                 `[recovery] tip-already-merged ${task.id} branch=${branchName} tip=${inspection.tipSha.slice(0, 12)} integrationRef=${inspection.integrationRef} reason=stale-cached-metadata-ghost-conflict`,
               );
 
-              if (task.column === "in-review") {
+              /*
+              FNXC:WorkflowResolvedColumns 2026-07-31-11:40 (SELF-AUDIT after #2916 found the same class):
+              These loop-body lane guards were MISSED when I converted this sweep's read. That is not a
+              cosmetic gap: this one decides whether the backward move needs `reviewProof`. Left literal,
+              a renamed review card admitted by the widened read reads as NOT-in-review, so the
+              triple-proof gate is skipped entirely and the card is moved back without it — a safety
+              check silently bypassed BY the conversion.
+              */
+              if (lanesOfReclaim(task.id).review.has(task.column)) {
                 if (!reviewProof?.ok) {
                   await this.emitBackwardMoveNoAction(task, "reclaim-self-owned-branch-conflict", "task:reclaim-self-owned-branch-conflict-no-action", reviewProof!);
                 } else {
@@ -4038,7 +4189,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
                   `[recovery] reclaim-live-zero-commits ${task.id} branch=${task.branch} worktree=${inspection.livePath} tip=${inspection.tipSha.slice(0, 12)} reason=zero-unique-commits-vs-main`,
                 );
 
-                if (task.column === "in-review") {
+                if (lanesOfReclaim(task.id).review.has(task.column)) {
                   if (!reviewProof?.ok) {
                     await this.emitBackwardMoveNoAction(task, "reclaim-self-owned-branch-conflict", "task:reclaim-self-owned-branch-conflict-no-action", reviewProof!);
                   } else {
@@ -4128,12 +4279,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           const unchangedSincePriorResume = hasPriorSnapshot
             && task.resumeLimboTipSha === inspection.tipSha
             && task.resumeLimboStepSignature === stepSignature;
-          const isNoProgressResume = task.column === "in-progress"
+          const isNoProgressResume = lanesOfReclaim(task.id).wip.has(task.column)
             && unchangedSincePriorResume
             && !hasActiveSessionSignal;
           const resumeAttemptCount = isNoProgressResume ? (task.resumeLimboCount ?? 0) + 1 : 0;
 
-          if (task.column === "in-progress" && isNoProgressResume && resumeAttemptCount >= MAX_NO_PROGRESS_RESUME_ATTEMPTS) {
+          if (lanesOfReclaim(task.id).wip.has(task.column) && isNoProgressResume && resumeAttemptCount >= MAX_NO_PROGRESS_RESUME_ATTEMPTS) {
             const idleAnchor = task.executionStartedAt ?? task.columnMovedAt ?? task.updatedAt;
             const idleAnchorMs = Date.parse(idleAnchor ?? "");
             const idleMs = Number.isFinite(idleAnchorMs) ? Math.max(0, Date.now() - idleAnchorMs) : null;
@@ -4202,7 +4353,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             `[recovery] ${wasPausedBranchConflict ? "reclaim-paused-review" : "reclaim-self-owned"} ${task.id} at ${reclaimedWorktreePath} (${preservedCommitCount} commits preserved, tip ${inspection.tipSha.slice(0, 12)})`,
           );
 
-          if (task.column === "in-review") {
+          if (lanesOfReclaim(task.id).review.has(task.column)) {
             if (!reviewProof?.ok) {
               await this.emitBackwardMoveNoAction(task, "reclaim-self-owned-branch-conflict", "task:reclaim-self-owned-branch-conflict-no-action", reviewProof!);
             } else {
@@ -4596,20 +4747,93 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         if (blockerScope.length === 0 || isCoordinationOnlyTask(blocker, blockerScope)) return false;
         return pathsOverlap(dependentScope, blockerScope);
       };
-      const todoTasks = await this.store.listTasks({ column: "todo", slim: true });
-      const inProgressTasks = await this.store.listTasks({ column: "in-progress", slim: true });
-      const inReviewTasks = (await this.store.listTasks({ column: "in-review", slim: true })).filter((t) => !t.paused);
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-03:05 (the query-filter class, thirteenth sweep):
+      When a task completes, this releases everything blocked on it. Three literal reads meant that on a
+      renamed board it released NOTHING — every dependent stayed blocked on a task that had already
+      finished, which is the most visible form of this class: the board simply stops moving.
 
-      const dependents = [...todoTasks, ...inProgressTasks, ...inReviewTasks].filter(
+      Buckets come from the read that produced each row (a row returned by `listTasks({ column: X })` is
+      in X by definition); re-deriving from `task.column` would only be able to lose rows.
+      */
+      const completedHoldColumns = await resolveProjectColumnsForRoles(this.store, ["hold"]);
+      const completedWipColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
+      const completedReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const readDependentBucket = async (columns: ReadonlySet<string>): Promise<Task[]> => {
+        const byId = new Map<string, Task>();
+        for (const column of columns) {
+          for (const entry of await this.store.listTasks({ column, slim: true })) byId.set(entry.id, entry);
+        }
+        return [...byId.values()];
+      };
+      const todoTasks = await readDependentBucket(completedHoldColumns);
+      const inProgressTasks = await readDependentBucket(completedWipColumns);
+      const inReviewTasks = (await readDependentBucket(completedReviewColumns)).filter((t) => !t.paused);
+
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-02:40 (#2883 review — greptile P1, "duplicate dependent
+      reconciliation"; same class as #2879 one sweep over):
+      DEDUPED ACROSS THE BUCKETS, NOT JUST WITHIN EACH.
+
+      `readDependentBucket` dedupes by id inside ONE role's read. A custom workflow may put two queried
+      roles on ONE column, which two reads then return, so the dependent landed in two buckets and was
+      reconciled twice from the same stale snapshot — the second pass deciding against `blockedBy` state
+      the first pass had already cleared, and `updateTask`/`logEntry` firing twice for one card.
+
+      FNXC:WorkflowResolvedColumns 2026-07-31-04:05 (precedence correction):
+      Written first as `new Map(entries)` with a comment claiming first-bucket precedence. That
+      constructor keeps first insertion ORDER but the LAST value for a repeated key, so it did the
+      opposite of what it said. The explicit `has` guard below makes the code match the claim; order is
+      still preserved, so `todoTaskIds` classifies the dependent by the read that found it first.
+      */
+      const dependentById = new Map<string, Task>();
+      for (const entry of [...todoTasks, ...inProgressTasks, ...inReviewTasks]) {
+        if (!dependentById.has(entry.id)) dependentById.set(entry.id, entry);
+      }
+      /* One IR cache for the whole reconcile, so a board spanning three workflows reads three IRs, not one per dependency row. */
+      const depSatisfactionIrCache = new Map<string, WorkflowIr>();
+      const dependents = [...dependentById.values()].filter(
         (t) => t.blockedBy === taskId || t.overlapBlockedBy === taskId,
       );
       const todoTaskIds = new Set(todoTasks.map((t) => t.id));
       for (const dependent of dependents) {
         try {
-          const unresolvedDeps = [...new Set(dependent.dependencies)].filter((depId) => {
+          /*
+          A dependency is SATISFIED once it reaches a complete, review or archived lane — resolved per
+          DEPENDENCY, since a dependency routinely belongs to a different workflow than the card waiting
+          on it (the answer main settled on in branch-group-ops, #2720). Legacy ids unioned, because
+          `resolveWorkflowIrForTask` returns the built-in IR for a missing workflow and without the union
+          a degraded board reads a finished dependency as unmet — the exact stall being cleared here.
+          */
+          /*
+          FNXC:WorkflowResolvedColumns 2026-07-31-05:00 (#2883 review — greptile P1, "overbroad
+          dependency satisfaction"): REUSE THE SCHEDULER'S RESOLVER, DO NOT RE-DERIVE IT.
+
+          The first version unioned all three review roles, which counts a `mergeOrchestration`-only
+          column as satisfied. `resolveDependencySatisfactionColumns` — the shared answer the scheduler
+          already uses for exactly this question — defines review as `mergeBlocker ∪ humanReview` and
+          deliberately excludes merge orchestration. Two readers of one fact disagreeing is how this
+          program has already gone wrong; the fix is to call the existing one, not to match it by hand.
+
+          Its contract also covers the degraded case: an unresolvable dependency is left UNMAPPED, and
+          the literal fallback below then answers, so a dependency whose workflow cannot be read does not
+          silently read as never-satisfied and block its dependent forever.
+          */
+          const dependencyIds = [...new Set(dependent.dependencies)];
+          const depRows = dependencyIds
+            .map((depId) => taskById.get(depId))
+            .filter((dep): dep is Task => Boolean(dep));
+          const depSatisfaction = await resolveDependencySatisfactionColumns(this.store, depRows, depSatisfactionIrCache);
+          const unresolvedDeps: string[] = [];
+          for (const depId of dependencyIds) {
             const dep = taskById.get(depId);
-            return dep && dep.column !== "done" && dep.column !== "in-review" && dep.column !== "archived";
-          });
+            if (!dep) continue;
+            const columns = depSatisfaction.get(depId);
+            const satisfied = columns
+              ? columns.terminal.has(dep.column) || columns.review.has(dep.column)
+              : isDependencySatisfiedWithoutWorkflowMetadata(dep.column);
+            if (!satisfied) unresolvedDeps.push(depId);
+          }
           const overlapBlockedBy = dependent.overlapBlockedBy === taskId ? null : (dependent.overlapBlockedBy ?? null);
           const hasActiveOverlapBlocker = await hasActiveFileScopeOverlapBlocker(dependent, overlapBlockedBy);
 
@@ -5466,9 +5690,75 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const executingTaskIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
       const now = Date.now();
 
-      const todoTasks = await this.store.listTasks({ column: "todo" });
-      const inProgressTasks = await this.store.listTasks({ column: "in-progress" });
-      const inReviewTasks = await this.store.listTasks({ column: "in-review" });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-00:45 (the query-filter class, eleventh sweep):
+      THREE lane reads whose downstream treatment DIFFERS — hold cards seed the queued-dependency pass,
+      review cards are exempted when paused — so this cannot collapse into one union. Read the project's
+      columns for all three role groups, dedupe into one map, then classify each card against ITS OWN
+      workflow. On a renamed board all three reads returned empty, so no stale `blockedBy` was ever cleared
+      and the cards stayed blocked behind dependencies that had long since finished.
+      */
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-00:30 (#2876 review — greptile, "traitless workflow
+      columns stay invisible"): CONFIRMED, DEFERRED, AND THE REASON IS THAT IT IS NOT LOCAL.
+
+      `resolveProjectColumnsForRoles` returns its legacy floor plus what workflows DECLARE for the
+      role. A board that renames its lanes but declares no lifecycle traits contributes nothing, so
+      the card never enters `blockedCandidates` and the per-card classification below — which is
+      correct — never runs for it. Invisible before the guard is reached.
+
+      This is the three-state rule at PROJECT scope: unreadable and untraited take the legacy answer,
+      and only a board that EXPRESSES traits and still lacks the role is answering. The merge queue
+      got the per-task version of this in #2819.
+
+      NOT FIXED HERE BECAUSE A BLANKET FIX WOULD BE WRONG. The safe direction differs by caller: for
+      a sweep, over-inclusion costs extra `listTasks` calls the per-card check discards; for the
+      analytics aggregators (#2864, #2866) the same widening inflates a number an operator reads. It
+      needs an opt-in — `resolveProjectColumnsForRoles(store, roles, { untraitedProject:
+      "declared-columns" })` defaulting to today's behaviour — which is a shared-helper contract
+      change touching every sweep, both aggregators and the glasses notifier.
+
+      Premise correction for whoever writes the fixture: this is a hand-authored V2 board, not a v1
+      upgrade. `synthesizeDefaultColumns` emits the DEFAULT ids with `traits: []`, so a v1-upgraded
+      board cannot have a renamed lane — a v1-shaped fixture would pass vacuously.
+      */
+      /* `hold` only, NOT `intake`: the original read asked for `todo`. Adding intake would newly scan `triage` cards — a behavior change riding along in a conversion. */
+      const blockedHoldColumns = await resolveProjectColumnsForRoles(this.store, ["hold"]);
+      const blockedWipColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
+      const blockedReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const blockedCandidates = new Map<string, Task>();
+      for (const column of new Set([...blockedHoldColumns, ...blockedWipColumns, ...blockedReviewColumns])) {
+        for (const task of await this.store.listTasks({ column })) blockedCandidates.set(task.id, task);
+      }
+      /* Per-card classification: a card the union pulled in must land in the bucket ITS workflow says. */
+      const todoTasks: Task[] = [];
+      const inProgressTasks: Task[] = [];
+      const inReviewTasks: Task[] = [];
+      const unresolvedBlockedCards: string[] = [];
+      for (const task of blockedCandidates.values()) {
+        const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id);
+        if (source === "default") unresolvedBlockedCards.push(task.id);
+        /*
+        Legacy ids UNIONED into each bucket rather than compared separately: `resolveWorkflowIrForTask`
+        returns the BUILT-IN IR for a missing or corrupt workflow, and a board mid-rename still has rows
+        under the old id. This mirrors `lanesOf` below, which unions the same way for referenced tasks.
+        */
+        const bucket = (roles: readonly string[], legacy: readonly string[]): boolean => {
+          const lanes = new Set<string>(legacy);
+          for (const role of roles) {
+            for (const id of columnsWithFlag(ir, role as Parameters<typeof columnsWithFlag>[1])) lanes.add(id);
+          }
+          return lanes.has(task.column);
+        };
+        if (bucket(["hold"], LEGACY_COLUMN_IDS_BY_ROLE.hold ?? [])) todoTasks.push(task);
+        if (bucket(["countsTowardWip"], LEGACY_COLUMN_IDS_BY_ROLE.countsTowardWip ?? [])) inProgressTasks.push(task);
+        if (bucket(REVIEW_ROLES, LEGACY_COLUMN_IDS_BY_ROLE.mergeOrchestration ?? [])) inReviewTasks.push(task);
+      }
+      if (unresolvedBlockedCards.length > 0) {
+        log.warn(
+          `stale blockedBy cleanup: ${unresolvedBlockedCards.length} card(s) classified against the built-in workflow (${unresolvedBlockedCards.slice(0, 5).join(", ")})`,
+        );
+      }
       const blockedTasks = [
         ...todoTasks,
         ...inProgressTasks,
@@ -6409,9 +6699,22 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    */
   async reconcileStaleMergerStatus(): Promise<number> {
     try {
-      const done = await this.store.listTasks({ column: "done", slim: true });
-      const archived = await this.store.listTasks({ column: "archived", slim: true });
-      const candidates = [...done, ...archived].filter((task) => {
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-06:40 (the query-filter class, sixteenth sweep):
+      A card that reached a terminal lane while still carrying `merging`/`merging-pr` holds the merger
+      queue. Two literal reads meant that on a renamed board the stale status was never cleared, so one
+      finished card blocked the queue for every task behind it.
+
+      ONE union read, not two buckets: unlike the sweeps before it, nothing here treats complete and
+      archived differently — the only filter is on `status` — so splitting them would add a distinction
+      the code does not make. Deduped, because the two roles can share a column (the P1 on #2879).
+      */
+      const terminalColumns = await resolveProjectColumnsForRoles(this.store, TERMINAL_ROLES);
+      const terminalById = new Map<string, Task>();
+      for (const column of terminalColumns) {
+        for (const task of await this.store.listTasks({ column, slim: true })) terminalById.set(task.id, task);
+      }
+      const candidates = [...terminalById.values()].filter((task) => {
         const s = task.status;
         return s === "merging" || s === "merging-pr";
       });
@@ -8005,7 +8308,37 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       if (!timeoutMs || timeoutMs <= 0) return 0;
 
       const now = Date.now();
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-12:40 (the query-filter class, twenty-fourth sweep):
+      A review card whose STEPS are not finished — it reached review on a graph failure, not on completed
+      work. The literal read meant that on a renamed board it was never requeued, so the card sat in
+      review claiming to be done while its own steps said otherwise.
+
+      The per-card verdict below converts with it. The triple-proof is NOT lane-gated in this sweep, so
+      there is no second pair to convert — checked deliberately, because that is the defect #2916 found
+      one sweep over and the self-audit found five of in another.
+      */
+      const staleIncompleteColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const staleIncompleteById = new Map<string, Task>();
+      for (const column of staleIncompleteColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) staleIncompleteById.set(entry.id, entry);
+      }
+      const tasks = [...staleIncompleteById.values()];
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). */
+      const staleIncompleteLanes = new Map<string, Set<string>>();
+      for (const entry of tasks) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          staleIncompleteLanes.set(
+            entry.id,
+            source === "default"
+              ? new Set(staleIncompleteColumns)
+              : new Set(REVIEW_ROLES.flatMap((role) => [...columnsWithFlag(ir, role)])),
+          );
+        } catch {
+          staleIncompleteLanes.set(entry.id, new Set(staleIncompleteColumns));
+        }
+      }
       /*
        * FNXC:WorkflowLifecycle 2026-06-29-11:27:
        * Restart recovery must not leave errored review-column cards with unfinished
@@ -8014,7 +8347,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
        * progress preserved instead of waiting for the stale timeout.
        */
       const staleIncomplete = tasks.filter((task) =>
-        task.column === "in-review" &&
+        (staleIncompleteLanes.get(task.id) ?? staleIncompleteColumns).has(task.column) &&
         allowsAutoMergeProcessing(task, settings) &&
         !task.paused &&
         (!task.status || task.status === "failed") &&
@@ -8409,10 +8742,43 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
       const now = Date.now();
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-10:20 (the query-filter class, twenty-second sweep):
+      A GHOST review card — parked in review past the stuck timeout with nobody owning its merge lane.
+      The literal read meant that on a renamed board it was never found, so the card sat in review
+      indefinitely with no merger, no session and no timeout ever firing against it.
+
+      The `task.column === "in-review"` check was redundant while the query pinned the column; under a
+      resolved read it becomes the per-card verdict, so it converts rather than being deleted.
+
+      The kick-back below keeps its literal `todo` DELIBERATELY: it passes `recoveryRehome: true`, one of
+      the 22 documented escapes `moves.ts` exempts so a card stranded in an undeclared column stays
+      rescuable. Converting it removes the rescue path.
+      */
+      const ghostReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const ghostById = new Map<string, Task>();
+      for (const column of ghostReviewColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) ghostById.set(entry.id, entry);
+      }
+      const tasks = [...ghostById.values()];
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). */
+      const ghostLanes = new Map<string, Set<string>>();
+      for (const entry of tasks) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          ghostLanes.set(
+            entry.id,
+            source === "default"
+              ? new Set(ghostReviewColumns)
+              : new Set(REVIEW_ROLES.flatMap((role) => [...columnsWithFlag(ir, role)])),
+          );
+        } catch {
+          ghostLanes.set(entry.id, new Set(ghostReviewColumns));
+        }
+      }
       // Pre-filter sync conditions, then resolve async merge-lane ownership.
       const candidates = tasks.filter((task) =>
-        task.column === "in-review" &&
+        (ghostLanes.get(task.id) ?? ghostReviewColumns).has(task.column) &&
         allowsAutoMergeProcessing(task, settings) &&
         !task.paused &&
         !executingIds.has(task.id) &&
@@ -8517,9 +8883,38 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       if (settings.globalPause || settings.enginePaused) return 0;
       const maxAutoMergeRetries = resolveMaxAutoMergeRetries(settings);
 
-      const slim = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-10:55 (the query-filter class, twenty-third sweep):
+      A merge that failed for a TRANSIENT reason and burned its whole retry budget. The literal read
+      meant that on a renamed board the retry budget was never refunded, so a card that failed on a
+      network blip stayed failed permanently — an operator-visible failure with no operator-visible cause.
+
+      The `t.column === "in-review"` check was redundant while the query pinned the column; under a
+      resolved read it becomes the per-card verdict, so it converts rather than being deleted.
+      */
+      const transientReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const transientById = new Map<string, Task>();
+      for (const column of transientReviewColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) transientById.set(entry.id, entry);
+      }
+      const slim = [...transientById.values()];
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). */
+      const transientLanes = new Map<string, Set<string>>();
+      for (const entry of slim) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          transientLanes.set(
+            entry.id,
+            source === "default"
+              ? new Set(transientReviewColumns)
+              : new Set(REVIEW_ROLES.flatMap((role) => [...columnsWithFlag(ir, role)])),
+          );
+        } catch {
+          transientLanes.set(entry.id, new Set(transientReviewColumns));
+        }
+      }
       const candidates = slim.filter((t) =>
-        t.column === "in-review"
+        (transientLanes.get(t.id) ?? transientReviewColumns).has(t.column)
         && allowsAutoMergeProcessing(t, settings)
         && t.status === "failed"
         && (t.mergeRetries ?? 0) >= maxAutoMergeRetries
@@ -8537,10 +8932,15 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       for (const slimTask of candidates) {
         const task = await this.store.getTask(slimTask.id).catch(() => null);
         if (!task) continue;
-        // Re-check selector on the full row — the slim snapshot is best-effort
-        // and may be stale once we await.
+        /*
+        Re-check selector on the full row — the slim snapshot is best-effort and may be stale once we
+        await. FNXC:WorkflowResolvedColumns 2026-07-31-11:10: this SECOND lane guard converts with the
+        first. Converting only the read left it rejecting every renamed-board card the widened query
+        found, and the new test failed on exactly that — the "convert the pair or neither" rule, caught
+        by the test rather than by reading.
+        */
         if (
-          task.column !== "in-review"
+          !(transientLanes.get(task.id) ?? transientReviewColumns).has(task.column)
           || task.status !== "failed"
           || (task.mergeRetries ?? 0) < maxAutoMergeRetries
         ) {
@@ -8879,9 +9279,38 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const activeMergeTaskId = this.options.getActiveMergeTaskId?.() ?? null;
       // Workspace tasks live in in-review (post-capture/review, pre/partial land). A task already
       // done is finished; todo/in-progress are owned by execution-stage reconcilers.
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-18:05 (the query-filter class, thirty-third sweep):
+      A WORKSPACE task lands per-repo, and this re-enqueues one whose lands are partial or zero. The
+      literal read meant that on a renamed board a workspace task stranded mid-land was never
+      re-enqueued — some repos landed, some not, and nothing to finish the job.
+
+      The comment above records WHY the review lane is the right one; it stays true, only the way the
+      lane is named changes.
+      */
+      const wsPartialColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const wsPartialById = new Map<string, Task>();
+      for (const column of wsPartialColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) wsPartialById.set(entry.id, entry);
+      }
+      const tasks = [...wsPartialById.values()];
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). */
+      const wsPartialLanes = new Map<string, Set<string>>();
+      for (const entry of tasks) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          wsPartialLanes.set(
+            entry.id,
+            source === "default"
+              ? new Set(wsPartialColumns)
+              : new Set(REVIEW_ROLES.flatMap((role) => [...columnsWithFlag(ir, role)])),
+          );
+        } catch {
+          wsPartialLanes.set(entry.id, new Set(wsPartialColumns));
+        }
+      }
       const candidates = tasks.filter((task) =>
-        task.column === "in-review" &&
+        (wsPartialLanes.get(task.id) ?? wsPartialColumns).has(task.column) &&
         isWorkspaceTask(task) &&
         task.mergeDetails?.mergeConfirmed !== true &&
         // Active transient merge statuses are owned by the live merger; recover-interrupted /
@@ -9286,8 +9715,21 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       if (settings.globalPause || settings.enginePaused) return 0;
 
       // Done workspace tasks are the canonical "safe to clean" set (their lands are finalized).
-      const doneTasks = await this.store.listTasks({ column: "done", slim: true });
-      const candidates = doneTasks.filter((task) => isWorkspaceTask(task));
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-18:10 (the query-filter class, thirty-fourth sweep):
+      Removes the per-repo worktrees a finished workspace task left behind. The literal read meant that
+      on a renamed board they were never removed — disk held by tasks that finished, growing quietly.
+
+      `complete` only, NOT the terminal union: the comment above calls DONE tasks "the canonical safe to
+      clean set" precisely because their lands are finalized, and an archived row is a different claim.
+      No per-card verdict: the filter is `isWorkspaceTask`, not a lane test.
+      */
+      const wsDoneColumns = await resolveProjectColumnsForRoles(this.store, ["complete"]);
+      const wsDoneById = new Map<string, Task>();
+      for (const column of wsDoneColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) wsDoneById.set(entry.id, entry);
+      }
+      const candidates = [...wsDoneById.values()].filter((task) => isWorkspaceTask(task));
       if (candidates.length === 0) return 0;
 
       let cleaned = 0;
@@ -9363,9 +9805,35 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
   async recoverDoneTaskMergeMetadata(): Promise<number> {
     try {
-      const tasks = await this.store.listTasks({ column: "done", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-17:05 (the query-filter class, thirty-first sweep):
+      Repairs the merge metadata of a card that already reached the COMPLETE lane — the commit sha an
+      operator sees, and that later reconcilers trust. The literal read meant that on a renamed board a
+      done card's metadata was never repaired, so a completed task could keep pointing at a commit that
+      is not the one that landed.
+
+      `complete` only, NOT the terminal union: an ARCHIVED card is out of scope here, and widening to
+      TERMINAL_ROLES would start repairing metadata on rows nobody is reading — a behaviour change
+      wearing a conversion's clothes.
+      */
+      const doneMetaColumns = await resolveProjectColumnsForRoles(this.store, ["complete"]);
+      const doneMetaById = new Map<string, Task>();
+      for (const column of doneMetaColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) doneMetaById.set(entry.id, entry);
+      }
+      const tasks = [...doneMetaById.values()];
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). */
+      const doneMetaLanes = new Map<string, Set<string>>();
+      for (const entry of tasks) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          doneMetaLanes.set(entry.id, source === "default" ? new Set(doneMetaColumns) : new Set(columnsWithFlag(ir, "complete")));
+        } catch {
+          doneMetaLanes.set(entry.id, new Set(doneMetaColumns));
+        }
+      }
       const candidates = tasks.filter((task) => {
-        if (task.column !== "done" || task.paused) return false;
+        if (!(doneMetaLanes.get(task.id) ?? doneMetaColumns).has(task.column) || task.paused) return false;
         if (task.mergeDetails?.commitSha) return true;
         return Boolean(task.baseCommitSha);
       });
@@ -10042,9 +10510,43 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-23:20 (the query-filter class, ninth sweep):
+      `listTasks({ column: "in-review" })` returned EMPTY on a renamed board, so a task failed by an
+      ORPHAN-ONLY file-scope violation — commits that belong to no declared scope — was never recovered
+      and stayed failed.
+
+      Activation check first: one of the two sweeps still holding both a literal query and an unwired
+      `getTaskHardMergeBlocker`, so the guard is wired in the same change.
+      */
+      const orphanReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const orphanById = new Map<string, Task>();
+      for (const column of orphanReviewColumns) {
+        for (const task of await this.store.listTasks({ column, slim: true })) orphanById.set(task.id, task);
+      }
+      const tasks = [...orphanById.values()];
+      const orphanIrCache = new Map<string, WorkflowIr>();
+      const unresolvedOrphanCards: string[] = [];
+      const orphanLanesByTask = new Map<string, ReadonlySet<string>>();
+      for (const task of tasks) {
+        const resolved = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id, orphanIrCache)
+          .catch(() => undefined);
+        const own = resolved
+          ? [...new Set(REVIEW_ROLES.flatMap((role) => columnsWithFlag(resolved.ir, role)))]
+          : [];
+        if (!resolved || resolved.source === "default") unresolvedOrphanCards.push(task.id);
+        /* DELIBERATE-LITERAL — the unresolvable-workflow default, reviewed 2026-07-30-23:20. */
+        orphanLanesByTask.set(task.id, own.length > 0 ? new Set(own) : new Set(["in-review"]));
+      }
+      if (unresolvedOrphanCards.length > 0) {
+        log.warn(
+          `orphan-only scope recovery: ${unresolvedOrphanCards.length} card(s) measured against the `
+          + `built-in review lane because their own workflow could not be resolved `
+          + `(${unresolvedOrphanCards.slice(0, 5).join(", ")}); a renamed review lane there stays failed.`,
+        );
+      }
       const candidates = tasks.filter((task) =>
-        task.column === "in-review" &&
+        (orphanLanesByTask.get(task.id) ?? new Set(["in-review"])).has(task.column) &&
         allowsAutoMergeProcessing(task, settings) &&
         task.status === "failed" &&
         task.scopeOverride !== true &&
@@ -10107,11 +10609,12 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
             mergeTargetSource: mergeTarget.source,
           };
 
+          /* Wired: unwired, this would decline every card the widened read now finds. */
           const hardBlocker = getTaskHardMergeBlocker({
             ...task,
             steps: task.steps ?? [],
             workflowStepResults: task.workflowStepResults,
-          });
+          }, { reviewColumns: orphanLanesByTask.get(task.id) ?? new Set(["in-review"]) });
           if (hardBlocker) {
             await this.store.updateTask(task.id, {
               status: "failed",
@@ -10480,11 +10983,56 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     try {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
-      const tasks = await this.store.listTasks({ column: "in-review", slim: false });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-30-23:55 (the query-filter class, tenth sweep):
+      Read the review lanes this PROJECT declares rather than the literal `in-review`, then decide each
+      card against ITS OWN workflow below. A card wedged `failed` after a post-done continuation error on
+      a renamed board was never listed at all, so it stayed failed with every step done.
+      */
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-00:45 (#2869 review — greptile, "traitless review lanes
+      remain invisible"): CONFIRMED, DEFERRED, SAME CLASS AS #2876.
+
+      A board that renames its review lane but declares NO lifecycle traits contributes nothing to this
+      union, so the card is not in `wedgeById` and the per-card fallback below — including its
+      `new Set(["in-review"])` degraded answer — never runs for it. The fallback cannot rescue a card
+      the query never returned.
+
+      The three-state rule at PROJECT scope. Not fixed here because the safe direction differs by
+      caller: over-inclusion is free for a sweep (the per-card check discards it) and inflates an
+      operator-facing number in the analytics aggregators, so it needs an opt-in
+      (`{ untraitedProject: "declared-columns" }`) on the shared helper rather than a change to what it
+      returns by default.
+
+      Fixture note: hand-authored V2 without traits, NOT a v1 upgrade — `synthesizeDefaultColumns`
+      emits the default ids, so a v1-shaped fixture cannot express a renamed lane and would pass
+      vacuously.
+      */
+      const wedgeReviewColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const wedgeById = new Map<string, Task>();
+      for (const column of wedgeReviewColumns) {
+        for (const task of await this.store.listTasks({ column, slim: false })) wedgeById.set(task.id, task);
+      }
+      const tasks = [...wedgeById.values()];
+      /* Per-card review lanes; also fed to the hard-blocker below so it judges the card's own vocabulary. */
+      const wedgeLanesByTask = new Map<string, Set<string>>();
+      const unresolvedWedgeCards: string[] = [];
+      for (const task of tasks) {
+        const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, task.id);
+        if (source === "default") unresolvedWedgeCards.push(task.id);
+        const own = REVIEW_ROLES.flatMap((role) => [...columnsWithFlag(ir, role)]);
+        wedgeLanesByTask.set(task.id, own.length > 0 ? new Set(own) : new Set(["in-review"]));
+      }
+      if (unresolvedWedgeCards.length > 0) {
+        log.warn(
+          `post-done non-continuable wedge recovery: ${unresolvedWedgeCards.length} card(s) fell back to the built-in workflow (${unresolvedWedgeCards.slice(0, 5).join(", ")})`,
+        );
+      }
       let recovered = 0;
 
       for (const task of tasks) {
-        if (task.column !== "in-review" || task.deletedAt) continue;
+        const wedgeLanes = wedgeLanesByTask.get(task.id) ?? new Set(["in-review"]);
+        if (!wedgeLanes.has(task.column) || task.deletedAt) continue;
         if (!allowsAutoMergeProcessing(task, settings)) continue;
         if (task.paused || task.userPaused) continue;
         if (task.status !== "failed") continue;
@@ -10492,7 +11040,8 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         if (!(task.steps ?? []).every((step) => step.status === "done" || step.status === "skipped")) continue;
         const doneMarker = [...(task.log ?? [])].reverse().find((entry) => entry.action === "Task marked done by agent");
         if (!doneMarker) continue;
-        if (getTaskHardMergeBlocker({ ...task, status: undefined, error: undefined, steps: task.steps ?? [], workflowStepResults: task.workflowStepResults })) continue;
+        /* Wired in the SAME change as the read: widening the query without this makes the sweep find renamed-board cards and decline every one. */
+        if (getTaskHardMergeBlocker({ ...task, status: undefined, error: undefined, steps: task.steps ?? [], workflowStepResults: task.workflowStepResults }, { reviewColumns: wedgeLanes })) continue;
 
         const evidence = this.getPostDoneNonContinuableEvidence(task);
         if (!evidence) continue;
@@ -10894,9 +11443,38 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       if (settings.globalPause || settings.enginePaused) return 0;
 
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-14:10 (the query-filter class, twenty-sixth sweep):
+      A review card whose BRANCH TIP is bound to a different task's work. The literal read meant that on
+      a renamed board the misbinding was never detected, so the card would merge — or refuse to — against
+      a branch that is not its own.
+
+      The per-card verdict below converts with it. No second pair; verified with the derived ratchet from
+      #2879 rather than by eye.
+      */
+      const misboundColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const misboundById = new Map<string, Task>();
+      for (const column of misboundColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) misboundById.set(entry.id, entry);
+      }
+      const tasks = [...misboundById.values()];
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). */
+      const misboundLanes = new Map<string, Set<string>>();
+      for (const entry of tasks) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          misboundLanes.set(
+            entry.id,
+            source === "default"
+              ? new Set(misboundColumns)
+              : new Set(REVIEW_ROLES.flatMap((role) => [...columnsWithFlag(ir, role)])),
+          );
+        } catch {
+          misboundLanes.set(entry.id, new Set(misboundColumns));
+        }
+      }
       const candidates = tasks.filter((task) =>
-        task.column === "in-review" &&
+        (misboundLanes.get(task.id) ?? misboundColumns).has(task.column) &&
         Boolean(task.branch) &&
         task.mergeDetails?.mergeConfirmed !== true &&
         !executingIds.has(task.id),
@@ -11239,10 +11817,39 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    */
   async recoverMisclassifiedFailures(): Promise<number> {
     try {
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-13:20 (the query-filter class, twenty-fifth sweep):
+      A task the executor parked `failed` for "no fn_task_done" whose steps are ALL actually done — the
+      failure is a misclassification, not real. The literal read meant that on a renamed board the error
+      was never cleared, so finished work stayed visibly failed and never entered normal review.
+
+      The per-card verdict below converts with it. No second pair: nothing else in this sweep is
+      lane-gated (verified with the derived ratchet from #2879, not by eye).
+      */
+      const misclassifiedColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const misclassifiedById = new Map<string, Task>();
+      for (const column of misclassifiedColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) misclassifiedById.set(entry.id, entry);
+      }
+      const tasks = [...misclassifiedById.values()];
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). */
+      const misclassifiedLanes = new Map<string, Set<string>>();
+      for (const entry of tasks) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          misclassifiedLanes.set(
+            entry.id,
+            source === "default"
+              ? new Set(misclassifiedColumns)
+              : new Set(REVIEW_ROLES.flatMap((role) => [...columnsWithFlag(ir, role)])),
+          );
+        } catch {
+          misclassifiedLanes.set(entry.id, new Set(misclassifiedColumns));
+        }
+      }
 
       const misclassified = tasks.filter((t) =>
-        t.column === "in-review" &&
+        (misclassifiedLanes.get(t.id) ?? misclassifiedColumns).has(t.column) &&
         !t.paused &&
         t.status === "failed" &&
         isNoTaskDoneFailure(t) &&
@@ -11461,18 +12068,48 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
 
   async auditNoCommitsExpectedCandidates(): Promise<number> {
     try {
-      const inReviewTasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-15:30 (the query-filter class, twenty-eighth sweep):
+      Audits cards that finished every step but pushed NO commits — either a legitimately commit-free task
+      that never declared itself so, or work that silently produced nothing. The literal read meant that on
+      a renamed board only the `no_commits` ERROR path fed the audit, so a card sitting quietly in a
+      renamed review lane with zero commits and no error was never flagged.
+
+      The lane verdict below converts with it; the failed-task read beside it is already lane-independent.
+      */
+      const noCommitsColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const noCommitsById = new Map<string, Task>();
+      for (const column of noCommitsColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) noCommitsById.set(entry.id, entry);
+      }
+      const inReviewTasks = [...noCommitsById.values()];
       const allTasks = await this.store.listTasks({ slim: true });
       const failedTasks = allTasks.filter((task) => task.status === "failed");
       const candidateMap = new Map<string, Task>();
       for (const task of [...inReviewTasks, ...failedTasks]) {
         candidateMap.set(task.id, task);
       }
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). Covers the failed-task rows too,
+         which arrive from the lane-independent read above. */
+      const noCommitsLanes = new Map<string, Set<string>>();
+      for (const entry of candidateMap.values()) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          noCommitsLanes.set(
+            entry.id,
+            source === "default"
+              ? new Set(noCommitsColumns)
+              : new Set(REVIEW_ROLES.flatMap((role) => [...columnsWithFlag(ir, role)])),
+          );
+        } catch {
+          noCommitsLanes.set(entry.id, new Set(noCommitsColumns));
+        }
+      }
       const candidates = [...candidateMap.values()].filter((task) => {
         if (task.noCommitsExpected === true) return false;
         if (task.steps.length === 0 || !task.steps.every((step) => step.status === "done" || step.status === "skipped")) return false;
         const noCommitsError = typeof task.error === "string" && /no_commits/i.test(task.error);
-        return task.column === "in-review" || noCommitsError;
+        return (noCommitsLanes.get(task.id) ?? noCommitsColumns).has(task.column) || noCommitsError;
       });
 
       if (candidates.length === 0) return 0;
@@ -11601,13 +12238,41 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     }
 
     try {
-      const tasks = await this.store.listTasks({ column: "in-progress", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-07:40 (the query-filter class, eighteenth sweep):
+      A card holding a wip slot with NO worktree, NO branch and no step started — nothing is running and
+      nothing will. The literal read meant that on a renamed board it was never found, so the card kept
+      its slot indefinitely and the capacity it holds is denied to work that could actually run.
+
+      The `task.column !== "in-progress"` check was redundant while the query pinned the column; under a
+      resolved read it becomes the per-card verdict, so it converts rather than being deleted.
+      */
+      const limboWipColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
+      const limboById = new Map<string, Task>();
+      for (const column of limboWipColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) limboById.set(entry.id, entry);
+      }
+      const tasks = [...limboById.values()];
+      /*
+      NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891): `resolveWorkflowIrForTask`
+      SUBSTITUTES the built-in IR rather than failing, so an unreadable selection would otherwise reject
+      the very card the project-scoped query just admitted from a renamed lane.
+      */
+      const limboLanes = new Map<string, Set<string>>();
+      for (const entry of tasks) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          limboLanes.set(entry.id, source === "default" ? new Set(limboWipColumns) : new Set(columnsWithFlag(ir, "countsTowardWip")));
+        } catch {
+          limboLanes.set(entry.id, new Set(limboWipColumns));
+        }
+      }
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
       const activeHeartbeatTaskIds = await this.listActiveHeartbeatTaskIds();
       const now = Date.now();
 
       const stranded = tasks.filter((task) => {
-        if (task.column !== "in-progress" || task.paused) {
+        if (!(limboLanes.get(task.id) ?? limboWipColumns).has(task.column) || task.paused) {
           return false;
         }
         const hasMissingWorktreePath = typeof task.worktree === "string" && task.worktree.length > 0 && !existsSync(task.worktree);
@@ -11767,12 +12432,38 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    */
   async recoverOrphanedExecutions(): Promise<number> {
     try {
-      const tasks = await this.store.listTasks({ column: "in-progress", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-08:10 (the query-filter class, nineteenth sweep):
+      WHAT THIS SWEEP RESTORES IS VISIBILITY, NOT A REPAIR. It takes no lifecycle action — it only emits
+      `task:orphan-detected-no-action` so an operator can see a wip card with no live session behind it.
+      The literal read meant that on a renamed board the event was never emitted, so the one signal
+      pointing at an orphaned execution was silently absent. Worth stating because the rest of this series
+      fixes stalls; this one fixes a blind spot.
+
+      The `t.column !== "in-progress"` check was redundant while the query pinned the column; under a
+      resolved read it becomes the per-card verdict, so it converts rather than being deleted.
+      */
+      const orphanWipColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
+      const orphanExecById = new Map<string, Task>();
+      for (const column of orphanWipColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) orphanExecById.set(entry.id, entry);
+      }
+      const tasks = [...orphanExecById.values()];
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). */
+      const orphanExecLanes = new Map<string, Set<string>>();
+      for (const entry of tasks) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          orphanExecLanes.set(entry.id, source === "default" ? new Set(orphanWipColumns) : new Set(columnsWithFlag(ir, "countsTowardWip")));
+        } catch {
+          orphanExecLanes.set(entry.id, new Set(orphanWipColumns));
+        }
+      }
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
       const now = Date.now();
 
       const orphaned = tasks.filter((t) => {
-        if (t.column !== "in-progress" || t.paused || executingIds.has(t.id) || isTaskWorkComplete(t)) {
+        if (!(orphanExecLanes.get(t.id) ?? orphanWipColumns).has(t.column) || t.paused || executingIds.has(t.id) || isTaskWorkComplete(t)) {
           return false;
         }
         const staleness = now - new Date(t.updatedAt).getTime();
@@ -11847,13 +12538,37 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
         return 0;
       }
 
-      const tasks = await this.store.listTasks({ column: "in-progress", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-08:40 (the query-filter class, twentieth sweep):
+      Reattaches a DURABLE AGENT to a task it is still assigned to but has stopped executing. The literal
+      read meant that on a renamed board the reattach never fired, so the agent's own assignment was
+      never resumed and the card sat assigned-but-idle — visibly owned by an agent that had gone quiet.
+
+      The `task.column !== "in-progress"` check was redundant while the query pinned the column; under a
+      resolved read it becomes the per-card verdict, so it converts rather than being deleted.
+      */
+      const reattachWipColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
+      const reattachById = new Map<string, Task>();
+      for (const column of reattachWipColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) reattachById.set(entry.id, entry);
+      }
+      const tasks = [...reattachById.values()];
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). */
+      const reattachLanes = new Map<string, Set<string>>();
+      for (const entry of tasks) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          reattachLanes.set(entry.id, source === "default" ? new Set(reattachWipColumns) : new Set(columnsWithFlag(ir, "countsTowardWip")));
+        } catch {
+          reattachLanes.set(entry.id, new Set(reattachWipColumns));
+        }
+      }
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
       const now = Date.now();
       const candidates: Task[] = [];
 
       for (const task of tasks) {
-        if (task.column !== "in-progress") continue;
+        if (!(reattachLanes.get(task.id) ?? reattachWipColumns).has(task.column)) continue;
         if (task.paused || task.deletedAt) continue;
         if (!task.assignedAgentId) continue;
         if (executingIds.has(task.id)) continue;
@@ -12673,11 +13388,35 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
    */
   async recoverNoProgressNoTaskDoneFailures(): Promise<number> {
     try {
-      const tasks = await this.store.listTasks({ column: "in-progress", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-16:05 (the query-filter class, twenty-ninth sweep):
+      A wip card the executor failed for "no fn_task_done" that made NO step progress and left no git
+      work — nothing to salvage, so it is safe to requeue. The literal read meant that on a renamed board
+      it was never requeued, so a card that produced nothing sat failed while still holding its wip slot.
+
+      The per-card verdict below converts with it. No second pair; verified with the derived ratchet
+      from #2879.
+      */
+      const noProgressColumns = await resolveProjectColumnsForRoles(this.store, ["countsTowardWip"]);
+      const noProgressById = new Map<string, Task>();
+      for (const column of noProgressColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) noProgressById.set(entry.id, entry);
+      }
+      const tasks = [...noProgressById.values()];
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). */
+      const noProgressLanes = new Map<string, Set<string>>();
+      for (const entry of tasks) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          noProgressLanes.set(entry.id, source === "default" ? new Set(noProgressColumns) : new Set(columnsWithFlag(ir, "countsTowardWip")));
+        } catch {
+          noProgressLanes.set(entry.id, new Set(noProgressColumns));
+        }
+      }
       const executingIds = this.options.getExecutingTaskIds?.() ?? new Set<string>();
 
       const candidates = tasks.filter((task) =>
-        task.column === "in-progress" &&
+        (noProgressLanes.get(task.id) ?? noProgressColumns).has(task.column) &&
         task.status === "failed" &&
         isNoTaskDoneFailure(task) &&
         !task.paused &&
@@ -12757,7 +13496,20 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     try {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-14:45 (the query-filter class, twenty-seventh sweep):
+      THE NOTE BELOW SAID THIS WAS UNFIXABLE. It called the literal query "unfixable without a
+      project-level lane resolution before the read" — which is precisely what
+      `resolveProjectColumnsForRoles` provides; it did not exist when that note was written. The wiring
+      below was therefore doing real work only for boards whose review lane still happens to be called
+      `in-review`. Fully renamed boards never reached it.
+      */
+      const missingWtColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const missingWtById = new Map<string, Task>();
+      for (const column of missingWtColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) missingWtById.set(entry.id, entry);
+      }
+      const tasks = [...missingWtById.values()];
       /*
       FNXC:WorkflowLifecycleColumns 2026-08-02-20:20 (PR #2745 review — greptile P1: "recovery lanes are not
       wired", and it is right):
@@ -12772,9 +13524,22 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       workflow (the common partial-rename case) and for the merge-active variant.
       */
       const recoveryIrCache = new Map<string, WorkflowIr>();
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-14:50 (the ARITY trap, same seam):
+      These classifiers take a MEMBERSHIP set, and `resolveTaskLifecycleColumns().review` is the FIRST
+      column per role — so a board declaring more than one review column contributed only one of them and
+      a card sitting in the others read as not-in-review. `columnsWithFlag` over the three review roles is
+      the membership answer; the legacy id stays unioned for a board mid-rename.
+      */
       const reviewColumnsFor = async (taskId: string): Promise<ReadonlySet<string>> => {
-        const lifecycle = await resolveTaskLifecycleColumns(this.store, taskId, recoveryIrCache);
-        return new Set([lifecycle?.review ?? "in-review", "in-review"]);
+        const columns = new Set<string>(["in-review"]);
+        try {
+          const ir = await resolveWorkflowIrForTask(this.store, taskId, recoveryIrCache);
+          if (ir) {
+            for (const role of REVIEW_ROLES) for (const id of columnsWithFlag(ir, role)) columns.add(id);
+          }
+        } catch { /* degraded: the legacy id above still answers */ }
+        return columns;
       };
       const candidateChecks = await Promise.all(tasks.map(async (task) => {
         const reviewColumns = await reviewColumnsFor(task.id);
@@ -12907,10 +13672,40 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     try {
       const settings = await this.store.getSettings();
       if (settings.globalPause || settings.enginePaused) return 0;
-      const tasks = await this.store.listTasks({ column: "in-review", slim: true });
+      /*
+      FNXC:WorkflowResolvedColumns 2026-07-31-16:35 (the query-filter class, thirtieth sweep):
+      A review card failed for "no fn_task_done" that DID make step progress — real work exists, so it is
+      retried rather than discarded. The literal read meant that on a renamed board the retry never fired,
+      so partially-completed work was parked failed with its retry budget untouched: the budget exists
+      precisely to avoid losing that work, and it was never spent.
+
+      The per-card verdict below converts with it. No second pair; verified with the derived ratchet
+      from #2879.
+      */
+      const partialColumns = await resolveProjectColumnsForRoles(this.store, REVIEW_ROLES);
+      const partialById = new Map<string, Task>();
+      for (const column of partialColumns) {
+        for (const entry of await this.store.listTasks({ column, slim: true })) partialById.set(entry.id, entry);
+      }
+      const tasks = [...partialById.values()];
+      /* NARROW WHEN THE CARD CAN ANSWER, BROAD WHEN IT CANNOT (#2891). */
+      const partialLanes = new Map<string, Set<string>>();
+      for (const entry of tasks) {
+        try {
+          const { ir, source } = await resolveWorkflowIrForTaskWithProvenance(this.store, entry.id);
+          partialLanes.set(
+            entry.id,
+            source === "default"
+              ? new Set(partialColumns)
+              : new Set(REVIEW_ROLES.flatMap((role) => [...columnsWithFlag(ir, role)])),
+          );
+        } catch {
+          partialLanes.set(entry.id, new Set(partialColumns));
+        }
+      }
 
       const candidates = tasks.filter((task) =>
-        task.column === "in-review" &&
+        (partialLanes.get(task.id) ?? partialColumns).has(task.column) &&
         allowsAutoMergeProcessing(task, settings) &&
         task.status === "failed" &&
         isNoTaskDoneFailure(task) &&

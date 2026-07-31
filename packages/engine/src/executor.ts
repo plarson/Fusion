@@ -3552,6 +3552,52 @@ export class TaskExecutor {
       return {removed, failed};
     });
 
+    /*
+    FNXC:WorkflowResolvedColumns 2026-07-31-23:20 (FLAGGED AND LEFT COUNTED — do NOT convert with
+    `resolveTaskWorkflowIrSync` / `resolvePlannerLanes`):
+
+    Four lifecycle literals live in this listener and they are genuinely wrong on a renamed board:
+    execution never starts on a move INTO the board's own wip lane, terminal session release never
+    runs on a move into its archive lane, and the two `from` guards never fire, so in-flight work is
+    not aborted when a card leaves implementation. Nothing errors; the engine simply stops reacting.
+
+    THE OBVIOUS FIX IS INERT, AND THAT IS NOW PROVED RATHER THAN ARGUED. `task:moved` is emitted
+    synchronously, so an await here reorders this handler against every other subscriber — which
+    points at the sync IR path. That path cannot answer for a renamed board, for TWO independent
+    reasons (`sync-workflow-ir-second-blocker.test.ts`):
+
+      1. `getTaskWorkflowSelectionImpl` returns `undefined` unconditionally under PostgreSQL, so
+         `resolveTaskWorkflowIrSync` always takes its `!workflowId` branch;
+      2. even with a selection, the CUSTOM-workflow branch loads its IR through `store.db`, whose
+         implementation is an unconditional throw — so it falls into the catch and returns the
+         DEFAULT IR anyway.
+
+    A renamed lane IS a custom workflow, so (2) alone is decisive: the sync path can never serve this
+    listener's case. `check-inert-sync-lane-conversions` already baselines twenty guards in exactly
+    that state in `scheduler.ts`; these four must not join them.
+
+    They stay literal and COUNTED, which is the honest state — an unconverted literal is visible to
+    the census, while an inert conversion leaves the backlog and takes the evidence with it.
+
+    THE CRITERION IS NARROWER THAN "THE LISTENER IS SYNC", and I got this wrong first time elsewhere:
+    what blocks a guard is whether ITS ANSWER IS CONSUMED SYNCHRONOUSLY, not whether it happens to sit
+    inside a synchronous function. In `self-healing.ts`'s fan-out, three of four guards only gated work
+    the listener already `void`s, so they were reachable by the async resolver all along and are now
+    converted. These four are NOT that case, for two independent reasons:
+
+      A. `trackTaskDisposal` writes `pendingTaskDisposals` in THIS tick, and the `to === wip` branch
+         above READS that map to serialise a fast bounce (in-progress -> todo -> in-progress; the
+         FN-5256 note it carries). Deferring the branch selection to a microtask lets the second
+         event's prologue read the map before the first event's write lands — which reopens exactly
+         the race that comment exists to close.
+      B. This is an if / else-if CHAIN, so the guards are entangled: converting one changes which
+         branch a move falls into. They convert together or not at all, and (A) blocks the set.
+
+    UNBLOCKING therefore needs the async resolver reachable from a SYNCHRONOUS consumer, which means
+    either a sync reader that answers for custom workflows AND survives a writer on another node, or
+    restructuring the disposal bookkeeping so nothing is read in-tick — the constraints are written up
+    in `sync-workflow-ir-second-blocker.test.ts`.
+    */
     store.on("task:moved", ({ task, from, to, source }) => {
       executorLog.log(`[event:task:moved] ${task.id}: ${from} → ${to}`);
       if (to === "in-progress") {

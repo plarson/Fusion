@@ -21,6 +21,7 @@ import "../builtin-traits.js";
 import {resolveWorkflowIrForTask} from "../workflow-ir-resolver.js";
 import {resolveLifecycleColumns} from "../workflow-lifecycle-traits.js";
 import {__setTaskActivityLogLimitsForTesting, isBootstrapPromptStub} from "../task-store/comments.js";
+import { resolveProjectColumnsForRoles } from "../project-lane-vocabulary.js";
 import {getLiveTaskColumn, publishArchivedTaskDocumentAddition as publishArchivedTaskDocumentAdditionAsync, upsertTaskDocument as upsertTaskDocumentAsync} from "../task-store/async-comments-attachments.js";
 
 /*
@@ -320,6 +321,48 @@ export async function addCommentImpl(store: TaskStore, id: string, text: string,
     return task;
   }
 
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-30-23:40:
+Shared by both document paths so the "is this card archived?" answer cannot differ between the write
+guard and the publication guard — one saying yes while the other says no is how a card ends up both
+read-only and un-publishable.
+*/
+/*
+FNXC:WorkflowLifecycleColumns 2026-07-31-03:35 (#2886 review — greptile P1, "project-wide lanes
+misclassify tasks"): THE FINDING IS RIGHT AND THE OBVIOUS FIX IS A WORSE TRADE. Measured, not argued.
+
+The union includes a column if ANY enabled workflow calls it archived, so where two workflows reuse an
+id and only one marks it archived, a LIVE card in the other workflow's lane is refused its own
+document writes. That is the flat-set mistake this file should not be making, and both callers have
+`taskId`, so a keyed answer looks available.
+
+I IMPLEMENTED IT AND REVERTED. Switching to `resolveWorkflowIrForTask(store, taskId)` broke
+`archived-document-lanes.pg.test.ts`: a card in a RENAMED archived lane stopped being read-only. The
+reason is the one this program keeps hitting from the other side — the per-task resolver needs the
+task's own workflow SELECTION, and where none is recorded it degrades to the BUILT-IN ir, whose
+archived lane is `archived`. The project union does not need a selection, which is exactly why it
+caught the renamed card.
+
+So the two failure modes are not comparable in size:
+  - union: a live card in a COLLIDING id loses document writes (needs two workflows reusing one id
+    with different traits — a configuration nobody has reported).
+  - per-task: EVERY renamed-lane card with no recorded selection silently becomes writable while
+    archived, which is the defect this guard exists to prevent and has a passing test.
+
+The correct fix is per-task resolution WITH a project-union fallback when the selection is absent —
+narrow when the card can answer, broad when it cannot. That needs the "no selection" case
+distinguished from "selection resolved to the default", i.e. the provenance form, at both call sites.
+Sized here rather than faked, because swapping one defect for a larger one would have looked like
+progress and dropped a guard count.
+*/
+async function resolveArchivedLanes(store: TaskStore): Promise<ReadonlySet<string> | undefined> {
+  try {
+    return await resolveProjectColumnsForRoles(store, ["archived"]);
+  } catch {
+    return undefined;
+  }
+}
+
 export async function publishArchivedTaskDocumentAdditionImpl(
   store: TaskStore,
   taskId: string,
@@ -343,7 +386,16 @@ export async function publishArchivedTaskDocumentAdditionImpl(
   FNXC:ArchivedTaskDocumentPublication 2026-07-20-15:36:
   The dedicated facade deliberately returns the atomic PostgreSQL result directly. Unlike ordinary upsert it emits no task event and performs no citation scan, keeping archived parent, workflow, mission, and scheduler state inert.
   */
-  return publishArchivedTaskDocumentAdditionAsync(store.asyncLayer, taskId, input);
+  /*
+  FNXC:WorkflowLifecycleColumns 2026-07-30-23:40:
+  Resolve the board's archived lanes here — this impl holds the store, the async function does not.
+
+  Keyed on the literal, this rejected a legitimate archived-document publication on any board whose
+  archived lane is renamed: `parent-not-archived`, then `archived-state-inconsistent`. A false
+  rejection of valid operator work, and one that reads as a data-integrity error rather than a
+  lifecycle mismatch. Best-effort: an unresolvable workflow keeps the legacy id.
+  */
+  return publishArchivedTaskDocumentAdditionAsync(store.asyncLayer, taskId, input, await resolveArchivedLanes(store));
 }
 
 export async function upsertTaskDocumentImpl(store: TaskStore, taskId: string, input: TaskDocumentCreateInput): Promise<TaskDocument> {
@@ -362,7 +414,9 @@ export async function upsertTaskDocumentImpl(store: TaskStore, taskId: string, i
     // upsertTaskDocumentAsync. The citation scanning and task:updated emission
     // happen after (best-effort, same as the SQLite path).
         const layer = store.asyncLayer!;
-    const document = await upsertTaskDocumentAsync(layer, taskId, input);
+    /* FNXC:WorkflowLifecycleColumns 2026-07-30-23:40: keyed on the literal, an ARCHIVED card's
+       documents stayed WRITABLE on any board whose archived lane is renamed. */
+    const document = await upsertTaskDocumentAsync(layer, taskId, input, await resolveArchivedLanes(store));
     const task = await store.getTask(taskId);
     store.emit("task:updated", task);
     try {

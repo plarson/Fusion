@@ -30,7 +30,7 @@ the new number in the diff, where a reviewer sees it, instead of in a hand-writt
 */
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /*
@@ -42,7 +42,41 @@ and fails if they disagree, which is the only evidence available that either is 
 import { censusFiles, summarize } from "./lib/lifecycle-column-census-ast.mjs";
 
 /** Repo root, for reading a finding's source back when `--triage` classifies it. */
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-14:35 (u12 — the scan root and the READ root could disagree):
+`REPO_ROOT` was derived from the SCRIPT's location, while the file list comes from `git ls-files` in
+the CWD. Those are the same directory in production and only there. Override the list — which is what
+a synthetic-tree fixture must do to stop the suite being a function of the real backlog — and every
+path is LISTED relative to the fixture but READ relative to the repo, so each read misses with ENOENT.
+Diagnosed by the author of #3228 while trying to build that fixture; the bug is mine, introduced when
+I extracted `triageFindings` in #3207 without considering an injected list.
+
+`FUSION_CENSUS_FILE_ROOT` pairs with the existing `FUSION_CENSUS_BASELINE_PATH` seam, and
+`FUSION_CENSUS_FILE_LIST` injects the list itself. Both are needed for the fixture: a root with no
+list still scans the real tree, and a list with no root still reads from the real one. Production sets
+neither, so the default is unchanged.
+*/
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-15:05 (#3230 review — coderabbitai, and the objection is right):
+PARTIAL INJECTION FAILS CLOSED. The two variables are only meaningful together, and the original note
+said so without enforcing it — a root with no list scans the REAL tree and reads it from the fixture,
+a list with no root lists the fixture and reads it from the repo. Both produce ENOENT or, worse, a
+plausible-looking partial census over the wrong file set. This is a fixture-only seam, so a
+half-configured run is always a mistake and never a state to degrade through.
+*/
+const CENSUS_FILE_ROOT = process.env.FUSION_CENSUS_FILE_ROOT;
+const CENSUS_FILE_LIST = process.env.FUSION_CENSUS_FILE_LIST;
+if ((CENSUS_FILE_ROOT === undefined) !== (CENSUS_FILE_LIST === undefined)) {
+  console.error(
+    "lifecycle-column-census: FUSION_CENSUS_FILE_ROOT and FUSION_CENSUS_FILE_LIST must be set TOGETHER.\n"
+    + `  FUSION_CENSUS_FILE_ROOT=${CENSUS_FILE_ROOT === undefined ? "<unset>" : CENSUS_FILE_ROOT}\n`
+    + `  FUSION_CENSUS_FILE_LIST=${CENSUS_FILE_LIST === undefined ? "<unset>" : "<set>"}\n`
+    + "  One without the other lists one tree and reads another; refusing rather than reporting on a mixed file set.",
+  );
+  process.exit(1);
+}
+const REPO_ROOT = CENSUS_FILE_ROOT
+  ?? join(dirname(fileURLToPath(import.meta.url)), "..");
 import {
   censusFiles as censusFilesText,
   summarize as summarizeText,
@@ -69,8 +103,13 @@ const BASELINE_PATH = process.env.FUSION_CENSUS_BASELINE_PATH
   ?? join(HERE, "lib", "lifecycle-column-census-baseline.json");
 
 let files;
+/* Injected list short-circuits the git scan; paths are resolved against REPO_ROOT above. */
+/* Trimmed and emptied-filtered like the git output below: an untrimmed " b.ts" misses, and an empty
+   entry from a trailing separator resolves to REPO_ROOT itself — a DIRECTORY, which reads as EISDIR
+   rather than as the "file not found" the caller would expect. (#3230 review — coderabbitai.) */
+const injectedList = CENSUS_FILE_LIST?.split(/[,\n]/).map((f) => f.trim()).filter(Boolean);
 try {
-  files = execSync(
+  files = injectedList !== undefined ? injectedList : execSync(
     "git ls-files 'packages/*/src/**/*.ts' 'packages/*/src/*.ts' 'packages/*/src/**/*.tsx' 'packages/*/app/**/*.ts' 'packages/*/app/**/*.tsx' 'plugins/*/src/**/*.ts' 'plugins/*/src/**/*.tsx'",
     { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
   )
@@ -89,7 +128,11 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const findings = censusFiles(files);
+/* Single read root for every consumer: the AST scan, the text cross-check, `triageFindings`, and the
+   sync-resolver probe all resolve through `readCensusFile`, so an injected list cannot end up listed
+   against the fixture and read against the repo. That split is the ENOENT #3228 hit. */
+const readCensusFile = (f) => readFileSync(isAbsolute(f) ? f : join(REPO_ROOT, f), "utf8");
+const findings = censusFiles(files, readCensusFile);
 const summary = summarize(findings);
 const json = process.argv.includes("--json");
 const strict = process.argv.includes("--strict");
@@ -196,7 +239,7 @@ function triageFindings() {
          undefined path constant was swallowed into an empty file list, which reported "0 documented
          deferrals" for a tree that visibly has them. A triage aid that fails to zero is worse than
          one that throws — it reads as a clean answer. */
-      lines = readFileSync(join(REPO_ROOT, f.file), "utf8").split("\n");
+      lines = readCensusFile(f.file).split("\n");
       sourceCache.set(f.file, lines);
     }
     (hasDeferralNote(lines, f.line) ? flagged : open).push(f);
@@ -423,7 +466,7 @@ if (claims && !json) {
     const syncCallRe = /resolveTaskWorkflowIrSync\s*\??\.?\s*\(/;
     const isSyncResolved = (file) => {
       try {
-        return syncCallRe.test(readFileSync(join(REPO_ROOT, file), "utf8"));
+        return syncCallRe.test(readCensusFile(file));
       } catch {
         return false;
       }
@@ -530,7 +573,7 @@ if (compare) {
   The check now fails only on a site the regex found and the parser did not, which is what the note
   above it always said the contract was.
   */
-  const textFindings = censusFilesText(files);
+  const textFindings = censusFilesText(files, readCensusFile);
   const text = summarizeText(textFindings);
   console.log(`\n  text classifier:  ${JSON.stringify(text.totals)}`);
   console.log(`  AST classifier:   ${JSON.stringify(summary.totals)}`);

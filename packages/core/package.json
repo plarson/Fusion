@@ -34,6 +34,11 @@
       "source": "./src/dependency-status.ts",
       "import": "./dist/dependency-status.js"
     },
+    "./column-roles": {
+      "types": "./src/column-roles.ts",
+      "source": "./src/column-roles.ts",
+      "import": "./dist/column-roles.js"
+    },
     "./detect-content-language": {
       "types": "./src/detect-content-language.ts",
       "source": "./src/detect-content-language.ts",

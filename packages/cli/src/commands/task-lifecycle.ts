@@ -27,6 +27,7 @@ import type { TaskStore } from "@fusion/core";
 import {
   resolveTaskMergeTarget,
   getCurrentRepo,
+  getPushRepo,
   isBranchGroupMemberLanded,
   resolveEffectiveSettings,
   isWorkspaceTask,
@@ -132,6 +133,26 @@ export function getMergeStrategy(settings: Pick<Settings, "mergeStrategy">): Non
  */
 export function getTaskBranchName(taskId: string): string {
   return `fusion/${taskId.toLowerCase()}`;
+}
+
+/*
+FNXC:ForkAwarePrHead 2026-07-26-07:18:
+When origin's push URL targets a contributor fork while fetch points at upstream,
+GitHub PR create requires head as `fork-owner:branch`. Same-repository workflows
+keep the unqualified branch name. Centralize the rule so every createPr surface
+(pr-create node, group PR callback, shared-branch and per-task processPullRequest
+paths) qualifies the head the same way and cannot open against the wrong repo.
+*/
+function qualifyForkAwarePrHead(
+  cwd: string,
+  upstreamOwner: string | undefined,
+  headBranch: string,
+): string {
+  const pushRepo = getPushRepo(cwd);
+  if (pushRepo?.owner && upstreamOwner && pushRepo.owner !== upstreamOwner) {
+    return `${pushRepo.owner}:${headBranch}`;
+  }
+  return headBranch;
 }
 
 /**
@@ -313,12 +334,14 @@ export function createGroupPrCallback(
       title: member.title,
       branchName: getTaskBranchName(member.id),
     }));
+    // FNXC:ForkAwarePrHead 2026-07-26-07:18: group/shared-branch PRs also push via
+    // origin and must qualify head with the fork owner when push ≠ fetch repo.
     const created = await github.createPr({
       owner: repo.owner,
       repo: repo.repo,
       title: buildGroupPullRequestTitle(group, members),
       body: buildGroupPullRequestBody(group, membersWithBranch),
-      head: headBranch,
+      head: qualifyForkAwarePrHead(cwd, repo.owner, headBranch),
       base: baseBranch,
     });
     return { prNumber: created.number, prUrl: created.url, prState: toBranchGroupPrState(created) };
@@ -493,12 +516,14 @@ export function createPrNodeGithubOps(
       const headBranch = entity.headBranch || getTaskBranchName(task.id);
       await pushTaskBranchToOrigin(cwd, headBranch);
       const { owner, name } = splitRepoSlug(entity.repo);
+      // FNXC:ForkAwarePrHead 2026-07-26-07:18: qualify head as owner:branch when
+      // origin pushes to a fork while the PR targets upstream.
       const created = await github.createPr({
         owner,
         repo: name,
         title: task.title ?? `Task ${task.id}`,
         body: task.description ?? "",
-        head: headBranch,
+        head: qualifyForkAwarePrHead(cwd, owner, headBranch),
         base: entity.baseBranch,
       });
       const headOid = await resolveBranchHeadOid(cwd, headBranch);
@@ -868,12 +893,14 @@ export async function processPullRequestMergeTask(
       if (!groupPrInfo) {
         await pushTaskBranchToOrigin(cwd, branchGroup.branchName);
         try {
+          // FNXC:ForkAwarePrHead 2026-07-26-07:18: shared-branch processPullRequest
+          // path must qualify head for fork push URLs (same as createGroupPrCallback).
           groupPrInfo = await github.createPr({
             owner: prRepo.owner,
             repo: prRepo.repo,
             title: buildGroupPullRequestTitle(branchGroup, members),
             body: buildGroupPullRequestBody(branchGroup, membersWithCommits),
-            head: branchGroup.branchName,
+            head: qualifyForkAwarePrHead(cwd, prRepo.owner, branchGroup.branchName),
             base: projectDefaultBranch,
           });
         } catch (err: unknown) {
@@ -974,12 +1001,14 @@ export async function processPullRequestMergeTask(
       await pushTaskBranchToOrigin(cwd, branch);
     }
     try {
+      // FNXC:ForkAwarePrHead 2026-07-26-07:18: per-task processPullRequest path
+      // must qualify head for fork push URLs (same as createPrNodeGithubOps).
       prInfo = existingPr ?? await github.createPr({
         owner: prRepo.owner,
         repo: prRepo.repo,
         title: buildPullRequestTitle(task),
         body: buildPullRequestBody(task),
-        head: branch,
+        head: qualifyForkAwarePrHead(cwd, prRepo.owner, branch),
         base: mergeTarget.branch,
       });
     } catch (err: unknown) {

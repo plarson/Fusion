@@ -16,8 +16,6 @@ import type { NativeStructureCandidate } from "../MessageComposer";
 import { PageErrorBoundary } from "../ErrorBoundary";
 import { BackendConnectionErrorPage } from "../BackendConnectionErrorPage";
 import { CapacityRiskBanner } from "../CapacityRiskBanner";
-import { PlanningModeModal } from "../PlanningModeModal";
-import { PlanningWorkflowSwitcherSlot } from "../PlanningWorkflowSwitcherSlot";
 import { HeaderWorkflowSwitcherSlot } from "../HeaderWorkflowSwitcherSlot";
 import { GraphWorkflowSwitcherSlot, filterTasksByGraphWorkflowSelection } from "../GraphWorkflowSwitcherSlot";
 import { PluginDashboardViewHost } from "../../plugins/PluginDashboardViewHost";
@@ -69,7 +67,6 @@ export function MainContent({
   isRemote,
   remoteData,
   tasks,
-  bgPlanningSessions,
   workflowSteps,
   subscribePluginEvents,
   openDetailTask,
@@ -115,8 +112,6 @@ export function MainContent({
   ingestCreatedTasks,
   nodesEnabled,
   openWorkflowEditorWithNav,
-  handlePlanningTaskCreated,
-  handlePlanningTasksCreated,
   handleGitHubImport,
   devServerEnabled,
   mainPanelDetailTask,
@@ -190,7 +185,6 @@ export function MainContent({
   _WorkflowEditorView,
 }: MainContentProps) {
   const [missionWorkflowId, setMissionWorkflowId] = useState<string | null>(null);
-  const [planningHeaderWorkflowId, setPlanningHeaderWorkflowId] = useState<string | null>(null);
   const [nativeStructureCandidates, setNativeStructureCandidates] = useState<NativeStructureCandidate[]>([]);
 
   /*
@@ -727,61 +721,12 @@ export function MainContent({
     /*
     FNXC:Navigation 2026-06-21-00:00:
     FN-6886 renders Planning Mode as a top-level main-content destination. Sidebar navigation opens an empty planning view, while Board, Todos, inline create, and resume entry points carry their initial plan/workflow/session state through modalManager.
+
+    FNXC:PlanningKeepAlive 2026-07-22-12:30:
+    The planning subtree no longer renders from this switch. App.tsx mounts <PlanningKeepAlive> as a kept-alive sibling of MainContent inside .project-content (after Planning's first open), so navigating away hides it instead of unmounting the interview. This branch returns null so the switch contributes nothing while the keep-alive layer is the visible view.
+    Project-switch remount and one-shot initialPlan consumption (main's ProjectSwitchModalReset / PlanningMode notes) live on PlanningKeepAlive + modalManager.clearPlanningInitialPlan, not here.
     */
-    const closePlanningView = () => {
-      modalManager.closePlanning();
-      handleChangeTaskView("board");
-    };
-    return (
-      <PageErrorBoundary>
-        {/*
-        FNXC:Navigation 2026-06-22-00:00:
-        Planning shows the same board WorkflowSwitcher in the same Header workflow slot as Board/List (portaled by PlanningWorkflowSwitcherSlot), so workflow selection is reachable from the left-sidebar Planning destination.
-
-        FNXC:WorkflowAggregation 2026-07-01-00:00:
-        The Planning header selector may choose All workflows for aggregate browsing, but embedded PlanningModeModal receives a real workflow id from the header or `null` default behavior; explicit modalManager workflow entry points still win.
-        */}
-        <PlanningWorkflowSwitcherSlot
-          projectId={currentProject?.id}
-          onOpenWorkflowEditor={openWorkflowEditorWithNav}
-          onWorkflowSelectionChange={(selection) => setPlanningHeaderWorkflowId(selection && !selection.isAllWorkflowsSelected ? selection.selectedWorkflow.id : null)}
-        />
-        {/*
-        FNXC:ProjectSwitchModalReset 2026-07-23-00:00:
-        Key embedded Planning by project so a project swap remounts it. Without the remount a
-        running plan kept its stream, selected session, and sidebar list from the previous
-        project, and the "durable active session" effect re-fired with the new projectId while
-        the old session was still selected — persisting project A's session as project B's
-        active planning session, so project B kept restoring project A's plan. Unmount cleanup
-        already closes the stream; the new mount fetches the new project's session list and
-        restores that project's own persisted draft/active session.
-
-        FNXC:PlanningMode 2026-07-23-00:00:
-        The seeded initialPlan is a one-shot handoff consumed via onInitialPlanConsumed the moment
-        Planning's auto-start fires. Planning fully unmounts whenever taskView leaves "planning",
-        which resets its in-component auto-start guard; before consumption existed, the still-set
-        modalManager.planningInitialPlan re-auto-started a duplicate planning session on every
-        navigate-back remount (and on the project-switch remount key above) while the original
-        session was silently abandoned.
-        */}
-        <PlanningModeModal
-          key={currentProject?.id ?? "all-projects"}
-          isOpen={true}
-          onClose={closePlanningView}
-          onTaskCreated={handlePlanningTaskCreated}
-          onTasksCreated={handlePlanningTasksCreated}
-          onViewTask={openBoardTaskDetail}
-          tasks={tasks}
-          initialSessions={bgPlanningSessions}
-          initialPlan={modalManager.planningInitialPlan ?? undefined}
-          onInitialPlanConsumed={modalManager.clearPlanningInitialPlan}
-          projectId={currentProject?.id}
-          workflowId={modalManager.planningWorkflowId ?? planningHeaderWorkflowId}
-          resumeSessionId={modalManager.planningResumeSessionId}
-          presentation="embedded"
-        />
-      </PageErrorBoundary>
-    );
+    return null;
   }
 
   /*

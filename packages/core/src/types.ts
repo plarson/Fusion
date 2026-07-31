@@ -1172,6 +1172,12 @@ import {
   getLegacyAgentAssetDirectoryName,
   getLegacyAgentInstructionsBundleDirName,
   getSafeAgentAssetIdSegment,
+  // FNXC:ApprovalLifecycleSecurity 2026-07-26-14:20: lazy approval TTLs must reach the engine gate + dashboard via the stable barrel.
+  APPROVAL_REQUEST_PENDING_TTL_MS,
+  APPROVAL_REQUEST_GRANT_TTL_MS,
+  getApprovalRequestGrantTtlMs,
+  configureApprovalRequestTtls,
+  isApprovalRequestExpired,
   isValidApprovalRequestTransition,
   normalizeApprovalRequestActionCategory,
 } from "./types/agents.js";
@@ -1197,6 +1203,11 @@ export {
   getLegacyAgentAssetDirectoryName,
   getLegacyAgentInstructionsBundleDirName,
   getSafeAgentAssetIdSegment,
+  APPROVAL_REQUEST_PENDING_TTL_MS,
+  APPROVAL_REQUEST_GRANT_TTL_MS,
+  getApprovalRequestGrantTtlMs,
+  configureApprovalRequestTtls,
+  isApprovalRequestExpired,
   isValidApprovalRequestTransition,
   normalizeApprovalRequestActionCategory,
 };

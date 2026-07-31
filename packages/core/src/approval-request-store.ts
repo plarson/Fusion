@@ -5,6 +5,12 @@ import { fromJson } from "./db.js";
 import type { AsyncDataLayer } from "./postgres/data-layer.js";
 import * as asyncApprovalRequestStore from "./async-approval-request-store.js";
 import * as schema from "./postgres/schema/index.js";
+/*
+FNXC:ApprovalLifecycleSecurity 2026-07-30-14:30 (migration rebase):
+The expiry check moved with the rest of the lifecycle hardening into async-approval-request-store.ts.
+This class no longer has a sync branch to guard — the PostgreSQL cutover deleted it — so the import
+that fed it is gone rather than left dangling.
+*/
 import {
   normalizeApprovalRequestActionCategory,
   type ApprovalRequest,

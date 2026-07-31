@@ -60,7 +60,7 @@ import {
   type MergeTargetResolution,
   type Settings,
   type Task,
-  type TaskStore,
+  type TaskStore, resolveReviewColumns
 } from "@fusion/core";
 import { selectUserCommentsForAgentContext } from "./agent-user-comments.js";
 import { resolveTaskWorkingBranch } from "./worktree-names.js";
@@ -763,6 +763,14 @@ export interface LandRepoContext {
   off, preserving the documented hard-fail for the single-repo land path.
   */
   nonFatalDependencySync?: boolean;
+  /*
+  FNXC:MergeNoCommits 2026-07-17-12:00:
+  When true, the task is expected to produce no code changes (audit, documentation, decision-only).
+  The clean-room dependency sync is skipped entirely because there are no source changes to install
+  or build. Avoiding the dep-sync prevents "pnpm: command not found" failures when pnpm is not
+  resolvable in the engine process environment, and avoids unnecessary work.
+  */
+  noCommitsExpected?: boolean;
   store: TaskStore;
 }
 
@@ -883,6 +891,17 @@ export async function landOneRepo(
        * FNXC:AIMerge 2026-06-13-20:32:
        * The detached AI-merge clean room is rebuilt from the integration tip and starts without workspace dependencies. Hard-fail configured or inferred install failures so verification cannot silently run against an uninstalled checkout; aborts propagate before merge agents run.
        */
+      /*
+      FNXC:MergeNoCommits 2026-07-17-12:00:
+      No-commits tasks (audit, documentation, decision-only) have no code changes to install or
+      build. Skip the entire dependency-sync step in the clean-room worktree to avoid "pnpm: command
+      not found" when pnpm is not resolvable in the engine process environment. The merge/review
+      agents still run (they may verify documentation or produce merge metadata); only the
+      dependency install is skipped.
+      */
+      if (ctx.noCommitsExpected === true) {
+        await log(`AI merge: skipping dependency sync — no-commits task (no code changes expected)`);
+      } else {
       const depsSyncStartedAt = Date.now();
       let depsSyncResult: Awaited<ReturnType<typeof installWorktreeDependencies>> | null = null;
       try {
@@ -937,6 +956,7 @@ export async function landOneRepo(
         });
       }
       await log(`[timing] AI merge dependency sync completed in ${Date.now() - depsSyncStartedAt}ms${depsSyncResult ? (depsSyncResult.installCommand ? ` (${depsSyncResult.skipped ? "skipped" : "ran"}: ${depsSyncResult.installCommand})` : " (no command)") : " (failed — non-fatal, deps unavailable)"}`);
+      }
 
       // 2 + 3. Merge + review loop (corrective passes).
       const reviewResult = await mergeAndReview({
@@ -1170,7 +1190,22 @@ export async function runAiMerge(
   if (await isAlreadyFinalizedColumn(store, task)) {
     return noOpResult(task, branch, "already-finalized");
   }
-  const blocker = getTaskMergeBlocker(task, { manual: options.manual === true });
+  /*
+  FNXC:WorkflowResolvedColumns 2026-07-30-17:10 (MERGING WAS BROKEN ON A RENAMED BOARD):
+  `getTaskMergeBlocker`'s identity check RETURNS A BLOCKER when the column is not a review lane, so
+  calling it without `reviewColumns` on a board whose review lane is renamed produced
+  `Cannot merge FN-x: task is in 'signoff', must be in 'in-review'` — and the merge threw. Not a
+  degraded message: no task could be merged at all.
+
+  The helper's own comment records this exact defect being fixed in `moves.ts`; these two merge
+  entry points were missed. Resolve the task's own review lanes and pass them.
+  */
+  const aiReviewColumns = new Set<string>(["in-review"]);
+  try {
+    const aiIr = await resolveWorkflowIrForTask(store, taskId);
+    if (aiIr) for (const id of resolveReviewColumns(aiIr)) aiReviewColumns.add(id);
+  } catch { /* degraded: the legacy id above still answers */ }
+  const blocker = getTaskMergeBlocker(task, { manual: options.manual === true, reviewColumns: aiReviewColumns });
   if (blocker) throw new Error(`Cannot merge ${taskId}: ${blocker}`);
 
   const settings = await store.getSettings();
@@ -1281,6 +1316,8 @@ export async function runAiMerge(
     mergeAgent, reviewAgent, stashResolveAgent,
     includeTaskId, trailers, taskTitle, signal: options.signal,
     allowDirtyLocalCheckoutSync,
+    // FNXC:MergeNoCommits 2026-07-17-12:00: no-commits tasks skip dependency sync in the clean room
+    noCommitsExpected: task.noCommitsExpected === true,
     store,
   });
 
@@ -1877,6 +1914,8 @@ export async function landWorkspaceTask(
         // FNXC:Workspace 2026-06-24-23:50: one sub-repo's dependency-sync failure must not block
         // landing the others — degrade verification for that repo, still land the git squash.
         nonFatalDependencySync: true,
+        // FNXC:MergeNoCommits 2026-07-17-12:00: no-commits tasks skip dependency sync in the clean room
+        noCommitsExpected: task.noCommitsExpected === true,
         store,
       });
       if (landResult.outcome === "landed") {

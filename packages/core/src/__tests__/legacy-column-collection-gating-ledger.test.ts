@@ -69,6 +69,7 @@ const LEGACY_IDS = ["triage", "todo", "in-progress", "in-review", "done", "archi
 const RECORDED_GATING_SITES: ReadonlySet<string> = new Set([
   "packages/core/src/agent-role-policy.ts :: IMPLEMENTATION_TASK_COLUMNS",
   "packages/core/src/column-roles.ts :: LEGACY_PRE_IMPLEMENTATION_COLUMN_IDS",
+  "packages/core/src/dependency-status.ts :: SATISFIED_COLUMNS",
   "packages/core/src/live-agent-count.ts :: LEGACY_PRE_IMPLEMENTATION_COLUMN_IDS",
   "packages/core/src/task-store/branch-group-ops.ts :: satisfiedColumns",
   "packages/core/src/task-store/update-task-deps.ts :: refineFrom",

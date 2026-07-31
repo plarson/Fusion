@@ -17,6 +17,13 @@ export interface DependencySummary {
   missing: DependencyStatus[];
 }
 
+/**
+ * DELIBERATE-LITERAL: Legacy fallback for callers that have no per-task
+ * workflow lifecycle classifier. Workflow-aware scheduler paths resolve the
+ * dependency's own terminal/review lanes first and reach this set only when
+ * that context is unavailable; blocker-fanout reporting has no workflow
+ * context at all. A board-wide union would be less correct for both callers.
+ */
 const SATISFIED_COLUMNS = new Set<Task["column"]>(["done", "archived", "in-review"]);
 
 export function isDependencySchedulingSatisfied(dependency: Pick<Task, "column"> | undefined): boolean {

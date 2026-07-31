@@ -817,7 +817,7 @@ Mailbox view shows inbox/outbox communication threads and unread state. When an 
 
 ## Interactive Terminal
 
-Fusion embeds a terminal using xterm.js. Desktop and tablet use the footer status bar as the terminal launcher; mobile keeps the full-screen terminal path. Known touch tablets, including at the 768px responsive boundary, retain docked/floating presentation rather than falling back to the phone sheet. Their saved floating size and position and touch drag/edge-or-corner resize controls stay available when a software keyboard shortens the visual viewport. True narrow phones, including folded panes and short phone landscapes, intentionally remain full-screen.
+Fusion embeds a terminal using xterm.js. Desktop and tablet use the footer status bar as the terminal launcher; mobile keeps the full-screen terminal path. Known touch tablets, including at the 768px responsive boundary, retain docked/floating presentation rather than falling back to the phone sheet. Their saved floating size and position and touch drag/edge-or-corner resize controls stay available when a software keyboard shortens the visual viewport. In tablet floating mode, use the reserved grip at the left side of the terminal header to move the window; it stays available even when the tab strip overflows. True narrow phones, including folded panes and short phone landscapes, intentionally remain full-screen.
 
 <!-- FNXC:Terminal 2026-07-11-18:20: FN-7824 first-launch terminal sockets auto-retry with capped backoff until the first successful open, so the manual Reconnect affordance is reserved for terminal sessions that already connected and then exhaust their mid-session reconnect budget. -->
 On first launch or first open, the terminal keeps reconnecting automatically until its initial WebSocket opens; it should show **Reconnecting...** during that cold-start recovery rather than requiring a manual **Reconnect** click. If an already-connected terminal drops and exhausts its bounded reconnect budget, Fusion then parks it as **Disconnected** and surfaces the manual **Reconnect** control.
@@ -838,7 +838,7 @@ Use the terminal on desktop/tablet:
 3. Drag the top edge of the docked or pinned panel.
    Expected outcome: the panel height changes within its viewport-safe bounds and persists per project, with pinned mode clamped shorter so the application remains usable.
 4. Select **Pop out** from the bottom action-control footer.
-   Expected outcome: the terminal switches to a floating window that can be dragged and freely resized; size, position, and display mode are saved per project.
+   Expected outcome: the terminal switches to a floating window that can be dragged and freely resized; size, position, and display mode are saved per project. On touch tablets, drag the reserved header grip rather than the horizontally scrollable tab strip.
 5. Select **Dock** in the floating terminal.
    Expected outcome: the terminal returns to the bottom docked overlay panel using the saved docked height.
 6. Select the scripts chevron beside the footer **Terminal** button.

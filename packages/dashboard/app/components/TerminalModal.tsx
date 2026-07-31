@@ -2426,12 +2426,18 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
     </>
   );
 
+  /*
+  FNXC:TerminalModalControls 2026-07-31-22:19:
+  The tab scroller owns tab presses and horizontal panning; floating-window drags begin only on
+  the reserved grip so a tab interaction cannot leave a captured header drag behind.
+  */
   const renderTerminalTabStrip = (measuring = false) => (
     <div
       ref={measuring || !tabsOverflow ? terminalTabsMeasureRef : undefined}
       className={`terminal-tabs${measuring ? " terminal-tabs--measuring" : ""}`}
       data-testid={measuring ? "terminal-tabs-measuring" : "terminal-tabs"}
       aria-hidden={measuring || undefined}
+      onPointerDown={measuring ? undefined : (event) => event.stopPropagation()}
     >
       {tabs.map((tab) => (
         <div
@@ -2541,6 +2547,16 @@ export function TerminalModal({ isOpen, onClose, initialCommand, initialCommandG
         {/* Header — on mobile (≤768px) use compact selector/actions;
             .terminal-title is hidden; action button labels are hidden (icons only) */}
         <div className="terminal-header">
+          {/*
+          FNXC:TerminalModalControls 2026-07-31-22:19:
+          Tablet floating terminals need a reserved, real pointer target because the flexing tab
+          strip otherwise consumes the entire delegated header handle. This plain element—not a
+          pseudo-element—is the testable drag target and remains outside the interactive-element
+          suppression filter in FloatingWindow.
+          */}
+          {isTabletTerminal && !isMobileTerminal && !embedded && isFloatingMode && (
+            <div className="terminal-header__drag-grip" data-testid="terminal-drag-grip" aria-hidden="true" />
+          )}
           {/* Tab Bar */}
           {isMobileTerminal ? renderTerminalMobileTabs() : (
             <div className="terminal-tab-region" ref={terminalTabRegionRef}>

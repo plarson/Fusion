@@ -15,7 +15,6 @@
   "packages/core/src/chat-store.ts": 1,
   "packages/core/src/command-center-live.ts": 1,
   "packages/core/src/live-agent-count.ts": 1,
-  "packages/core/src/postgres/migrations/0000_initial.sql": 1,
   "packages/core/src/postgres/migrations/0035_fn_8543_mission_lineage_stop.sql": 1,
   "packages/core/src/postgres/migrations/0036_chat_session_tags.sql": 2,
   "packages/core/src/settings-schema.ts": 2,

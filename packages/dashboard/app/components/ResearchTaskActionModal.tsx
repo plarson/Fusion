@@ -65,6 +65,20 @@ export function ResearchTaskActionModal({ open, mode, run, finding, projectId, o
     return `${finding.heading || t("research.defaultFindingHeading", "Research finding")} — ${firstSentence}`.trim();
   }, [finding.content, finding.heading, t]);
 
+  /*
+  FNXC:ResearchTaskModal 2026-08-01-00:41 (an operator's typed title was wiped when board workflows resolved):
+  These two jobs were one effect, and its dependency list carried `isArchivedColumn` for the fetch's
+  sake. `isArchivedColumn` is a `useMemo` over `boardWorkflows` from `useBoardWorkflows()`, so its
+  identity changes every time that hook resolves or revalidates — and each change re-ran the whole
+  effect, calling `setTitle`/`setDescription`/`setPriority`/`setTaskId` over whatever the operator had
+  already typed. Opening the modal and typing before the workflows settled silently reverted the form
+  to its defaults.
+
+  Split so the reset depends only on what the reset is derived from, and the fetch keeps the
+  dependency it actually needs. Same class as
+  `docs/solutions/ui-bugs/skill-autocomplete-highlight-reset-on-swr-revalidation.md`: user input reset
+  by an async revalidation the user cannot see.
+  */
   useEffect(() => {
     if (!open) return;
     setAttachExport(false);
@@ -76,6 +90,20 @@ export function ResearchTaskActionModal({ open, mode, run, finding, projectId, o
 
   useEffect(() => {
     if (!open || mode !== "enrich") return;
+    /*
+    FNXC:ResearchTaskPicker 2026-08-01-00:30 (#3286 review — "ignore results from superseded task
+    requests"): LAST REQUEST WINS, AND THE STALE LIST IS NOT SELECTABLE MEANWHILE.
+
+    `projectId` / `isArchivedColumn` changing starts a second fetch while the first is in flight. With
+    no guard the slower one resolves last and repopulates the picker from the OLD project — and because
+    the previous rows stayed listed while loading, an operator could attach a finding to a task from a
+    project they had already switched away from. Wrong-row attachment, not a cosmetic flicker.
+
+    Clearing on entry also removes the stale-but-selectable window: the picker is empty while loading
+    rather than showing rows the current filters have not vetted.
+    */
+    let superseded = false;
+    setTasks([]);
     setLoadingTasks(true);
     void fetchTasks(50, 0, projectId)
       /*
@@ -93,8 +121,16 @@ export function ResearchTaskActionModal({ open, mode, run, finding, projectId, o
       The guard was real either way: on a renamed board `archived` matched nothing, so filed-away
       tasks stayed in this picker and an operator could attach findings to work they had archived.
       */
-      .then((rows) => setTasks(rows.filter((task) => !isArchivedColumn(task.column))))
-      .finally(() => setLoadingTasks(false));
+      .then((rows) => {
+        if (superseded) return;
+        setTasks(rows.filter((task) => !isArchivedColumn(task.column)));
+      })
+      .finally(() => {
+        if (!superseded) setLoadingTasks(false);
+      });
+    return () => {
+      superseded = true;
+    };
   }, [open, mode, projectId, isArchivedColumn]);
 
   if (!open) return null;

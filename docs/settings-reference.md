@@ -1880,9 +1880,10 @@ Credential instance ids are validated when authored. Invalid values (including e
 whitespace-only, bracket-containing, oversized, or non-string values) are rejected for project and
 global settings, workflow setting values, workflow IR node overrides, and task writes. Settings
 validation also visits every `modelPresets[]` element: one invalid executor or validator instance
-id rejects the entire settings write without changing the stored presets. These values are
-persisted-but-inert in this release; runtime credential resolution will consume them in the
-follow-up runtime-resolution work.
+id rejects the entire settings write without changing the stored presets. Runtime session resolution consumes the selected instance for supported lanes, including
+executor step sessions. When an executor-step credential is retargeted after a usage-limit
+failure, only sessions created after the active attempt completes use the new instance; work
+already in progress continues on its existing session.
 
 ### Authentication credential instances
 

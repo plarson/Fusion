@@ -13316,6 +13316,27 @@ export class TaskExecutor {
           pluginRunner: this.options.pluginRunner,
           runtimeHint: stepSessionRuntimeHint,
           assignedAgentRuntimeConfig: (stepIdentityAgent?.runtimeConfig ?? undefined) as Record<string, unknown> | undefined,
+          /*
+           * FNXC:CredentialInstanceRotation 2026-08-01-10:41:
+           * Step sessions must start on the task-selected account. On a usage-limit
+           * retry, re-read the live selection and resolve its provider with the same
+           * effective column-agent runtime config used to create the session.
+           */
+          credentialInstanceId: detail.credentialInstanceId,
+          resolveCredentialInstanceRetarget: async () => {
+            const liveDetail = await this.store.getTask(task.id);
+            if (!liveDetail) return undefined;
+            const resolvedModel = resolveExecutorSessionModel(
+              liveDetail.modelProvider,
+              liveDetail.modelId,
+              settings,
+              (stepIdentityAgent?.runtimeConfig ?? undefined) as Record<string, unknown> | undefined,
+              liveDetail.credentialInstanceId ?? undefined,
+            );
+            return resolvedModel.provider && resolvedModel.credentialInstanceId
+              ? { providerId: resolvedModel.provider, instanceId: resolvedModel.credentialInstanceId }
+              : undefined;
+          },
           // Attribute the per-step run auditor to the column agent when it governs
           // (U4); absent → StepSessionExecutor falls back to assignedAgentId.
           effectiveAgentId: stepColumnAgent?.agent.id,

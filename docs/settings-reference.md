@@ -1882,3 +1882,7 @@ validation also visits every `modelPresets[]` element: one invalid executor or v
 id rejects the entire settings write without changing the stored presets. These values are
 persisted-but-inert in this release; runtime credential resolution will consume them in the
 follow-up runtime-resolution work.
+
+### Authentication credential instances
+
+Settings → Authentication can hold multiple named credential accounts for each non-CLI provider. Select **Add another account** to create a client-generated account id, optionally label it, and complete OAuth or save an API key; an abandoned pending account is not stored. The first credential becomes the provider default; later accounts do not change it. Operators can rename, remove, or make an existing account default. Labels are display-only, optional, and need not be unique. CLI-backed provider cards retain their own credential handling and do not support Fusion credential instances.

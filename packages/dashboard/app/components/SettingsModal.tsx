@@ -8,7 +8,7 @@ import {
 } from "@fusion/core";
 import type { Settings, GlobalSettings, ThemeMode, ColorTheme, ModelPreset } from "@fusion/core";
 import { DEFAULT_GLOBAL_SETTINGS } from "@fusion/core";
-import { fetchSettings, fetchSettingsByScope, updateSettings, updateGlobalSettings, fetchAuthStatus, loginProvider, logoutProvider, cancelProviderLogin, saveApiKey, clearApiKey, fetchModels, testNotification, fetchBackups, createBackup, exportSettings, importSettings, fetchMemoryFile, fetchMemoryFiles, saveMemoryFile, compactMemory, installQmd, testMemoryRetrieval, triggerMemoryDreams, fetchGitRemotes, fetchGitRemotesDetailed, fetchGitBranches, fetchProjects, fetchDashboardHealth, checkForUpdates, installUpdate, fetchSystemInfo, requestSystemRestart, fetchRemoteSettings, fetchRemoteStatus, installCloudflared, fetchRemoteQr, fetchRemoteUrl, submitProviderManualCode, fetchPlugins } from "../api";
+import { fetchSettings, fetchSettingsByScope, updateSettings, updateGlobalSettings, fetchAuthStatus, loginProvider, logoutProvider, cancelProviderLogin, saveApiKey, clearApiKey, fetchModels, testNotification, fetchBackups, createBackup, exportSettings, importSettings, fetchMemoryFile, fetchMemoryFiles, saveMemoryFile, compactMemory, installQmd, testMemoryRetrieval, triggerMemoryDreams, fetchGitRemotes, fetchGitRemotesDetailed, fetchGitBranches, fetchProjects, fetchDashboardHealth, checkForUpdates, installUpdate, fetchSystemInfo, requestSystemRestart, fetchRemoteSettings, fetchRemoteStatus, installCloudflared, fetchRemoteQr, fetchRemoteUrl, submitProviderManualCode, fetchPlugins, formatProviderInstanceKey } from "../api";
 import type { AuthProvider, ManualOAuthCodeInfo, ModelInfo, BackupListResponse, SettingsExportData, MemoryFileInfo, MemoryRetrievalTestResult, GitRemote, GitRemoteDetailed, ProjectInfo, RemoteStatus, UpdateCheckResponse, UpdateInstallResponse, OAuthDeviceCodeInfo } from "../api";
 import { resolveScopedMcpSettings, splitSettingsSave, type McpSettingsScope } from "./settings/save-split";
 import {
@@ -1429,7 +1429,7 @@ export function SettingsModal({
   // Auth state (independent of the settings save flow)
   const [authProviders, setAuthProviders] = useState<AuthProvider[]>([]);
   const [authLoading, setAuthLoading] = useState(false);
-  const [authActionInProgress, setAuthActionInProgress] = useState<string | null>(null);
+  const [authActionInProgress, setAuthActionInProgress] = useState<Record<string, boolean>>({});
   const [loginInstructions, setLoginInstructions] = useState<Record<string, string>>({});
   const [manualCodeConfigs, setManualCodeConfigs] = useState<Record<string, ManualOAuthCodeInfo>>({});
   const [deviceCodes, setDeviceCodes] = useState<Record<string, OAuthDeviceCodeInfo>>({});
@@ -1441,7 +1441,7 @@ export function SettingsModal({
     tone: "success" | "error";
     message: string;
   }>>({});
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollIntervalRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
   const lastAutoCopiedDeviceCodesRef = useRef<Record<string, string>>({});
 
   // Model state
@@ -2350,12 +2350,10 @@ export function SettingsModal({
       setAuthLoading(true);
       loadAuthStatus().finally(() => setAuthLoading(false));
     }
-    // Clean up polling when leaving auth section
+    // Each instance owns its own login poll; leaving Settings stops every active account poll.
     return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-      }
+      for (const interval of Object.values(pollIntervalRef.current)) clearInterval(interval);
+      pollIntervalRef.current = {};
     };
   }, [activeSection, loadAuthStatus]);
 
@@ -2456,7 +2454,8 @@ export function SettingsModal({
     void copyTextToClipboard(copilotDeviceCode.userCode);
   }, [deviceCodes]);
 
-  const handleLogin = useCallback(async (providerId: string) => {
+  const handleLogin = useCallback(async (providerId: string, instanceId?: string, label?: string) => {
+    const stateKey = formatProviderInstanceKey({ providerId, instanceId: instanceId ?? "default" });
     const provider = authProviders.find((entry) => entry.id === providerId);
     if (provider?.requiresManualCode === true) {
       const shouldContinue = await confirm({
@@ -2470,38 +2469,38 @@ export function SettingsModal({
       }
     }
 
-    setAuthActionInProgress(providerId);
-    clearAuthLoginUiState(providerId);
+    setAuthActionInProgress((prev) => ({ ...prev, [stateKey]: true }));
+    clearAuthLoginUiState(stateKey);
 
     try {
-      const { url, instructions, manualCode, deviceCode } = await loginProvider(providerId);
+      const { url, instructions, manualCode, deviceCode } = await loginProvider(providerId, instanceId, label);
       if (instructions?.trim() && !(providerId === "github-copilot" && deviceCode)) {
-        setLoginInstructions((prev) => ({ ...prev, [providerId]: instructions }));
+        setLoginInstructions((prev) => ({ ...prev, [stateKey]: instructions }));
       }
       if (manualCode) {
-        setManualCodeConfigs((prev) => ({ ...prev, [providerId]: manualCode }));
+        setManualCodeConfigs((prev) => ({ ...prev, [stateKey]: manualCode }));
       }
       if (deviceCode && providerId === "github-copilot") {
-        setDeviceCodes((prev) => ({ ...prev, [providerId]: deviceCode }));
+        setDeviceCodes((prev) => ({ ...prev, [stateKey]: deviceCode }));
       }
       if (providerId !== "github-copilot" || !deviceCode) {
         openExternalUrl(appendTokenQuery(deviceCode?.verificationUri ?? url));
       }
 
       // Poll for auth completion every 2 seconds
-      pollIntervalRef.current = setInterval(async () => {
+      pollIntervalRef.current[stateKey] = setInterval(async () => {
         try {
-          const { providers } = await fetchAuthStatus();
+          const { providers } = await fetchAuthStatus({ provider: providerId, instance: instanceId });
           const visibleProviders = filterVisibleOnboardingAndSettingsProviders(providers);
           setAuthProviders(visibleProviders);
           const provider = visibleProviders.find((p) => p.id === providerId);
           if (provider?.authenticated) {
-            if (pollIntervalRef.current) {
-              clearInterval(pollIntervalRef.current);
-              pollIntervalRef.current = null;
+            if (pollIntervalRef.current[stateKey]) {
+              clearInterval(pollIntervalRef.current[stateKey]);
+              delete pollIntervalRef.current[stateKey];
             }
-            setAuthActionInProgress(null);
-            clearAuthLoginUiState(providerId);
+            setAuthActionInProgress((prev) => { const next = { ...prev }; delete next[stateKey]; return next; });
+            clearAuthLoginUiState(stateKey);
             addToast(t("settings.auth.loginSuccessful", "Login successful"), "success");
             window.dispatchEvent(new CustomEvent(OAUTH_RELOGIN_SUCCESS_EVENT, { detail: { providerId } }));
             scrollSettingsToTop();
@@ -2509,12 +2508,12 @@ export function SettingsModal({
           }
 
           if (!provider?.loginInProgress) {
-            if (pollIntervalRef.current) {
-              clearInterval(pollIntervalRef.current);
-              pollIntervalRef.current = null;
+            if (pollIntervalRef.current[stateKey]) {
+              clearInterval(pollIntervalRef.current[stateKey]);
+              delete pollIntervalRef.current[stateKey];
             }
-            setAuthActionInProgress(null);
-            clearAuthLoginUiState(providerId);
+            setAuthActionInProgress((prev) => { const next = { ...prev }; delete next[stateKey]; return next; });
+            clearAuthLoginUiState(stateKey);
             addToast(t("settings.auth.loginDidNotComplete", "Login did not complete. Please try again."), "error");
           }
         } catch {
@@ -2530,28 +2529,29 @@ export function SettingsModal({
       } else {
         addToast(message, "error");
       }
-      setAuthActionInProgress(null);
-      clearAuthLoginUiState(providerId);
+      setAuthActionInProgress((prev) => { const next = { ...prev }; delete next[stateKey]; return next; });
+      clearAuthLoginUiState(stateKey);
     }
   }, [addToast, authProviders, clearAuthLoginUiState, confirm, loadAuthStatus, scrollSettingsToTop]);
 
-  const handleSubmitManualCode = useCallback(async (providerId: string) => {
-    const code = manualCodeInputs[providerId]?.trim();
+  const handleSubmitManualCode = useCallback(async (providerId: string, instanceId?: string) => {
+    const stateKey = formatProviderInstanceKey({ providerId, instanceId: instanceId ?? "default" });
+    const code = manualCodeInputs[stateKey]?.trim();
     if (!code) {
       addToast(t("settings.auth.pasteRedirectUrlFirst", "Paste the full redirect URL or authorization code first."), "warning");
       return;
     }
 
-    setManualCodeSubmitInProgress(providerId);
+    setManualCodeSubmitInProgress(stateKey);
     try {
-      const result = await submitProviderManualCode(providerId, code);
+      const result = await submitProviderManualCode(providerId, code, instanceId);
       if (result.submitted) {
         setManualCodeInputs((prev) => {
-          if (!(providerId in prev)) {
+          if (!(stateKey in prev)) {
             return prev;
           }
           const next = { ...prev };
-          delete next[providerId];
+          delete next[stateKey];
           return next;
         });
         addToast(t("settings.auth.authCodeReceived", "Authorization code received. Finishing login…"), "success");
@@ -2565,58 +2565,59 @@ export function SettingsModal({
     }
   }, [addToast, manualCodeInputs]);
 
-  const handleCancelLogin = useCallback(async (providerId: string) => {
-    setAuthActionInProgress(providerId);
-    setAuthProviders((prev) => prev.map((provider) =>
-      provider.id === providerId ? { ...provider, loginInProgress: false } : provider,
-    ));
+  const handleCancelLogin = useCallback(async (providerId: string, instanceId?: string) => {
+    const stateKey = formatProviderInstanceKey({ providerId, instanceId: instanceId ?? "default" });
+    setAuthActionInProgress((prev) => ({ ...prev, [stateKey]: true }));
+    // Provider status is shared; do not optimistically clear a concurrent instance's login flag.
     try {
-      await cancelProviderLogin(providerId);
-      clearAuthLoginUiState(providerId);
+      await cancelProviderLogin(providerId, instanceId);
+      clearAuthLoginUiState(stateKey);
       await loadAuthStatus().catch(() => {});
       addToast(t("settings.auth.loginCancelled", "Login cancelled"), "success");
     } catch (err) {
       addToast(getErrorMessage(err) || "Failed to cancel login", "error");
     } finally {
-      setAuthActionInProgress(null);
-      setManualCodeSubmitInProgress((prev) => prev === providerId ? null : prev);
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
+      setAuthActionInProgress((prev) => { const next = { ...prev }; delete next[stateKey]; return next; });
+      setManualCodeSubmitInProgress((prev) => prev === stateKey ? null : prev);
+      if (pollIntervalRef.current[stateKey]) {
+        clearInterval(pollIntervalRef.current[stateKey]);
+        delete pollIntervalRef.current[stateKey];
       }
     }
   }, [addToast, clearAuthLoginUiState, loadAuthStatus]);
 
-  const handleLogout = useCallback(async (providerId: string) => {
-    setAuthActionInProgress(providerId);
+  const handleLogout = useCallback(async (providerId: string, instanceId?: string) => {
+    const stateKey = formatProviderInstanceKey({ providerId, instanceId: instanceId ?? "default" });
+    setAuthActionInProgress((prev) => ({ ...prev, [stateKey]: true }));
     try {
-      await logoutProvider(providerId);
+      await logoutProvider(providerId, instanceId);
       await loadAuthStatus();
       addToast(t("settings.auth.loggedOut", "Logged out"), "success");
     } catch (err) {
       addToast(getErrorMessage(err) || "Logout failed", "error");
     } finally {
-      setAuthActionInProgress(null);
+      setAuthActionInProgress((prev) => { const next = { ...prev }; delete next[stateKey]; return next; });
     }
   }, [addToast, loadAuthStatus]);
 
-  const handleSaveApiKey = useCallback(async (providerId: string) => {
-    const key = apiKeyInputs[providerId]?.trim();
+  const handleSaveApiKey = useCallback(async (providerId: string, instanceId?: string, label?: string) => {
+    const stateKey = formatProviderInstanceKey({ providerId, instanceId: instanceId ?? "default" });
+    const key = apiKeyInputs[stateKey]?.trim();
     if (!key) {
-      setApiKeyErrors((prev) => ({ ...prev, [providerId]: "API key is required" }));
+      setApiKeyErrors((prev) => ({ ...prev, [stateKey]: "API key is required" }));
       return;
     }
-    setAuthActionInProgress(providerId);
+    setAuthActionInProgress((prev) => ({ ...prev, [stateKey]: true }));
     setApiKeyErrors((prev) => {
       const next = { ...prev };
-      delete next[providerId];
+      delete next[stateKey];
       return next;
     });
     try {
-      const saveResult = await saveApiKey(providerId, key);
+      const saveResult = await saveApiKey(providerId, key, instanceId, label);
       setApiKeyInputs((prev) => {
         const next = { ...prev };
-        delete next[providerId];
+        delete next[stateKey];
         return next;
       });
       await loadAuthStatus();
@@ -2651,7 +2652,7 @@ export function SettingsModal({
         } else {
           setOpencodeApiKeyRefreshStatus((prev) => {
             const next = { ...prev };
-            delete next[providerId];
+            delete next[stateKey];
             return next;
           });
         }
@@ -2659,31 +2660,32 @@ export function SettingsModal({
       addToast(t("settings.auth.apiKeySaved", "API key saved"), "success");
       scrollSettingsToTop();
     } catch (err) {
-      setApiKeyErrors((prev) => ({ ...prev, [providerId]: getErrorMessage(err) || "Failed to save API key" }));
+      setApiKeyErrors((prev) => ({ ...prev, [stateKey]: getErrorMessage(err) || "Failed to save API key" }));
       if (providerId === "opencode" || providerId === "opencode-go") {
         setOpencodeApiKeyRefreshStatus((prev) => {
           const next = { ...prev };
-          delete next[providerId];
+          delete next[stateKey];
           return next;
         });
       }
     } finally {
-      setAuthActionInProgress(null);
+      setAuthActionInProgress((prev) => { const next = { ...prev }; delete next[stateKey]; return next; });
     }
   }, [apiKeyInputs, addToast, loadAuthStatus, scrollSettingsToTop]);
 
-  const handleClearApiKey = useCallback(async (providerId: string) => {
-    setAuthActionInProgress(providerId);
+  const handleClearApiKey = useCallback(async (providerId: string, instanceId?: string) => {
+    const stateKey = formatProviderInstanceKey({ providerId, instanceId: instanceId ?? "default" });
+    setAuthActionInProgress((prev) => ({ ...prev, [stateKey]: true }));
     try {
-      await clearApiKey(providerId);
+      await clearApiKey(providerId, instanceId);
       setApiKeyInputs((prev) => {
         const next = { ...prev };
-        delete next[providerId];
+        delete next[stateKey];
         return next;
       });
       setApiKeyErrors((prev) => {
         const next = { ...prev };
-        delete next[providerId];
+        delete next[stateKey];
         return next;
       });
       await loadAuthStatus();
@@ -2691,7 +2693,7 @@ export function SettingsModal({
     } catch (err) {
       addToast(getErrorMessage(err) || "Failed to clear API key", "error");
     } finally {
-      setAuthActionInProgress(null);
+      setAuthActionInProgress((prev) => { const next = { ...prev }; delete next[stateKey]; return next; });
     }
   }, [addToast, loadAuthStatus]);
 

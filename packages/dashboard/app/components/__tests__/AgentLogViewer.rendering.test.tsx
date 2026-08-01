@@ -334,6 +334,14 @@ describe("AgentLogViewer", () => {
     expect(content.classList.contains("agent-log-tool-detail-content--collapsed")).toBe(true);
   });
 
+  it("shows complete long tool output after expanding the output disclosure", () => {
+    const longDetail = `first line\n${"output ".repeat(45)}AGENT_LOG_RESULT_SUFFIX`;
+    render(<AgentLogViewer entries={[makeEntry({ text: "Bash", type: "tool_result", detail: longDetail })]} loading={false} />);
+
+    fireEvent.click(screen.getByTestId("tool-detail-toggle"));
+    expect(screen.getByTestId("tool-detail-content")).toHaveTextContent("AGENT_LOG_RESULT_SUFFIX");
+  });
+
   it("applies the viewer styling via the agent-log-viewer class", () => {
     const entries = [makeEntry()];
     const { container } = render(<AgentLogViewer entries={entries} loading={false} />);

@@ -1100,6 +1100,69 @@ describe("TaskCard", () => {
     }
   });
 
+  it("isolates mobile menu actions from card detail while intentional card taps still open it", async () => {
+    const cleanupGeometry = mockBoardContextMenuGeometry();
+    const onOpenDetail = vi.fn();
+    const onUnpauseTask = vi.fn(async () => makeTask());
+    const onPauseTask = vi.fn(async () => makeTask({ paused: true }));
+    try {
+      const { rerender } = render(
+        <TaskCard
+          task={makeTask({ paused: true, userPaused: true })}
+          onOpenDetail={onOpenDetail}
+          addToast={noop}
+          onUnpauseTask={onUnpauseTask}
+          onPauseTask={onPauseTask}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId("card-menu-btn-FN-001"));
+      await waitFor(() => expectBoardContextMenuPortaled());
+      const unpause = screen.getByRole("menuitem", { name: "Unpause" });
+      fireEvent.pointerDown(unpause, { pointerType: "touch", pointerId: 1 });
+      fireEvent.touchStart(unpause, { touches: [{ clientX: 20, clientY: 20 }] });
+      fireEvent.pointerUp(unpause, { pointerType: "touch", pointerId: 1 });
+      await waitFor(() => expect(onUnpauseTask).toHaveBeenCalledWith("FN-001"));
+      expect(onUnpauseTask).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(onOpenDetail).not.toHaveBeenCalled();
+
+      rerender(
+        <TaskCard
+          task={makeTask({ paused: false, userPaused: false })}
+          onOpenDetail={onOpenDetail}
+          addToast={noop}
+          onUnpauseTask={onUnpauseTask}
+          onPauseTask={onPauseTask}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId("card-menu-btn-FN-001"));
+      await waitFor(() => expectBoardContextMenuPortaled());
+      const pause = screen.getByRole("menuitem", { name: "Pause" });
+      fireEvent.pointerDown(pause, { pointerType: "touch", pointerId: 2 });
+      fireEvent.touchStart(pause, { touches: [{ clientX: 20, clientY: 20 }] });
+      fireEvent.pointerUp(pause, { pointerType: "touch", pointerId: 2 });
+      await waitFor(() => expect(onPauseTask).toHaveBeenCalledWith("FN-001"));
+      expect(onPauseTask).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(onOpenDetail).not.toHaveBeenCalled();
+
+      const card = document.querySelector(".card") as HTMLElement;
+      fireEvent.touchStart(card, {
+        touches: [{ clientX: 20, clientY: 20 }],
+        changedTouches: [{ clientX: 20, clientY: 20 }],
+      });
+      fireEvent.touchEnd(card, {
+        touches: [],
+        changedTouches: [{ clientX: 20, clientY: 20 }],
+      });
+      expect(onOpenDetail).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanupGeometry();
+    }
+  });
+
   it("suppresses native text selection when touch long-press opens the board card context menu", async () => {
     vi.useFakeTimers();
     const cleanupGeometry = mockBoardContextMenuGeometry();

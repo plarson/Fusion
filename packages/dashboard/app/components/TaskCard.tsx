@@ -3507,6 +3507,11 @@ function TaskCardComponent({
     );
   }
 
+  /*
+  FNXC:TaskCardMenu 2026-08-01-16:06:
+  React portal events bubble through the TaskCard owner tree even though this menu lives under document.body.
+  Stop every touch, pointer, compatibility-click, and keyboard path at the portal wrapper so selecting any menu action cannot invoke card detail opening while TaskContextMenu keeps its own dispatch and navigation behavior.
+  */
   return (
     <div
       ref={cardRef}
@@ -3539,8 +3544,20 @@ function TaskCardComponent({
           ref={contextMenuRef}
           className="task-card-context-menu-popover"
           style={{ left: contextMenuPosition.x, top: contextMenuPosition.y } as CSSProperties}
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerMove={(event) => event.stopPropagation()}
+          onPointerUp={(event) => event.stopPropagation()}
+          onPointerCancel={(event) => event.stopPropagation()}
+          onTouchStart={(event) => event.stopPropagation()}
+          onTouchMove={(event) => event.stopPropagation()}
+          onTouchEnd={(event) => event.stopPropagation()}
+          onTouchCancel={(event) => event.stopPropagation()}
           onClick={(event) => event.stopPropagation()}
-          onContextMenu={(event) => event.preventDefault()}
+          onKeyDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
         >
           <TaskContextMenu
             actions={contextMenuActions}

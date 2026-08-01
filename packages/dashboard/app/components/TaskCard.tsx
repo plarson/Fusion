@@ -3625,10 +3625,10 @@ function TaskCardComponent({
           >
             {statusBadgeLabel}
             {showQueuedBadge && task.overlapBlockedBy && (
-              <Layers className="card-queued-reason-icon" size={8} aria-hidden="true" data-testid={`card-queued-overlap-icon-${task.id}`} />
+              <Layers className="card-queued-reason-icon" size={7} aria-hidden="true" data-testid={`card-queued-overlap-icon-${task.id}`} />
             )}
             {showQueuedBadge && !task.overlapBlockedBy && task.blockedBy && (
-              <Link className="card-queued-reason-icon" size={8} aria-hidden="true" data-testid={`card-queued-dependency-icon-${task.id}`} />
+              <Link className="card-queued-reason-icon" size={7} aria-hidden="true" data-testid={`card-queued-dependency-icon-${task.id}`} />
             )}
           </span>
         )}

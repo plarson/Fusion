@@ -4896,7 +4896,7 @@ describe("TaskCard", () => {
     const icon = badge.querySelector(`[data-testid="${expectedIcon}-${queuedTask.id}"]`);
     expect(icon).not.toBeNull();
     expect(icon).toHaveClass("card-queued-reason-icon");
-    expect(icon).toHaveAttribute("size", "8");
+    expect(icon).toHaveAttribute("size", "7");
     expect(badge.querySelector(`[data-testid="${absentIcon}-${queuedTask.id}"]`)).toBeNull();
     expect(badge).toHaveAttribute("title", title);
     expect(container.querySelector(".queued-badge")).toBeNull();

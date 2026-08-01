@@ -66,6 +66,11 @@ import { attachAgentLinkSync } from "../task-agent-sync.js";
 import { createRunAuditor, generateSyntheticRunId } from "../run-audit.js";
 import { setImmediate as setImmediateCb } from "node:timers";
 import { seedPreReleasePlanReviewContinuation } from "../plan-review-continuation.js";
+import {
+  persistedTopLevelAgentTaskIdsFromStore,
+  projectAdmissionCoordinator,
+  resolveActiveTaskCapacityLimit,
+} from "../concurrency.js";
 
 /*
 FNXC:WorkflowResolvedColumns 2026-07-31-14:40 (fleet — long-tail fallback arms):
@@ -365,7 +370,9 @@ export interface DuePlanningContinuationDrainDeps {
   ) => Promise<void>;
   /** `item` is passed only so the caller's failure log can keep naming the work
    *  item verbatim; the extraction is otherwise a byte-for-byte body move. */
-  dispatch: (task: Task, item: WorkflowWorkItem) => void;
+  /** Return false when shared capacity rejected this item; later FIFO items
+   *  cannot fit either, so the bounded pass stops without repeating snapshots. */
+  dispatch: (task: Task, item: WorkflowWorkItem) => boolean | void | Promise<boolean | void>;
   nowMs: () => number;
   warn: (message: string) => void;
 }
@@ -420,8 +427,119 @@ export async function drainDuePlanningContinuations(
     const deferral = resolveParkedContinuationDeferral(resolved, deps.nowMs());
     if (deferral) await deps.defer(deferral);
     if (resolved.kind !== "actionable") continue;
-    deps.dispatch(resolved.task, resolved.item);
+    if (await deps.dispatch(resolved.task, resolved.item) === false) break;
   }
+}
+
+const planningContinuationRuns = new Set<string>();
+
+export async function admitPlanningContinuation(input: {
+  store: TaskStore;
+  projectId: string;
+  task: Task;
+  item: WorkflowWorkItem;
+  dispatch: () => Promise<void>;
+}): Promise<boolean> {
+  const runKey = `${input.projectId}:${input.task.id}`;
+  // A task owns one top-level slot regardless of how many durable continuation
+  // rows point at it. Treat a duplicate due row as already handled; admitting it
+  // would attach two releasers to one task-keyed coordinator reservation.
+  if (planningContinuationRuns.has(runKey)) return true;
+  const settings = await input.store.getSettings();
+  let selected = false;
+  let duplicateHandled = false;
+  const loadClaimSnapshot = async (): Promise<{ count: number; ids: string[] }> => {
+    /*
+    FNXC:WorkflowContinuationCapacity 2026-08-01-06:20:
+    A dependency-cleared task continuation can resume directly in a same-column Plan Review node.
+    That path does not cross the scheduler-owned hold→WIP boundary, so dispatching it directly let
+    the new reviewer become a tenth live task while maxWorktrees was nine. Count the exact canonical
+    live population (including pending workflow-step leases) and enter through the shared project
+    coordinator before the continuation starts. Full rows are intentional here: slim task snapshots
+    are not a contract for workflowStepResults, while a pending optional-step lease is a live agent.
+    */
+    const tasks = await input.store.listTasks({ slim: false, includeArchived: false });
+    const ids = await persistedTopLevelAgentTaskIdsFromStore(input.store, tasks);
+    return { count: ids.length, ids };
+  };
+  // Resuming another node of an already-live task is a same-slot handoff, not a
+  // new admission. Check only this fully hydrated task here; the project-wide
+  // snapshot belongs inside the serialized coordinator drain below.
+  const taskAlreadyActive = (await persistedTopLevelAgentTaskIdsFromStore(input.store, [input.task]))
+    .includes(input.task.id);
+  if (taskAlreadyActive) {
+    void input.dispatch().catch(() => {});
+    return true;
+  }
+  // This snapshot is intentionally created lazily inside the coordinator drain.
+  // A prior lane may have been finishing its own handoff before this task's
+  // turn; a pre-drain project snapshot can admit into its newly occupied slot.
+  let admissionSnapshot: Promise<{ count: number; ids: string[] }> | undefined;
+  const getAdmissionSnapshot = () => admissionSnapshot ??= loadClaimSnapshot();
+  await projectAdmissionCoordinator.admitOldest({
+    projectId: input.projectId,
+    maxConcurrent: resolveActiveTaskCapacityLimit({
+      maxConcurrent: settings.maxConcurrent ?? 2,
+      maxWorktrees: settings.maxWorktrees ?? 4,
+      worktreeLimitEnabled: settings.worktreeLimitEnabled,
+    }),
+    claimed: async () => (await getAdmissionSnapshot()).count,
+    claimedTaskIds: async () => (await getAdmissionSnapshot()).ids,
+    refresh: async () => [{
+      taskId: input.task.id,
+      projectId: input.projectId,
+      createdAt: input.item.createdAt ?? input.task.createdAt,
+      start: async () => {
+        // The preflight above is only a fast path. This serialized check is the
+        // ownership authority when concurrent drains race the same durable row.
+        if (planningContinuationRuns.has(runKey)) {
+          duplicateHandled = true;
+          // The coordinator's task-keyed Set already contains the ORIGINAL
+          // run's reservation. Accept this no-op candidate so its decline path
+          // cannot release capacity owned by that still-running workflow.
+          return true;
+        }
+        selected = true;
+        planningContinuationRuns.add(runKey);
+        // Keep the coordinator reservation for the whole resumed run. The task
+        // can remain canonically inactive until its first workflow node writes a
+        // pending lease; releasing at executor entry recreates the over-cap gap.
+        let run: Promise<void>;
+        try {
+          run = input.dispatch();
+        } catch (error) {
+          planningContinuationRuns.delete(runKey);
+          throw error;
+        }
+        void run
+          .finally(() => {
+            planningContinuationRuns.delete(runKey);
+            projectAdmissionCoordinator.releaseReservation(input.task.id);
+          })
+          .catch(() => {});
+      },
+    }],
+  });
+  return selected || duplicateHandled;
+}
+
+export function createPlanningContinuationDispatcher(input: {
+  store: TaskStore;
+  projectId: string;
+  execute: (task: Task) => Promise<void>;
+  onError?: (task: Task, item: WorkflowWorkItem, error: unknown) => void;
+}): (task: Task, item: WorkflowWorkItem) => Promise<boolean> {
+  return (task, item) => admitPlanningContinuation({
+    store: input.store,
+    projectId: input.projectId,
+    task,
+    item,
+    dispatch: async () => {
+      await input.execute(task).catch((error) => {
+        input.onError?.(task, item, error);
+      });
+    },
+  });
 }
 
 /**
@@ -2354,11 +2472,14 @@ export class InProcessRuntime
         },
         cancelOrphan: (item, reason) => this.cancelOrphanedWorkflowWorkItem(item, reason),
         defer: (deferral) => this.deferParkedWorkflowWorkItem(deferral),
-        dispatch: (task, item) => {
-          void this.executor.execute(task).catch((error) => {
+        dispatch: createPlanningContinuationDispatcher({
+          store: this.taskStore,
+          projectId: this.taskStore.getRootDir(),
+          execute: (task) => this.executor.execute(task),
+          onError: (_task, item, error) => {
             runtimeLog.error(`Workflow continuation ${item.id} failed:`, error);
-          });
-        },
+          },
+        }),
         nowMs: () => Date.now(),
         warn: (message) => runtimeLog.warn(message),
       });

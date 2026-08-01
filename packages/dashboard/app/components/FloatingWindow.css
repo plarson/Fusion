@@ -539,6 +539,22 @@ FN-8015 / issue #2140 requires every shared FloatingWindow caller to keep its ho
   overflow: auto;
 }
 
+/*
+FNXC:ModalTouchGeometry 2026-08-01-03:48:
+Tablet windows drop FN-8015's inline-end scrollbar gutter. On tablet the gutter reads as a
+too-big, uneven right border inside Task Detail popups and the floating terminal (the inner
+surfaces already carry their own symmetric padding), and the mouse conflict FN-8015 solves —
+grabbing a hosted scrollbar thumb versus the east resize hot zone — does not apply to touch
+input, which never grabs scrollbar thumbs. This keys on tablet MODE (`.floating-window--tablet`,
+set from `useViewportMode()`), not `--touch-geometry`, so a non-touch window at tablet widths
+gets the same symmetric inset the operator sees on an iPad. Desktop keeps the FN-8015 gutter.
+Callers that relied on the gutter as their right inset must compensate under the same class
+(see `.github-import-detail-panel`).
+*/
+.floating-window--tablet .floating-window__body {
+  margin-inline-end: 0;
+}
+
 .floating-window__body > * {
   flex: 1;
   min-width: 0;

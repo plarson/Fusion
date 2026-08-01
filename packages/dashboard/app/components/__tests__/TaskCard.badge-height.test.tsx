@@ -169,14 +169,41 @@ describe("TaskCard badge heights (FN-4369)", () => {
     }
 
     const sizeStyles = getComputedStyle(sizeBadge!);
-    expect(sizeStyles.height).toBe("var(--card-chip-height)");
-    expect(sizeStyles.minHeight).toBe("var(--card-chip-height)");
-    expect(sizeStyles.maxHeight).toBe("var(--card-chip-height)");
+    expect(sizeStyles.height).toBe(baselineStyles.height);
+    expect(sizeStyles.minHeight).toBe(baselineStyles.minHeight);
     expect(sizeStyles.paddingTop).toBe(baselineStyles.paddingTop);
     expect(sizeStyles.paddingBottom).toBe(baselineStyles.paddingBottom);
     expect(sizeStyles.borderTopWidth).toBe(baselineStyles.borderTopWidth);
     expect(sizeStyles.borderBottomWidth).toBe(baselineStyles.borderBottomWidth);
     expect(sizeStyles.lineHeight).toBe(baselineStyles.lineHeight);
+
+    cleanupCss();
+  });
+
+  it.each(["S", "M", "L"] as const)("keeps size %s on the status badge box geometry", (size) => {
+    const cleanupCss = mountCss();
+    const { container } = render(
+      <TaskCard
+        task={makeTask({ id: `FN-8665-${size}`, status: "planning" as Task["status"], size })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    const statusBadge = container.querySelector(".card-status-badge");
+    const sizeBadge = container.querySelector(".card-size-badge");
+    expect(statusBadge).toBeTruthy();
+    expect(sizeBadge).toBeTruthy();
+
+    const statusStyles = getComputedStyle(statusBadge!);
+    const sizeStyles = getComputedStyle(sizeBadge!);
+    expect(sizeStyles.height).toBe(statusStyles.height);
+    expect(sizeStyles.minHeight).toBe(statusStyles.minHeight);
+    expect(sizeStyles.paddingTop).toBe(statusStyles.paddingTop);
+    expect(sizeStyles.paddingBottom).toBe(statusStyles.paddingBottom);
+    expect(sizeStyles.borderTopWidth).toBe(statusStyles.borderTopWidth);
+    expect(sizeStyles.borderBottomWidth).toBe(statusStyles.borderBottomWidth);
+    expect(sizeStyles.lineHeight).toBe(statusStyles.lineHeight);
 
     cleanupCss();
   });

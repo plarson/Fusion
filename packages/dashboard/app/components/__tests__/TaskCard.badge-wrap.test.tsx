@@ -193,9 +193,9 @@ function expectSizeBadgeAfterTaskId(container: HTMLElement, expected: boolean) {
   expect(sizeStyles.alignItems).toBe("center");
   expect(sizeStyles.alignSelf).toBe("flex-start");
   expect(sizeStyles.lineHeight).toBe("1");
-  expect(sizeStyles.height).toMatch(resolvedChipHeightPattern);
-  expect(sizeStyles.minHeight).toMatch(resolvedChipHeightPattern);
-  expect(sizeStyles.maxHeight).toMatch(resolvedChipHeightPattern);
+  expect(sizeStyles.height).toBe("auto");
+  expect(sizeStyles.minHeight).toBe("auto");
+  expect(sizeStyles.maxHeight).toBe("none");
   expect(sizeBadge!.parentElement).toBe(header);
   expect(cardId.nextElementSibling).toBe(sizeBadge);
   expect(actions?.contains(sizeBadge)).toBe(false);
@@ -537,15 +537,15 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
 
     expect(sizeBadgeRule).toContain("align-self: flex-start;");
     expect(sizeBadgeRule).toContain("box-sizing: border-box;");
-    expect(sizeBadgeRule).toContain("height: var(--card-chip-height);");
-    expect(sizeBadgeRule).toContain("min-height: var(--card-chip-height);");
-    expect(sizeBadgeRule).toContain("max-height: var(--card-chip-height);");
     expect(sizeBadgeRule).not.toContain("align-self: center;");
+    for (const declaration of ["\n  height:", "\n  min-height:", "\n  max-height:"]) {
+      expectCssRuleNotToContain(loadedCss, ".card-size-badge", declaration);
+    }
     for (const section of [mobileSection, shortLandscapeSection]) {
       expectCssRuleToContain(section, ".card-size-badge", "align-self: flex-start;");
-      expectCssRuleToContain(section, ".card-size-badge", "height: var(--card-chip-height-mobile);");
-      expectCssRuleToContain(section, ".card-size-badge", "min-height: var(--card-chip-height-mobile);");
-      expectCssRuleToContain(section, ".card-size-badge", "max-height: var(--card-chip-height-mobile);");
+      for (const declaration of ["\n  height:", "\n  min-height:", "\n  max-height:"]) {
+        expectCssRuleNotToContain(section, ".card-size-badge", declaration);
+      }
     }
   });
 

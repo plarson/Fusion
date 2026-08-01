@@ -1,5 +1,19 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { createLogger, loggerWarn } = vi.hoisted(() => {
+  const loggerWarn = vi.fn();
+  return {
+    createLogger: vi.fn(() => ({ log: vi.fn(), debug: vi.fn(), warn: loggerWarn, error: vi.fn() })),
+    loggerWarn,
+  };
+});
+
+vi.mock("@fusion/core", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@fusion/core")>(),
+  createLogger,
+}));
+
 import { GitLabDeleteCloseService, decideGitLabDeleteAction } from "../gitlab-delete-close.js";
 
 function response(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }); }
@@ -20,7 +34,10 @@ function emit(s: ReturnType<typeof store>, task = sourceTask(), meta?: any) { s.
 async function flush() { await new Promise((resolve) => setImmediate(resolve)); }
 const opened = { iid: 42, title: "Issue", web_url: "url", state: "opened", labels: [] };
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  loggerWarn.mockClear();
+});
 
 describe("decideGitLabDeleteAction", () => {
   const issue = { kind: "project_issue" as const, project: "group/project", iid: 42, label: "group/project#42" };
@@ -85,13 +102,28 @@ describe("GitLabDeleteCloseService", () => {
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(3)); vi.useRealTimers();
   });
 
-  it("swallows close and non-deleted-row logging failures at the listener boundary", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  it("reports one structured warning without escaping or closing twice when the listener boundary fails", async () => {
     const failingLog = vi.fn().mockRejectedValue(new Error("audit unavailable"));
-    const s = store(failingLog); const fetch = vi.fn().mockResolvedValueOnce(response(opened)).mockResolvedValueOnce(response({ message: "forbidden" }, 403)); vi.stubGlobal("fetch", fetch);
-    new GitLabDeleteCloseService(s as any).start(); emit(s);
-    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
-    expect(warn).toHaveBeenCalledWith("[gitlab-delete-close]", expect.objectContaining({ taskId: "FN-8687" }), "audit unavailable");
+    const s = store(failingLog);
+    const fetch = vi.fn().mockResolvedValueOnce(response(opened)).mockResolvedValueOnce(response({ message: "forbidden" }, 403));
+    vi.stubGlobal("fetch", fetch);
+    const unhandled = vi.fn();
+    process.once("unhandledRejection", unhandled);
+
+    new GitLabDeleteCloseService(s as any).start();
+    emit(s);
+
+    await vi.waitFor(() => expect(loggerWarn).toHaveBeenCalledTimes(1));
+    await flush();
+    expect(createLogger).toHaveBeenCalledWith("dashboard-gitlab-delete-close");
+    expect(loggerWarn).toHaveBeenCalledWith("[gitlab-delete-close] listener failure", {
+      taskId: "FN-8687",
+      stage: "close",
+      error: "audit unavailable",
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(unhandled).not.toHaveBeenCalled();
+    process.removeListener("unhandledRejection", unhandled);
   });
 
   it("attaches idempotently and detaches all listeners on stop", async () => {

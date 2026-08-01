@@ -1,4 +1,6 @@
-import type { GithubIssueAction, Task, TaskDeleteClosureContext, TaskStore } from "@fusion/core";
+import { createLogger, type GithubIssueAction, type Task, type TaskDeleteClosureContext, type TaskStore } from "@fusion/core";
+
+const gitLabDeleteCloseLog = createLogger("dashboard-gitlab-delete-close");
 import { formatGitLabTargetLabel, resolveGitLabTarget, safeLogGitLabEntry, type GitLabLifecycleTarget } from "./gitlab-lifecycle.js";
 import { updateGitLabTargetState } from "./gitlab-tracking-state.js";
 
@@ -25,15 +27,16 @@ export function decideGitLabDeleteAction(
 }
 
 /*
-FNXC:GitLabCloseOnDelete 2026-08-01-10:46:
+FNXC:GitLabCloseOnDelete 2026-08-01-17:10:
 An ordinary delete closes a linked GitLab issue by default but never an MR: deleting a local task is
 not authority to abandon someone else's review. GitLab has no safe issue-delete client operation, so
 an explicit delete request degrades to close. This is independent of gitlabCloseSourceIssueOnDone,
 which governs task:moved only; this listener alone opts into malformed-tracking source fallback.
 
 The outer boundary must swallow every rejection because EventEmitter does not own async listener
-failures. Shared update/log helpers retain retry and deleted-row handling; any other failure gets one
-ID-only warning rather than an unhandled rejection or a second close attempt.
+failures. Shared update/log helpers retain retry and deleted-row handling; any other failure emits one
+structured warning with only task ID, lifecycle stage, and normalized error information rather than an
+unhandled rejection or a second close attempt.
 */
 export class GitLabDeleteCloseService {
   private readonly defaultStore: TaskStore;
@@ -86,8 +89,11 @@ export class GitLabDeleteCloseService {
       stage = "close";
       await updateGitLabTargetState(store, task.id, decision.target, "closed", "source");
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn("[gitlab-delete-close]", { taskId: task.id, stage }, message);
+      gitLabDeleteCloseLog.warn("[gitlab-delete-close] listener failure", {
+        taskId: task.id,
+        stage,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 }

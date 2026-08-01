@@ -76,7 +76,7 @@ import { sweepStaleAutostashes, VerificationError } from "./merger.js";
 import { runAiMerge, landWorkspaceTask, WorkspacePartialLandError, WorkspaceRepoLandBusyError } from "./merger-ai.js";
 import { promoteBranchGroup, type BranchGroupPromotionResult, type CreateGroupPrFn, type SyncGroupPrFn } from "./group-merge-coordinator.js";
 import {
-  computeTopLevelConcurrencyClaimedFromStore,
+  persistedTopLevelAgentTaskIdsFromStore,
   projectAdmissionCoordinator,
   resolveActiveTaskCapacityLimit,
 } from "./concurrency.js";
@@ -3893,6 +3893,12 @@ export class ProjectEngine {
             }
             let selected = false;
             const admissionSettings = await store.getSettings();
+            let mergeClaimSnapshot: Promise<{ count: number; ids: string[] }> | undefined;
+            const getMergeClaimSnapshot = () => mergeClaimSnapshot ??= (async () => {
+              const tasks = await store.listTasks({ slim: true, includeArchived: false });
+              const ids = await persistedTopLevelAgentTaskIdsFromStore(store, tasks);
+              return { count: ids.length, ids };
+            })();
             /*
             FNXC:ConcurrencyAdmission 2026-08-01-01:50 (ROOT CAUSE — triage admission died during every merge):
             This lane previously ran `value = await start()` INSIDE its admission `start()` callback —
@@ -3918,10 +3924,8 @@ export class ProjectEngine {
                 maxWorktrees: admissionSettings.maxWorktrees ?? 4,
                 worktreeLimitEnabled: admissionSettings.worktreeLimitEnabled,
               }),
-              claimed: async () => computeTopLevelConcurrencyClaimedFromStore({
-                store,
-                tasks: await store.listTasks({ slim: true, includeArchived: false }),
-              }),
+              claimed: async () => (await getMergeClaimSnapshot()).count,
+              claimedTaskIds: async () => (await getMergeClaimSnapshot()).ids,
               refresh: async () => [{
                 taskId,
                 projectId: cwd,

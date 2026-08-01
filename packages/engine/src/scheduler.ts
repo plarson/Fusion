@@ -2898,6 +2898,7 @@ export class Scheduler {
             taskId: task.id,
             maxConcurrent: activeTaskLimit,
             claimed: () => activeWorktreeTaskIds.length,
+            claimedTaskIds: () => activeWorktreeTaskIds,
           });
           if (!projectSlotReserved) {
             if (reservedScope) {
@@ -2940,65 +2941,77 @@ export class Scheduler {
           }
 
           let acquiredSymbols: string[] | undefined;
-          if (missionAdmission.kind === "symbol-lock") {
+          try {
+            if (missionAdmission.kind === "symbol-lock") {
             /*
             FNXC:MissionSymbolAdmission 2026-07-31-12:00:
             Acquire after all capacity gates and immediately before hold release;
             the reservation release path below returns this lock if moveTask
             rejects, while a successful move transfers ownership to the task.
             */
-            const lockResult = await this.store.acquireSymbolLocks(
-              missionAdmission.symbols,
-              { ownerTaskId: task.id, missionId: freshTask.missionId, featureId: missionAdmission.feature.id, agentId: "scheduler" },
-              SYMBOL_LOCK_LEASE_MS,
-            );
-            if (!lockResult.acquired) {
-              if (dropPreHeldExecutorSlot(task.id)) sem?.release();
-              if (reservedScope) {
-                activeScopes.delete(task.id);
-                activeScopeColumns.delete(task.id);
-              }
-              const conflict = lockResult.conflicts[0];
-              await this.store.updateTask(task.id, { status: "queued", blockedBy: null, overlapBlockedBy: null });
-              await this.logDispatchQueuedReason(
-                task.id,
-                `queued — symbol contention: symbol=${conflict?.symbolKey ?? "unknown"} holder=${conflict?.ownerTaskId ?? "unknown"}`,
+              const lockResult = await this.store.acquireSymbolLocks(
+                missionAdmission.symbols,
+                { ownerTaskId: task.id, missionId: freshTask.missionId, featureId: missionAdmission.feature.id, agentId: "scheduler" },
+                SYMBOL_LOCK_LEASE_MS,
               );
-              return null;
+              if (!lockResult.acquired) {
+                if (dropPreHeldExecutorSlot(task.id)) sem?.release();
+                if (reservedScope) {
+                  activeScopes.delete(task.id);
+                  activeScopeColumns.delete(task.id);
+                }
+                const conflict = lockResult.conflicts[0];
+                await this.store.updateTask(task.id, { status: "queued", blockedBy: null, overlapBlockedBy: null });
+                await this.logDispatchQueuedReason(
+                  task.id,
+                  `queued — symbol contention: symbol=${conflict?.symbolKey ?? "unknown"} holder=${conflict?.ownerTaskId ?? "unknown"}`,
+                );
+                return null;
+              }
+              acquiredSymbols = missionAdmission.symbols;
+              await this.store.logEntry(task.id, `symbol-lock admission acquired: ${missionAdmission.symbols.join(", ")}`);
             }
-            acquiredSymbols = missionAdmission.symbols;
-            await this.store.logEntry(task.id, `symbol-lock admission acquired: ${missionAdmission.symbols.join(", ")}`);
+
+            dispatchPrepByTaskId.set(task.id, {
+              baseBranch: this.resolveBaseBranch(freshTask, tasks, isReviewColumnTask),
+              dispatchStormCount: nextDispatchStormCount,
+              dispatchTimestamp,
+              effectiveNodeId: effectiveNode.nodeId ?? null,
+              effectiveNodeSource: effectiveNode.source,
+              task: freshTask,
+            });
+
+            reservedWorktreeSlots += 1;
+            reservedConcurrentSlots += 1;
+            let released = false;
+            return {
+              release: () => {
+                if (released) return;
+                released = true;
+                if (reservedScope) {
+                  activeScopes.delete(task.id);
+                  activeScopeColumns.delete(task.id);
+                }
+                reservedWorktreeSlots = releaseReservedSlot(reservedWorktreeSlots);
+                reservedConcurrentSlots = releaseReservedSlot(reservedConcurrentSlots);
+                dispatchPrepByTaskId.delete(task.id);
+                if (dropPreHeldExecutorSlot(task.id)) sem?.release();
+                if (acquiredSymbols) {
+                  void this.store.releaseSymbolLocks(acquiredSymbols, task.id);
+                }
+              },
+            };
+          } catch (error) {
+            if (dropPreHeldExecutorSlot(task.id)) sem?.release();
+            if (reservedScope) {
+              activeScopes.delete(task.id);
+              activeScopeColumns.delete(task.id);
+            }
+            if (acquiredSymbols) {
+              await this.store.releaseSymbolLocks(acquiredSymbols, task.id).catch(() => undefined);
+            }
+            throw error;
           }
-
-          dispatchPrepByTaskId.set(task.id, {
-            baseBranch: this.resolveBaseBranch(freshTask, tasks, isReviewColumnTask),
-            dispatchStormCount: nextDispatchStormCount,
-            dispatchTimestamp,
-            effectiveNodeId: effectiveNode.nodeId ?? null,
-            effectiveNodeSource: effectiveNode.source,
-            task: freshTask,
-          });
-
-          reservedWorktreeSlots += 1;
-          reservedConcurrentSlots += 1;
-          let released = false;
-          return {
-            release: () => {
-              if (released) return;
-              released = true;
-              if (reservedScope) {
-                activeScopes.delete(task.id);
-                activeScopeColumns.delete(task.id);
-              }
-              reservedWorktreeSlots = releaseReservedSlot(reservedWorktreeSlots);
-              reservedConcurrentSlots = releaseReservedSlot(reservedConcurrentSlots);
-              dispatchPrepByTaskId.delete(task.id);
-              if (dropPreHeldExecutorSlot(task.id)) sem?.release();
-              if (acquiredSymbols) {
-                void this.store.releaseSymbolLocks(acquiredSymbols, task.id);
-              }
-            },
-          };
         },
         allocateWorktree: (task, reservedNames) =>
           this.planWorktreePath(task, settings.worktreeNaming, reservedNames, settings),

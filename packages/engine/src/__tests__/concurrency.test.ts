@@ -1106,6 +1106,17 @@ describe("ProjectAdmissionCoordinator", () => {
     })).toBe(false);
     expect(started).toEqual(["FN-PLANNING"]);
 
+    // Once the selected task is durably live, its matching reservation is the
+    // same slot—not a second occupant—so the next real slot remains usable.
+    expect(await coordinator.reserveIfAvailable({
+      projectId: "project-a",
+      taskId: "FN-DIRECT-SCHEDULER",
+      maxConcurrent: 10,
+      claimed: () => 9,
+      claimedTaskIds: () => ["FN-PLANNING"],
+    })).toBe(true);
+
+    coordinator.releaseReservation("FN-DIRECT-SCHEDULER");
     coordinator.releaseReservation("FN-PLANNING");
   });
 

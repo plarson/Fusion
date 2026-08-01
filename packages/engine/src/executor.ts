@@ -21896,6 +21896,38 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
           this.totalSpawnedCount = Math.max(0, this.totalSpawnedCount - 1);
         };
 
+        /*
+        FNXC:CapacityModel 2026-08-01-02:40 (same class as the planning-admission gap, 374956ef23):
+        The FNXC above says a child "consumes both configured dimensions" — and then gated only ONE.
+        A child's worktree is not a task row, so the task-ledger gates never see it; count live
+        children against the worktree budget here at the acquisition source, like planning admission
+        now does. Runs AFTER the synchronous agent-slot reservation (its own TOCTOU rule: the awaits
+        in this check must not reopen the two-racing-spawns hole — the reservation is already held,
+        and a worktree refusal unwinds it). Absent/null maxWorktrees (worktrees off) falls through
+        to the agent gate alone, matching every other lane.
+        */
+        {
+          const spawnMaxWorktrees = (settings as { maxWorktrees?: number | null }).maxWorktrees ?? 4;
+          if (typeof spawnMaxWorktrees === "number" && Number.isFinite(spawnMaxWorktrees)) {
+            const spawnTasks = await this.store.listTasks({ slim: true, includeArchived: false });
+            const terminalColumns = await resolveProjectColumnsForRoles(this.store, ["complete", "archived"]);
+            const heldWorktrees = spawnTasks.filter((t) =>
+              !terminalColumns.has(t.column)
+              && typeof t.worktree === "string" && t.worktree.length > 0).length;
+            // totalSpawnedCount already includes THIS reservation; heldWorktrees covers task lanes.
+            if (heldWorktrees + this.totalSpawnedCount > spawnMaxWorktrees) {
+              releaseSpawnReservation();
+              return {
+                content: [{
+                  type: "text" as const,
+                  text: `Worktree capacity reached (${heldWorktrees + this.totalSpawnedCount - 1}/${spawnMaxWorktrees} held, including spawned child agent(s)). Wait for work to finish, or raise Max Worktrees.`,
+                }],
+                details: { agentId: "", state: "error" },
+              };
+            }
+          }
+        }
+
         try {
           // Create agent in AgentStore with reportsTo = parent task ID
           const agent = await this.options.agentStore.createAgent({

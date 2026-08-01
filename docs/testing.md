@@ -73,6 +73,10 @@ Public `@fusion/core` exports consumed by runtime tools should include a literal
 <!-- FNXC:EngineProcessRules 2026-06-26-03:58: FN-7056 adds a focused static guard for user-configured command paths. Keep the protected-path registry in the test file, not as a whole-file execSync ban, because engine git plumbing still has legitimate deterministic execSync uses. -->
 `packages/engine/src/__tests__/user-configured-command-no-execsync.test.ts` guards user-configured command execution helpers against accidental `execSync` usage or dropped async bounds. Its registry covers verification helpers, `fn_run_verification`, executor configured-command execution, merger post-merge script execution, routine command execution, and the native/bubblewrap/sandbox-exec sandbox backends. Each protected slice must keep the appropriate bounded async safeguard (`timeout`/`timeoutMs`, `maxBuffer`, or `maxLifetimeMs`). The test intentionally slices named function bodies instead of scanning whole files; deterministic git-plumbing `execSync` in merger/self-healing/already-merged/integration/worktree-prune paths and the executor git ancestry check are explicitly out of scope.
 
+## FNXC future-date advisory
+
+<!-- FNXC:FnxcStampHygiene 2026-08-01-01:30: The baseline ratchet prevents new future stamps but cannot say whether a tolerated stamp is physically plausible. Keep the advisory non-blocking so existing authors' records are visible without forcing a mass rewrite. -->
+`pnpm check:fnxc-future-dates` continues to block new future-dated stamps while reporting a non-blocking advisory for the existing population. It scans only `packages/`, `scripts/`, and `docs/`, classifying each future stamp as **timezone-plausible** (≤26h ahead), **suspect** (>26h through 48h), or **implausible** (>48h). Run `pnpm check:fnxc-future-dates -- --report-anomalies` for a read-only full census grouped by file and area; report mode never writes the baseline or fails the build.
 
 ## Lifecycle-column census (report-only)
 

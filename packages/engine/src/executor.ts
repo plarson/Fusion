@@ -9216,6 +9216,7 @@ export class TaskExecutor {
     task: TaskDetail,
     settings: Settings,
     nodeId: string,
+    refreshStaleBase = false,
   ): Promise<TaskDetail> {
     /*
     FNXC:WorkflowExecution 2026-06-29-08:21:
@@ -9271,6 +9272,7 @@ export class TaskExecutor {
           }),
         taskEnv: process.env,
         secretsStore: this.options.secretsStore,
+        refreshStaleBase,
       });
       this.addActiveWorktree(task.id, acquisition.worktreePath);
       if (!acquisition.isResume) {
@@ -9392,8 +9394,14 @@ export class TaskExecutor {
   ): Promise<void> {
     if (!requirement.requiresWorktree) return;
     const live = await this.store.getTask(nodeTask.id);
-    if (live.worktree && existsSync(live.worktree)) return;
-    const taskForAcquisition = live.worktree
+    const executionCodeNode = node.kind === "code";
+    if (live.worktree && existsSync(live.worktree) && !executionCodeNode) return;
+    /*
+    FNXC:WorktreeBaseRefresh 2026-08-01-16:32:
+    An existing code-node checkout must remain attached to the acquisition input so it takes the
+    guarded reuse/refresh path. Only a missing recorded path is cleared to permit fresh creation.
+    */
+    const taskForAcquisition = live.worktree && !existsSync(live.worktree)
       ? ({ ...live, worktree: undefined, sessionFile: undefined } as TaskDetail)
       : live;
     if (live.worktree) {
@@ -9412,7 +9420,13 @@ export class TaskExecutor {
     FNXC:WorkflowExecution 2026-06-29-09:50:
     The workflow graph decides which nodes require pre-execution lifecycle resources. This adapter only fulfills a graph-declared worktree requirement with executor-owned git mechanics; custom-node handlers remain ordinary node execution and no longer decide when to bootstrap task isolation.
     */
-    await this.ensureGraphCustomNodeWorktree(taskForAcquisition, settings, node.id);
+    /*
+    FNXC:WorktreeBaseRefresh 2026-08-01-16:04:
+    Code nodes are the sole graph implementation boundary. They reacquire an existing planning
+    worktree with refresh enabled before a model session can start; planning and review nodes keep
+    their C0 checkout so lane isolation does not become an implicit rebase policy.
+    */
+    await this.ensureGraphCustomNodeWorktree(taskForAcquisition, settings, node.id, executionCodeNode);
   }
 
   private async finalizeMergeConfirmedWorkflowGraphTask(taskId: string, reason: string): Promise<boolean> {
@@ -10122,6 +10136,19 @@ export class TaskExecutor {
   private isSessionContentionGraphFailure(result: WorkflowGraphTaskRunResult): boolean {
     if (this.graphFailureValue(result) === SESSION_CONTENTION_HOLD_VALUE) return true;
     return this.graphFailureErrorTexts(result).some((text) => isSessionContentionError(text));
+  }
+
+  /** True only for the pre-session refresh refusal values emitted by graph preparation. */
+  private isWorktreeBaseRefreshGraphFailure(result: WorkflowGraphTaskRunResult): boolean {
+    return new Set([
+      "stale-base-conflict",
+      "dirty-worktree",
+      "base-unresolvable",
+      "worktrunk-refresh-unsupported",
+      "git-refresh-failed",
+      "base-persistence-failed-compensated",
+      "base-reconciliation-required",
+    ]).has(this.graphFailureValue(result) ?? "");
   }
 
   /*
@@ -11294,6 +11321,39 @@ export class TaskExecutor {
       */
       if (this.isSessionContentionGraphFailure(result)) {
         await this.holdForSessionContention(task, live, result);
+        await this.persistTokenUsage(task.id);
+        return;
+      }
+      /*
+      FNXC:WorktreeBaseRefresh 2026-08-01-16:33:
+      Code-node acquisition publishes every stale/unknown checkout refusal as a typed graph value.
+      Keep it in the same bounded delayed-resume lane as other recoverable pre-session failures so
+      no handler runs, no failure edge mislabels it as a plan defect, and its exact reason survives
+      in the task log. Exhaustion deliberately leaves the task held for a later clean acquisition.
+      */
+      if (this.isWorktreeBaseRefreshGraphFailure(result)) {
+        const refreshKind = this.graphFailureValue(result)!;
+        const priorRetries = live.graphResumeRetryCount ?? 0;
+        if (priorRetries < MAX_TRANSIENT_GRAPH_RESUME_RETRIES) {
+          const nextRetries = priorRetries + 1;
+          const message = `Worktree base refresh blocked execution (${refreshKind}) — retrying in place (${nextRetries}/${MAX_TRANSIENT_GRAPH_RESUME_RETRIES})`;
+          await this.store.logEntry(task.id, message, undefined, this.getRunContextFor(task.id));
+          await this.store.updateTask(task.id, { graphResumeRetryCount: nextRetries }, this.getRunContextFor(task.id));
+          const scheduleRetry = () => {
+            this.execute(live).catch((err) =>
+              executorLog.error(`Failed worktree base refresh retry for ${task.id}:`, err),
+            );
+          };
+          const handle = setTimeout(scheduleRetry, TRANSIENT_GRAPH_RESUME_RETRY_BACKOFF_MS);
+          handle.unref?.();
+        } else {
+          await this.store.logEntry(
+            task.id,
+            `Worktree base refresh remains blocked (${refreshKind}) — retry budget exhausted; task remains held`,
+            undefined,
+            this.getRunContextFor(task.id),
+          );
+        }
         await this.persistTokenUsage(task.id);
         return;
       }
@@ -12966,6 +13026,7 @@ export class TaskExecutor {
               }),
             taskEnv,
             secretsStore: this.options.secretsStore,
+            refreshStaleBase: true,
           });
         } finally {
           this.unregisterConfiguredCommandController(task.id, taskCommandAbortController);

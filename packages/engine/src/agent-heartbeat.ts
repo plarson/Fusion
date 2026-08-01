@@ -87,7 +87,7 @@ FN-7672 requires durable agent error recovery to stay classification-gated: only
 FNXC:HeartbeatRecovery 2026-07-15-08:50:
 heartbeat-model-unavailable parks from assignment/on-demand runs were terminal until a human Retry, even when the next attempt succeeds with unchanged credentials (false "model unavailable" / registry / credential-probe blips). Admit those parks to the same bounded heartbeatErrorRecovery budget as error-state recovery so the engine auto-retries like operator Retry, while genuine missing credentials re-park after the budget exhausts.
 */
-import { acquireTaskWorktree } from "./worktree-acquisition.js";
+import { acquireTaskWorktree, WorktreeBaseRefreshError } from "./worktree-acquisition.js";
 import { createRunAuditor, generateSyntheticRunId, type DatabaseMutationType, type EngineRunContext } from "./run-audit.js";
 import { promptWithFallback } from "./pi.js";
 import { withRateLimitRetry } from "./rate-limit-retry.js";
@@ -2952,11 +2952,44 @@ export class HeartbeatMonitor {
               runContext,
               runInitCommand: false,
               secretsStore: this.secretsStore,
+              refreshStaleBase: true,
             });
             sessionCwd = acquisition.worktreePath;
           } catch (worktreeErr) {
             const detail = worktreeErr instanceof Error ? worktreeErr.message : String(worktreeErr);
+            const refreshKind = worktreeErr instanceof WorktreeBaseRefreshError
+              ? worktreeErr.refresh.kind
+              : undefined;
             heartbeatLog.warn(`Heartbeat worktree acquisition failed for ${agentId}: ${detail}`);
+
+            /*
+             * FNXC:WorktreeBaseRefresh 2026-08-01-16:33:
+             * Refresh refusals are deliberately recoverable pre-session parks, distinct from a
+             * broken acquisition. Their typed outcome remains in task/run records and is retried
+             * only on a later heartbeat after git state can change; never consume the generic
+             * three-strike acquisition budget or replace the reason with terminal failure.
+             */
+            if (refreshKind) {
+              if (!(await isTaskInTerminalLane(taskStore, taskDetail))) {
+                await taskStore.logEntry(
+                  taskDetail.id,
+                  `Worktree base refresh blocked heartbeat execution (${refreshKind})`,
+                  detail,
+                );
+                await taskStore.moveTask(
+                  taskDetail.id,
+                  await resolveHeartbeatReboundColumn(taskStore, taskDetail.id),
+                  { preserveProgress: true },
+                );
+              }
+              await this.completeRun(agentId, run.id, {
+                status: "completed",
+                resultJson: { reason: "worktree_base_refresh_blocked", refreshKind, detail },
+                stderrExcerpt: detail,
+                skipStateTransition: true,
+              });
+              return (await this.store.getRunDetail(agentId, run.id))!;
+            }
 
             /*
              * FNXC:WorktreeAcquisition 2026-07-09-00:00:

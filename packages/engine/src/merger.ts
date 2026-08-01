@@ -7099,6 +7099,11 @@ export async function aiMergeTask(
       projectRootDir,
     );
 
+    /*
+    FNXC:WorktreeBaseRefresh 2026-08-01-16:04:
+    Merge deliberately leaves refreshStaleBase off. The merge lane owns its rebase policy through
+    decideAutoPrerebase/runAutoPrerebase; refreshing here would double-rebase a branch after review.
+    */
     const acquisition = await acquireTaskWorktree({
       task,
       rootDir: projectRootDir,

@@ -4741,6 +4741,21 @@ export function TaskDetailContent({
                           "This project's plan-approval settings require a human decision before work starts. Review the plan below, then Approve Plan to continue to Todo or Reject Plan to regenerate it.",
                         )}
                   </p>
+                  {/*
+                  FNXC:PlanApproval 2026-08-01-06:34:
+                  Approval actions must sit beside the top approval message as well as in the persistent footer,
+                  so an operator can act without scrolling through a long task body.
+                  */}
+                  {workingTask.prompt && (
+                    <div className="detail-plan-approval-banner__actions" data-testid="detail-plan-approval-banner-actions">
+                      <button className="btn btn-primary btn-sm" data-testid="detail-plan-approval-banner-approve" onClick={handleApprovePlan}>
+                        {t("taskDetail.plan.approveBtn", "Approve Plan")}
+                      </button>
+                      <button className="btn btn-danger btn-sm" data-testid="detail-plan-approval-banner-reject" onClick={handleRejectPlan}>
+                        {t("taskDetail.plan.rejectBtn", "Reject Plan")}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
               <div className="detail-meta">
@@ -6779,10 +6794,10 @@ export function TaskDetailContent({
                   legacy rows with awaitingApprovalReason === "release-authorization"). */}
               {isAwaitingApproval && workingTask.prompt && (
                 <>
-                  <button className="btn btn-primary btn-sm" onClick={handleApprovePlan}>
+                  <button className="btn btn-primary btn-sm" data-testid="detail-plan-approval-footer-approve" onClick={handleApprovePlan}>
                     {t("taskDetail.plan.approveBtn", "Approve Plan")}
                   </button>
-                  <button className="btn btn-danger btn-sm" onClick={handleRejectPlan}>
+                  <button className="btn btn-danger btn-sm" data-testid="detail-plan-approval-footer-reject" onClick={handleRejectPlan}>
                     {t("taskDetail.plan.rejectBtn", "Reject Plan")}
                   </button>
                 </>

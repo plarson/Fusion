@@ -10,6 +10,7 @@ import {
   PRIORITY_SPECIFY,
   clearPreHeldExecutorSlotsForTests,
   computeTopLevelConcurrencyClaimed,
+  getPreHeldExecutorSlotsForTests,
   dropPreHeldExecutorSlot,
   hasPreHeldExecutorSlot,
   persistedTopLevelAgentSlots,
@@ -1068,6 +1069,61 @@ describe("AgentSemaphore resilience (FN-978)", () => {
 
 
 describe("ProjectAdmissionCoordinator", () => {
+  it("clears test-only coordinator and pre-held state across every shared category", async () => {
+    const coordinator = new ProjectAdmissionCoordinator();
+    const projectId = "project-reset";
+    let resolveClaim!: (value: number) => void;
+    const pendingClaim = new Promise<number>((resolve) => { resolveClaim = resolve; });
+
+    const drainingReservation = coordinator.reserveIfAvailable({
+      projectId,
+      taskId: "FN-DRAINING",
+      maxConcurrent: 4,
+      claimed: () => pendingClaim,
+    });
+    await Promise.resolve();
+    expect(coordinator.inspectProjectStateForTests(projectId).draining).toBe(true);
+
+    resolveClaim(0);
+    await drainingReservation;
+    expect(coordinator.inspectProjectStateForTests(projectId)).toMatchObject({
+      reservedCount: 1,
+      draining: false,
+    });
+
+    coordinator.registerProvider("specify:project-reset", {
+      projectId,
+      refresh: async () => [],
+    });
+    expect(coordinator.inspectProjectStateForTests(projectId).providerIds)
+      .toContain("specify:project-reset");
+
+    coordinator.clearReservationsForTests();
+    expect(coordinator.inspectProjectStateForTests(projectId)).toEqual({
+      reservedCount: 0,
+      draining: false,
+      providerIds: [],
+    });
+    expect(await coordinator.reserveIfAvailable({
+      projectId,
+      taskId: "FN-AFTER-DRAINING-RESET",
+      maxConcurrent: 1,
+      claimed: () => 0,
+    })).toBe(true);
+    coordinator.clearReservationsForTests();
+    coordinator.registerProvider("specify:project-reset", {
+      projectId,
+      refresh: async () => [],
+    });
+    expect(coordinator.inspectProjectStateForTests(projectId).providerIds)
+      .toEqual(["specify:project-reset"]);
+
+    registerPreHeldExecutorSlot("FN-PREHELD-RESET");
+    expect(getPreHeldExecutorSlotsForTests()).toContain("FN-PREHELD-RESET");
+    clearPreHeldExecutorSlotsForTests();
+    expect(getPreHeldExecutorSlotsForTests()).toEqual([]);
+  });
+
   it("shares the final active-task slot across planning, execution, and merge lanes", async () => {
     const coordinator = new ProjectAdmissionCoordinator();
     const started: string[] = [];

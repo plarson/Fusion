@@ -548,11 +548,15 @@ FN-6774 removes the saturated stuck-task edge stripe from board cards. Keep the 
 /*
 FNXC:TaskCardLayout 2026-08-01-04:48 (FN-8665):
 The size chip must derive its box from the shared header-chip padding, line-height, and border so it renders at the same height as status and metadata chips. As a direct child after .card-id, keep it anchored to the header's first row when the middle badge group wraps.
+
+FNXC:TaskCardLayout 2026-08-01-06:46 (FN-8675):
+Every task-card header badge must share the first-row vertical centerline. The direct size chip keeps FN-8665's intrinsic badge geometry, so offset it downward by the token-derived space that centers status and metadata chips inside `.card-header-badges` rather than giving it a divergent fixed row height.
 */
 .card-size-badge {
   align-self: flex-start;
   flex-shrink: 0;
   box-sizing: border-box;
+  transform: translateY(calc((var(--space-xs) * 3) / 4));
   letter-spacing: 0.5px;
 }
 
@@ -1689,10 +1693,14 @@ The mobile/short-landscape 28px ⋯ touch target must not expand .card-header-ac
   /*
   FNXC:TaskCardLayout 2026-08-01-04:48 (FN-8665):
   Narrow and short-landscape cards keep the size chip first-row anchored while its shared mobile text-chip rule supplies the same intrinsic height as neighboring badges.
+
+  FNXC:TaskCardLayout 2026-08-01-06:46 (FN-8675):
+  Mobile and short-landscape header badges require the same centered first-row alignment as desktop. Preserve the direct size chip's compact intrinsic geometry and apply the token-derived row-center offset instead of changing its height.
   */
   .card-size-badge {
     align-self: flex-start;
     box-sizing: border-box;
+    transform: translateY(calc((var(--space-xs) * 3) / 4));
   }
 
   .card-menu-btn {

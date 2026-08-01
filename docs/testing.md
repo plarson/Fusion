@@ -614,6 +614,12 @@ Prefer `it.each` over copy-pasted `it()` blocks. When trimming, keep: first case
 - Integration tests exercising real SQLite, real worker pool, or spawned processes.
 - Lean core/engine unit tests with low mock burden.
 
+## Test isolation for module-singleton state
+
+<!-- FNXC:ConcurrencyAdmission 2026-08-01-06:57: Module-singleton admission state can survive mocked lane starts and unstopped processors, silently consuming capacity in later tests. FN-8671 fixes that root cause without quarantine: stop tracked owners first, then clear shared state in a finally block and assert the result through read-only inspection seams. -->
+
+When a test owns a process-wide singleton that has asynchronous owners (timers, processors, or lane starts), use the same teardown in `beforeEach` and `afterEach`: await every tracked owner’s `stop()` with `Promise.allSettled`, then clear all shared state in a `finally` block. Do not clear first: a pending stop or callback can repopulate the singleton after the apparent reset. Test reset mutators establish cleanup; read-only inspection seams must prove reservations, mutex/draining state, registrations, and companion module-global slots are actually empty. Fix the isolation seam at the root rather than adding retries, wider timeouts, weakened assertions, or a quarantine entry.
+
 ## Standing Rule: Do Not Add Slow Tests (FN-5048)
 
 - Default new tests to narrow seams, in-memory fakes, shared harnesses, and targeted assertions.

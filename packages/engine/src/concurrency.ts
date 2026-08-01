@@ -105,6 +105,31 @@ export class ProjectAdmissionCoordinator {
     }
   }
 
+  /*
+  FNXC:ConcurrencyAdmission 2026-08-01-06:42:
+  The process-wide coordinator outlives tests whose stubbed lane start never
+  releases a reservation and whose processor is never stopped. Test-only reset
+  and inspection seams clear every shared category and prove cleanliness
+  observably, preventing silent project-capacity exhaustion in later tests.
+  */
+  clearReservationsForTests(): void {
+    this.reservations.clear();
+    this.draining.clear();
+    this.providers.clear();
+  }
+
+  inspectProjectStateForTests(projectId: string): {
+    reservedCount: number;
+    draining: boolean;
+    providerIds: string[];
+  } {
+    return {
+      reservedCount: this.reservationCount(projectId),
+      draining: this.draining.has(projectId),
+      providerIds: [...(this.providers.get(projectId)?.keys() ?? [])].sort(),
+    };
+  }
+
   private reservationCount(projectId: string): number {
     return this.reservations.get(projectId)?.size ?? 0;
   }
@@ -410,6 +435,11 @@ export function hasPreHeldExecutorSlot(taskId: string): boolean {
 export function clearPreHeldExecutorSlotsForTests(): void {
   preHeldExecutorSlots.clear();
   preHeldAdmissionReservations.clear();
+}
+
+/** Test-only read seam for asserting no pre-held executor handoffs survive teardown. */
+export function getPreHeldExecutorSlotsForTests(): string[] {
+  return [...preHeldExecutorSlots].sort();
 }
 
 /**

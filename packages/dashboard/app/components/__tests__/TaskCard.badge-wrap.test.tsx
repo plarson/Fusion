@@ -62,6 +62,7 @@ vi.mock("../../hooks/useToast", () => ({
 const noop = () => {};
 const resolvedChipHeightPattern = /^(var\(--card-chip-height\)|22px)$/;
 const centeredIdNudgePattern = /^translateY\(calc\(var\(--space-xs\) \/ 4\)\)$/;
+const centeredSizeBadgeOffset = "transform: translateY(calc((var(--space-xs) * 3) / 4));";
 
 function expectSharedHeaderBaseline(container: HTMLElement) {
   const header = container.querySelector(".card-header") as HTMLElement;
@@ -196,6 +197,7 @@ function expectSizeBadgeAfterTaskId(container: HTMLElement, expected: boolean) {
   expect(sizeStyles.height).toBe("auto");
   expect(sizeStyles.minHeight).toBe("auto");
   expect(sizeStyles.maxHeight).toBe("none");
+  expect(sizeStyles.transform).toBe("translateY(calc((var(--space-xs) * 3) / 4))");
   expect(sizeBadge!.parentElement).toBe(header);
   expect(cardId.nextElementSibling).toBe(sizeBadge);
   expect(actions?.contains(sizeBadge)).toBe(false);
@@ -581,14 +583,22 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
     const mobileSection = getCssBlocks(loadedCss, "max-width: 768px").join("\n");
     const shortLandscapeSection = getCssBlocks(loadedCss, "max-height: 480px").join("\n");
 
+    /*
+     * FNXC:TaskCardLayout 2026-08-01-06:46 (FN-8675):
+     * The direct size chip retains intrinsic badge dimensions for FN-8665 parity, then uses this
+     * token-derived offset to occupy the same first-row centerline as chips centered by the group.
+     * Check every responsive section because jsdom does not evaluate media queries during render.
+     */
     expect(sizeBadgeRule).toContain("align-self: flex-start;");
     expect(sizeBadgeRule).toContain("box-sizing: border-box;");
+    expect(sizeBadgeRule).toContain(centeredSizeBadgeOffset);
     expect(sizeBadgeRule).not.toContain("align-self: center;");
     for (const declaration of ["\n  height:", "\n  min-height:", "\n  max-height:"]) {
       expectCssRuleNotToContain(loadedCss, ".card-size-badge", declaration);
     }
     for (const section of [mobileSection, shortLandscapeSection]) {
       expectCssRuleToContain(section, ".card-size-badge", "align-self: flex-start;");
+      expectCssRuleToContain(section, ".card-size-badge", centeredSizeBadgeOffset);
       for (const declaration of ["\n  height:", "\n  min-height:", "\n  max-height:"]) {
         expectCssRuleNotToContain(section, ".card-size-badge", declaration);
       }

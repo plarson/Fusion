@@ -26,6 +26,38 @@ import {
   describeBacklogState,
 } from "../../../../scripts/lib/lifecycle-column-census.mjs";
 
+import { execFileSync as memoExecFileSync } from "node:child_process";
+
+/*
+FNXC:LifecycleColumnCensus 2026-07-31-17:12 (test wall-time — memoize identical full-repo census spawns):
+The census CLI parses every tracked source file to a TypeScript AST on each invocation (~2s for ~1960
+files). This suite spawned that identical read-only scan repeatedly — the `--json` census four times
+and the plain report twice — all against the same repo state within one run, so their output is
+deterministic and shareable. Memoizing a spawn's OUTPUT keyed by its exact argv collapses those
+duplicate full-AST scans to one apiece WITHOUT changing any assertion: every test still reads the same
+census result it read before, just from cache. This is the shared-harness discipline AGENTS.md's
+"Do Not Add Slow Tests" rule asks for, applied to existing spawns, not test-timeout appeasement.
+Only deterministic real-repo, default-env, no-baseline-override READS use this cache; baseline-mutating
+(`--update-baseline`/`--strict` fixtures) and env-varying (`--claims` with a stubbed `gh`) spawns keep
+their own process, since their output depends on inputs the argv cache cannot key on. These read-only
+commands always exit 0 (they report, never gate), so a cache miss cannot swallow a nonzero exit.
+*/
+const MEMO_CENSUS_CLI_PATH = new URL("../../../../scripts/lifecycle-column-census.mjs", import.meta.url).pathname;
+const MEMO_CENSUS_REPO_ROOT = new URL("../../../..", import.meta.url).pathname;
+const readOnlyCensusCache = new Map<string, string>();
+function readOnlyCensus(args: string[]): string {
+  const key = args.join("\u0000");
+  const cached = readOnlyCensusCache.get(key);
+  if (cached !== undefined) return cached;
+  const out = memoExecFileSync("node", [MEMO_CENSUS_CLI_PATH, ...args], {
+    encoding: "utf8",
+    cwd: MEMO_CENSUS_REPO_ROOT,
+    maxBuffer: 32 * 1024 * 1024,
+  }) as string;
+  readOnlyCensusCache.set(key, out);
+  return out;
+}
+
 function census(source: string) {
   return findComparisons("fixture.ts", source);
 }
@@ -509,7 +541,7 @@ describe("the baseline can always be re-recorded", () => {
     location, so an overridden list changes which paths are listed and not where they are read).
     */
     function fileWithGuards(): { file: string; count: number } | null {
-      const out = execFileSync("node", [cliPath, "--json"], { encoding: "utf8", cwd: repoRoot }) as string;
+      const out = readOnlyCensus(["--json"]);
       const parsed = JSON.parse(out) as { byFile: [string, number][] };
       const entry = parsed.byFile.find(([, count]) => count > 0);
       return entry ? { file: entry[0], count: entry[1] } : null;
@@ -520,7 +552,7 @@ describe("the baseline can always be re-recorded", () => {
          one command whose whole job is re-recording could not re-record. */
       const target = fileWithGuards();
       if (!target) {
-        const current = JSON.parse(execFileSync("node", [cliPath, "--json"], { encoding: "utf8", cwd: repoRoot }) as string);
+        const current = JSON.parse(readOnlyCensus(["--json"]));
         expect(current.totals.column).toBe(0);
         return;
       }
@@ -543,7 +575,7 @@ describe("the baseline can always be re-recorded", () => {
     it("exits 1 and LEAVES the baseline alone on a rise without --update-baseline", () => {
       const target = fileWithGuards();
       if (!target) {
-        const current = JSON.parse(execFileSync("node", [cliPath, "--json"], { encoding: "utf8", cwd: repoRoot }) as string);
+        const current = JSON.parse(readOnlyCensus(["--json"]));
         expect(current.totals.column).toBe(0);
         return;
       }
@@ -584,7 +616,7 @@ describe("the baseline can always be re-recorded", () => {
 
     /** The census's own current top file, so the fixture cannot rot as the backlog shrinks. */
     function topRemainingFile(): string | null {
-      const plain = execFileSync("node", [cliPath], { encoding: "utf8", cwd: repoRoot }) as string;
+      const plain = readOnlyCensus([]);
       const match = plain.match(/top files:\n\s+\d+\s+(\S+)/);
       return match?.[1] ?? null;
     }
@@ -592,7 +624,7 @@ describe("the baseline can always be re-recorded", () => {
     it("attributes a remaining file to the open PR that touches it", () => {
       const target = topRemainingFile();
       if (!target) {
-        const plain = execFileSync("node", [cliPath], { encoding: "utf8", cwd: repoRoot }) as string;
+        const plain = readOnlyCensus([]);
         expect(plain).toContain("BACKLOG ZERO");
         return;
       }
@@ -768,6 +800,15 @@ describe("the ratchet follows the count down", () => {
   const cliPath = `${repoRoot}scripts/lifecycle-column-census.mjs`;
   const realBaseline = `${repoRoot}scripts/lib/lifecycle-column-census-baseline.json`;
 
+  /*
+  FNXC:LifecycleColumnCensus 2026-07-31-17:12 (test wall-time): the `--update-baseline` tree-sync below
+  is identical fixture setup for every ratchet case — it produces the SAME tree-accurate baseline JSON
+  each time (one repo state, one run) — so run that full-AST census once and reuse the synced content.
+  The load-bearing assertion is each case's own second spawn (`args` against its mutated baseline), which
+  is untouched; only the shared setup scan is deduplicated.
+  */
+  let memoSyncedBaselineJson: string | undefined;
+
   async function run(mutate: (baseline: any) => string, args: string[], touchedPaths?: () => string) {
     const { mkdtemp, writeFile, readFile } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
@@ -793,8 +834,13 @@ describe("the ratchet follows the count down", () => {
     assert the CLI tightens by EXACTLY the inflation, which is the property they were written for,
     against whatever the tree currently holds.
     */
-    await writeFile(path, await readFile(realBaseline, "utf8"));
-    await runCli(["--strict", "--update-baseline"], path, "");
+    if (memoSyncedBaselineJson === undefined) {
+      await writeFile(path, await readFile(realBaseline, "utf8"));
+      await runCli(["--strict", "--update-baseline"], path, "");
+      memoSyncedBaselineJson = await readFile(path, "utf8");
+    } else {
+      await writeFile(path, memoSyncedBaselineJson);
+    }
 
     const baseline = JSON.parse(await readFile(path, "utf8"));
     const file = mutate(baseline);

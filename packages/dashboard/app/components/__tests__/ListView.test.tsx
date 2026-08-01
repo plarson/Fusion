@@ -63,7 +63,7 @@ vi.mock("../QuickEntryBox", () => ({
     onPlanningMode?: (initialPlan: string, workflowId?: string | null) => void;
     onSubtaskBreakdown?: (description: string, workflowId?: string | null) => void;
     workflowId?: string | null;
-    workflowOptions?: { id: string; name: string }[];
+    workflowOptions?: { id: string; name: string; columns?: Array<{ flags?: { manualIntake?: boolean } }> }[];
     defaultWorkflowId?: string | null;
     onMoveTask?: (id: string, column: string) => Promise<unknown>;
   }) => {
@@ -91,6 +91,11 @@ vi.mock("../QuickEntryBox", () => ({
         addToast(err instanceof Error ? err.message : "Failed to create task", "error");
       }
     };
+
+    const selectedWorkflow = workflowOptions?.find((option) => option.id === selectedWorkflowId);
+    const showStart = selectedWorkflowId === "builtin:coding-ideas"
+      || defaultWorkflowId === "builtin:coding-ideas"
+      || selectedWorkflow?.columns?.[0]?.flags?.manualIntake === true;
 
     const handoff = (callback?: (description: string, workflowId?: string | null) => void) => {
       const description = value.trim();
@@ -148,9 +153,11 @@ vi.mock("../QuickEntryBox", () => ({
           <button type="button" data-testid="quick-entry-save" onClick={() => void submit()}>
             Save
           </button>
-          <button type="button" data-testid="quick-entry-start" onClick={() => void onCreate?.({ description: "Started task", workflowId: "builtin:coding-ideas", column: "todo" })}>
-            Start
-          </button>
+          {showStart && (
+            <button type="button" data-testid="quick-entry-start" onClick={() => void onCreate?.({ description: "Started task", workflowId: "builtin:coding-ideas", column: "todo" })}>
+              Start
+            </button>
+          )}
           <button type="button" data-testid="quick-entry-move" onClick={() => void onMoveTask?.("FN-created", "todo")}>
             Move
           </button>
@@ -4102,14 +4109,14 @@ describe("ListView Quick Entry", () => {
         id: "builtin:coding-ideas",
         name: "Coding (Ideas)",
         columns: [
-          { id: "ideas", name: "Ideas", flags: { intake: true } },
+          { id: "ideas", name: "Ideas", flags: { intake: true, hold: true, manualIntake: true } },
           { id: "todo", name: "Todo", flags: { hold: true } },
         ],
       }],
       taskWorkflowIds: {},
     });
     renderListView({ onQuickCreate });
-    await screen.findByTestId("quick-entry-box");
+    await waitFor(() => expect(screen.getByTestId("quick-entry-workflow-props")).toHaveAttribute("data-default-workflow-id", "builtin:coding-ideas"));
     fireEvent.click(screen.getByTestId("quick-entry-start"));
 
     await waitFor(() => expect(onQuickCreate).toHaveBeenCalledWith(expect.objectContaining({
@@ -4117,6 +4124,27 @@ describe("ListView Quick Entry", () => {
       workflowId: "builtin:coding-ideas",
       column: "todo",
     })));
+  });
+
+  it.each([
+    ["desktop", mockDesktopViewport],
+    ["mobile", mockMobileViewport],
+  ])("does not expose Quick Add Start for Coding's merged intake/hold lane on %s", async (_label, mockViewport) => {
+    mockViewport();
+    vi.mocked(fetchBoardWorkflows).mockResolvedValue({
+      flagEnabled: true,
+      defaultWorkflowId: "builtin:coding",
+      workflows: [{
+        id: "builtin:coding",
+        name: "Coding",
+        columns: [{ id: "planning", name: "Planning", flags: { intake: true, hold: true } }],
+      }],
+      taskWorkflowIds: {},
+    });
+    renderListView({ onQuickCreate: vi.fn() });
+    await waitFor(() => expect(screen.getByTestId("quick-entry-workflow-props")).toHaveAttribute("data-default-workflow-id", "builtin:coding"));
+
+    expect(screen.queryByTestId("quick-entry-start")).toBeNull();
   });
 
   it("wires QuickEntry Start moves through the list host callback", async () => {

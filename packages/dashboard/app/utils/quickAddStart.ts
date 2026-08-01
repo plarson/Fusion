@@ -27,10 +27,17 @@ function visibleColumns(workflow: ValidatedQuickAddWorkflow) {
   return workflow.columns.filter((column) => !column.flags.archived && !column.flags.hiddenFromBoard);
 }
 
+/*
+ * FNXC:QuickAddStart 2026-07-31-23:51:
+ * Start is reserved for a workflow's first visible manual/waiting intake lane. `hold` alone is
+ * insufficient because the canonical merged Planning column carries both `intake` and `hold` while
+ * auto-triaging. Mirror TaskCard.showStartAction's server-derived `manualIntake` fact so absent
+ * older payload metadata fails closed without exposing an unusable Quick Add action.
+ */
 export function workflowSupportsQuickAddStart(workflow: ValidatedQuickAddWorkflow | null): boolean {
   if (!workflow) return false;
   if (workflow.id === "builtin:coding-ideas") return true;
-  return visibleColumns(workflow)[0]?.flags.hold === true;
+  return visibleColumns(workflow)[0]?.flags.manualIntake === true;
 }
 
 /**

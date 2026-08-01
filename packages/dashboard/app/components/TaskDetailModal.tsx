@@ -4521,6 +4521,7 @@ export function TaskDetailContent({
           </div>
         </div>
         <div className={`detail-body${activeTab === "chat" && activitySegment === "raw-logs" && !isEditing ? " detail-body--agent-log" : ""}${activeTab === "chat" && (activitySegment === "current" || isActivityExpanded) && !isEditing ? " detail-body--chat" : ""}${activeTab === "planner-chat" && !isEditing ? " detail-body--planner-chat" : ""}`}>
+          <div className="detail-body-content">
           {isEditing ? (
             <div className="modal-edit-form">
               <TaskForm
@@ -6955,6 +6956,7 @@ export function TaskDetailContent({
               </div>
             </>
           )}
+          </div>
         </div>
         {showRefineModal && (
           <div
@@ -6971,29 +6973,31 @@ export function TaskDetailContent({
                 </button>
               </div>
               <div className="detail-body">
-                <p className="detail-refine-help">
-                  {t("taskDetail.refine.help", "Describe what needs to be refined or improved...")}
-                </p>
-                <textarea
-                  className="detail-refine-textarea"
-                  value={refineFeedback}
-                  onChange={(e) => setRefineFeedback(e.target.value)}
-                  placeholder={t("taskDetail.refine.placeholder", "Enter your feedback here...")}
-                  rows={6}
-                  maxLength={2000}
-                  autoFocus
-                />
-                <div className="detail-refine-input-group">
-                  <div className="detail-refine-char-count">
-                    {t("taskDetail.refine.charCount", "{{count}}/2000 characters", { count: refineFeedback.length })}
+                <div className="detail-body-content">
+                  <p className="detail-refine-help">
+                    {t("taskDetail.refine.help", "Describe what needs to be refined or improved...")}
+                  </p>
+                  <textarea
+                    className="detail-refine-textarea"
+                    value={refineFeedback}
+                    onChange={(e) => setRefineFeedback(e.target.value)}
+                    placeholder={t("taskDetail.refine.placeholder", "Enter your feedback here...")}
+                    rows={6}
+                    maxLength={2000}
+                    autoFocus
+                  />
+                  <div className="detail-refine-input-group">
+                    <div className="detail-refine-char-count">
+                      {t("taskDetail.refine.charCount", "{{count}}/2000 characters", { count: refineFeedback.length })}
+                    </div>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={handleSubmitRefine}
+                      disabled={!refineFeedback.trim() || isRefining}
+                    >
+                      {isRefining ? t("taskDetail.refine.creating", "Creating...") : t("taskDetail.refine.createBtn", "Create Refinement Task")}
+                    </button>
                   </div>
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={handleSubmitRefine}
-                    disabled={!refineFeedback.trim() || isRefining}
-                  >
-                    {isRefining ? t("taskDetail.refine.creating", "Creating...") : t("taskDetail.refine.createBtn", "Create Refinement Task")}
-                  </button>
                 </div>
               </div>
               <div className="modal-actions">

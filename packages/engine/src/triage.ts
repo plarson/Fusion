@@ -2127,7 +2127,30 @@ export class TriageProcessor {
       two admission-reservation hand-offs. Only its use as an ADMISSION LIMIT is gone.
       */
       const projectRoom = Math.max(0, maxConcurrent - claimed);
-      const maxToStart = projectRoom;
+      /*
+      FNXC:CapacityModel 2026-08-01-02:15 (live breach — 8 planners on a maxWorktrees=4 board):
+      Planning admission gated ONLY on the agent count. Every planner acquires a REAL worktree
+      (plan-in-place), so admission must also respect the worktree budget — the same two-number
+      model the scheduler's dispatch gate enforces. This gap was invisible for days because the
+      merge-inside-admission-drain bug (00769fad7c) froze admission during every merge and
+      accidentally throttled planners; unfreezing it exposed 8 concurrent planning sessions and 11
+      worktrees on a 4-slot board within one restart.
+
+      The ledger mirrors the scheduler's: every non-terminal task HOLDING a worktree occupies a
+      slot, and a candidate that already holds one (replan re-entry) transfers rather than adds —
+      only worktree-less candidates consume remaining slots, so a held tree never blocks its own
+      resume. maxWorktrees is absent/null when worktrees are off; admission then falls back to the
+      agent gate alone.
+      */
+      const maxWorktrees = (settings as { maxWorktrees?: number | null }).maxWorktrees ?? 4;
+      let worktreeRoom = Number.POSITIVE_INFINITY;
+      if (typeof maxWorktrees === "number" && Number.isFinite(maxWorktrees)) {
+        const heldWorktrees = allTasks.filter((t) =>
+          t.column !== "done" && t.column !== "archived"
+          && typeof t.worktree === "string" && t.worktree.length > 0).length;
+        worktreeRoom = Math.max(0, maxWorktrees - heldWorktrees);
+      }
+      const maxToStart = Math.min(projectRoom, worktreeRoom);
 
       if (maxToStart <= 0 && triageTasks.length > 0) {
         const processingIds = [...this.processing].slice(0, 5);
@@ -2141,7 +2164,7 @@ export class TriageProcessor {
         queued?", and a named reason answers it even when there is only one — while
         a payload with no reason field at all would read as "unknown".
         */
-        const blockedBy = "running-agent cap";
+        const blockedBy = worktreeRoom <= 0 && projectRoom > 0 ? "worktree cap" : "running-agent cap";
         planLog.log(
           `Plan throttled by ${blockedBy}: eligible=${triageTasks.length} [${eligibleIds.join(", ")}], ` +
           `maxConcurrent=${maxConcurrent}, claimed=${claimed}, processing=${this.processing.size}` +
@@ -2237,7 +2260,20 @@ export class TriageProcessor {
       // Keep handoff reservations visible even when a test/runtime wrapper delays
       // the planner's synchronous processing claim until after this poll returns.
       const admittedThisPoll = new Set<string>();
-      for (let i = 0; i < Math.min(triageTasks.length, maxToStart); i++) {
+      /*
+      FNXC:CapacityModel 2026-08-01-02:20: the transfer rule from the scheduler ledger, applied at
+      admission — a candidate that already HOLDS a worktree (replan re-entry) reuses it, so it
+      spends only agent room, never a fresh worktree slot. Budgets decrement per admission below.
+      */
+      let agentBudget = projectRoom;
+      let worktreeBudget = worktreeRoom;
+      for (let i = 0; i < triageTasks.length; i++) {
+        if (agentBudget <= 0) break;
+        const candidate = triageTasks[i];
+        const candidateHoldsWorktree = typeof candidate.worktree === "string" && candidate.worktree.length > 0;
+        if (!candidateHoldsWorktree && worktreeBudget <= 0) continue;
+        agentBudget -= 1;
+        if (!candidateHoldsWorktree) worktreeBudget -= 1;
         await projectAdmissionCoordinator.admitOldest({
           // rootDir is the stable per-project identity held by this processor.
           projectId: this.rootDir,

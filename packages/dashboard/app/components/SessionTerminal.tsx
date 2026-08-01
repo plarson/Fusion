@@ -889,12 +889,14 @@ export function SessionTerminal({
         )}
       </header>
 
-      <div
-        className="cli-session-terminal__viewport"
-        ref={containerRef}
-        data-testid="cli-terminal-viewport"
-        style={terminalGlyphStyle}
-      />
+      <div className="cli-session-terminal__viewport-shell">
+        <div
+          className="cli-session-terminal__viewport"
+          ref={containerRef}
+          data-testid="cli-terminal-viewport"
+          style={terminalGlyphStyle}
+        />
+      </div>
 
       {showConfirmAdvance && !advanceDismissed && (
         <div className="cli-session-terminal__advance-strip" role="region">

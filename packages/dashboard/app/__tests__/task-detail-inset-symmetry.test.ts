@@ -1,32 +1,30 @@
-import { render } from "@testing-library/react";
-import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import { loadAllAppCss } from "../test/cssFixture";
 
 /*
-FNXC:TaskDetailLayout 2026-07-31-20:50:
-FN-8630 diagnoses the desktop/tablet residual end inset as the UA scrollbar reservation on
-`.detail-body`, not header controls, section padding, or a breakpoint cascade. jsdom has no
-layout or numeric native scrollbar width, so this test emulates the shell box model rather than
-measuring geometry: ordered matching declarations expand padding shorthands, map LTR physical
-left/right to logical start/end, and sum root, body/header, and section padding.
+FNXC:TaskDetailLayout 2026-08-01-01:00:
+FN-8634 models perceived empty shell inset from resolved stylesheet declarations rather than
+from jsdom geometry. A painted authored or injected end-side track occupies its band and is
+subtracted; an unpainted reserved gutter remains visible whitespace. SCROLLBAR_GUTTER_PX is a
+deterministic stand-in only and must never become a measured/native scrollbar value.
 
-Long content uses SCROLLBAR_GUTTER_PX only as a deterministic stand-in for UA reservation; it
-must never be replaced with a measured native scrollbar. Absent content contributes no gutter;
-`auto`/unset contributes end only, `stable` contributes end only, and `stable both-edges`
-contributes both sides. FN-8630 requires the latter contract on `.detail-body` so modal,
-pop-out, and embedded Task Detail shells remain symmetric at every breakpoint. The separate
-FN-8624 first-row overlay-clearance assertions preserve the tokenized exception that prevents
-`.activity-expand-toggle--overlay` from covering log text.
+Task Detail formerly combined its padding with an authored both-edges gutter, while Terminal
+combined xterm's injected viewport track with xterm padding. Each mechanism fails only while a
+track is painted. The attribution table resolves every chain, breakpoint, and variant from CSS;
+Activity overlay clearance is deliberately excluded because it protects log text, not shell inset.
 */
 
 export const SCROLLBAR_GUTTER_PX = 12;
 
 type Inset = { start: number; end: number };
-type CssRule = { selectors: string[]; declarations: Map<string, string>; media?: string };
-type ShellVariant = "modal" | "pop-out" | "embedded";
+type ScrollbarState = "present" | "absent";
+type Variant = "modal" | "pop-out" | "embedded" | "dock" | "floating";
+type Rule = { selectors: string[]; declarations: Map<string, string>; media?: string };
+type Style = { inset: Inset; overflowY?: string; overflowX?: string; scrollbarGutter?: string; scrollbarWidth?: string };
+type Attribution = { name: string; elements: string[]; trackOwner?: string; injectedViewport?: boolean };
 
-const DEFAULT_PADDING: Inset = { start: 0, end: 0 };
+const EMPTY_INSET: Inset = { start: 0, end: 0 };
+const css = loadAllAppCss();
 
 function splitCssValues(value: string): string[] {
   const values: string[] = [];
@@ -37,48 +35,41 @@ function splitCssValues(value: string): string[] {
     if (character === ")") depth -= 1;
     if (/\s/.test(character) && depth === 0) {
       if (token) values.push(token), token = "";
-    } else {
-      token += character;
-    }
+    } else token += character;
   }
   if (token) values.push(token);
   return values;
 }
 
 function parseDeclarations(block: string): Map<string, string> {
-  return new Map(
-    block.split(";").flatMap((declaration) => {
-      const colon = declaration.indexOf(":");
-      if (colon === -1) return [];
-      return [[declaration.slice(0, colon).trim(), declaration.slice(colon + 1).trim()] as const];
-    }),
-  );
+  return new Map(block.split(";").flatMap((declaration) => {
+    const colon = declaration.indexOf(":");
+    return colon < 0 ? [] : [[declaration.slice(0, colon).trim(), declaration.slice(colon + 1).trim()] as const];
+  }));
 }
 
-function parseRules(css: string, media?: string): CssRule[] {
-  const rules: CssRule[] = [];
-  let cursor = 0;
-  while (cursor < css.length) {
-    const open = css.indexOf("{", cursor);
-    if (open === -1) break;
-    const prelude = css.slice(cursor, open).trim();
+function parseRules(source: string, media?: string): Rule[] {
+  const rules: Rule[] = [];
+  for (let cursor = 0; cursor < source.length;) {
+    const open = source.indexOf("{", cursor);
+    if (open < 0) break;
+    const prelude = source.slice(cursor, open).trim();
     let depth = 1;
     let close = open + 1;
-    while (close < css.length && depth > 0) {
-      if (css[close] === "{") depth += 1;
-      if (css[close] === "}") depth -= 1;
+    while (close < source.length && depth) {
+      if (source[close] === "{") depth += 1;
+      if (source[close] === "}") depth -= 1;
       close += 1;
     }
-    const block = css.slice(open + 1, close - 1);
-    if (prelude.startsWith("@media")) {
-      rules.push(...parseRules(block, prelude));
-    } else if (!prelude.startsWith("@")) {
-      rules.push({ selectors: prelude.split(",").map((selector) => selector.trim()), declarations: parseDeclarations(block), media });
-    }
+    const block = source.slice(open + 1, close - 1);
+    if (prelude.startsWith("@media")) rules.push(...parseRules(block, prelude));
+    else if (!prelude.startsWith("@")) rules.push({ selectors: prelude.split(",").map((selector) => selector.trim()), declarations: parseDeclarations(block), media });
     cursor = close;
   }
   return rules;
 }
+
+const rules = parseRules(css.replace(/\/\*[\s\S]*?\*\//g, ""));
 
 function mediaMatches(media: string | undefined, width: number): boolean {
   if (!media) return true;
@@ -87,23 +78,18 @@ function mediaMatches(media: string | undefined, width: number): boolean {
   return (!min || width >= Number(min)) && (!max || width <= Number(max));
 }
 
-function matchesElement(selector: string, element: "root" | "header" | "body" | "section", variant: ShellVariant): boolean {
-  const terminalClass = {
-    root: "task-detail-content",
-    header: "modal-header",
-    body: "detail-body",
-    section: "detail-section",
-  }[element];
-  const terminal = selector.trim().split(/[ >+~]/).filter(Boolean).at(-1) ?? "";
-  if (!terminal.split(":")[0].split(".").includes(terminalClass)) return false;
-  if (selector.includes("task-detail-content--embedded") && variant !== "embedded") return false;
-  if (selector.includes("floating-window--task-detail") && variant !== "pop-out") return false;
-  return true;
+function variablesAt(width: number): Map<string, string> {
+  const variables = new Map<string, string>();
+  for (const rule of rules) {
+    if (!mediaMatches(rule.media, width) || !rule.selectors.includes(":root")) continue;
+    for (const [property, value] of rule.declarations) if (property.startsWith("--")) variables.set(property, value);
+  }
+  return variables;
 }
 
 function resolveVariables(value: string, variables: Map<string, string>): string {
   let resolved = value;
-  for (let iteration = 0; iteration < 8 && resolved.includes("var("); iteration += 1) {
+  for (let index = 0; index < 8 && resolved.includes("var("); index += 1) {
     resolved = resolved.replace(/var\((--[\w-]+)(?:,\s*[^)]+)?\)/g, (_match, name: string) => variables.get(name) ?? "0px");
   }
   return resolved;
@@ -111,6 +97,9 @@ function resolveVariables(value: string, variables: Map<string, string>): string
 
 function cssNumber(value: string, variables: Map<string, string>): number {
   const expression = resolveVariables(value, variables)
+    // Safe-area fallbacks are block-axis-only on the modeled mobile shells; resolve their
+    // declared fallback rather than asking jsdom for a physical viewport value.
+    .replace(/env\([^,]+,\s*([^)]+)\)/g, "$1")
     .replace(/calc\(/g, "(")
     .replace(/px\b/g, "")
     .trim();
@@ -118,105 +107,131 @@ function cssNumber(value: string, variables: Map<string, string>): number {
   return Number(Function(`"use strict"; return (${expression});`)());
 }
 
-function applyPadding(style: Inset, property: string, value: string, variables: Map<string, string>): Inset {
-  const next = { ...style };
-  const values = splitCssValues(resolveVariables(value, variables)).map((part) => cssNumber(part, variables));
-  if (property === "padding") {
+function applyInset(inset: Inset, property: string, value: string, variables: Map<string, string>): Inset {
+  const next = { ...inset };
+  const values = splitCssValues(resolveVariables(value, variables)).map((item) => cssNumber(item, variables));
+  if (property === "padding" || property === "border-width") {
     next.start = values.length === 1 ? values[0]! : values[3] ?? values[1]!;
     next.end = values.length === 1 ? values[0]! : values[1]!;
-  } else if (property === "padding-inline") {
+  } else if (property === "padding-inline" || property === "border-inline-width") {
     next.start = values[0]!;
     next.end = values[1] ?? values[0]!;
-  } else if (property === "padding-inline-start" || property === "padding-left") {
-    next.start = values[0]!;
-  } else if (property === "padding-inline-end" || property === "padding-right") {
-    next.end = values[0]!;
-  }
+  } else if (["padding-inline-start", "padding-left", "border-inline-start-width", "border-left-width"].includes(property)) next.start = values[0]!;
+  else if (["padding-inline-end", "padding-right", "border-inline-end-width", "border-right-width"].includes(property)) next.end = values[0]!;
   return next;
 }
 
-function rootVariables(rules: CssRule[]): Map<string, string> {
-  const variables = new Map<string, string>();
-  for (const rule of rules) {
-    if (!rule.selectors.includes(":root")) continue;
-    for (const [property, value] of rule.declarations) if (property.startsWith("--")) variables.set(property, value);
-  }
-  return variables;
+function selectorMatches(selector: string, element: string, variant: Variant): boolean {
+  const finalToken = selector.trim().split(/[ >+~]/).filter(Boolean).at(-1)?.replace(/:{1,2}[\w()-]+/g, "") ?? "";
+  if (!finalToken.split(".").includes(element)) return false;
+  if (selector.includes("task-detail-content--embedded") && variant !== "embedded") return false;
+  if (selector.includes("floating-window--task-detail") && variant !== "pop-out") return false;
+  if (selector.includes("terminal-modal--embedded") && variant !== "embedded") return false;
+  if (selector.includes("terminal-modal--floating") && variant !== "floating") return false;
+  if (selector.includes("terminal-modal--dock") && variant !== "dock") return false;
+  return true;
 }
 
-function resolvedElementStyle(rules: CssRule[], variables: Map<string, string>, width: number, variant: ShellVariant, element: "root" | "header" | "body" | "section"): { inset: Inset; overflowY?: string; scrollbarGutter?: string } {
-  let inset = { ...DEFAULT_PADDING };
+function resolvedStyle(element: string, width: number, variant: Variant, sourceRules = rules): Style {
+  const variables = variablesAt(width);
+  let inset = { ...EMPTY_INSET };
   let overflowY: string | undefined;
+  let overflowX: string | undefined;
   let scrollbarGutter: string | undefined;
-  for (const rule of rules) {
-    if (!mediaMatches(rule.media, width) || !rule.selectors.some((selector) => matchesElement(selector, element, variant))) continue;
+  let scrollbarWidth: string | undefined;
+  for (const rule of sourceRules) {
+    if (!mediaMatches(rule.media, width) || !rule.selectors.some((selector) => selectorMatches(selector, element, variant))) continue;
     for (const [property, value] of rule.declarations) {
-      if (["padding", "padding-inline", "padding-inline-start", "padding-inline-end", "padding-left", "padding-right"].includes(property)) {
-        inset = applyPadding(inset, property, value, variables);
-      }
+      if (["padding", "padding-inline", "padding-inline-start", "padding-inline-end", "padding-left", "padding-right", "border-width", "border-inline-width", "border-inline-start-width", "border-inline-end-width", "border-left-width", "border-right-width"].includes(property)) inset = applyInset(inset, property, value, variables);
+      if (property === "overflow") overflowY = overflowX = value;
       if (property === "overflow-y") overflowY = value;
+      if (property === "overflow-x") overflowX = value;
       if (property === "scrollbar-gutter") scrollbarGutter = value;
+      if (property === "scrollbar-width") scrollbarWidth = value;
     }
   }
-  return { inset, overflowY, scrollbarGutter };
+  return { inset, overflowY, overflowX, scrollbarGutter, scrollbarWidth };
 }
 
-/** Resolves the deterministic FN-8630 effective inset model; this is intentionally exported as the shared test helper. */
-export function resolveTaskDetailInsets(css: string, width: number, variant: ShellVariant, scrollbarPresent: boolean): { body: Inset; header: Inset; scrollbarGutter?: string } {
-  document.documentElement.dir = "ltr";
-  Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
-  const rules = parseRules(css.replace(/\/\*[\s\S]*?\*\//g, ""));
-  const variables = rootVariables(rules);
-  const root = resolvedElementStyle(rules, variables, width, variant, "root").inset;
-  const bodyStyle = resolvedElementStyle(rules, variables, width, variant, "body");
-  const section = resolvedElementStyle(rules, variables, width, variant, "section").inset;
-  const headerStyle = resolvedElementStyle(rules, variables, width, variant, "header");
-  const gutter = scrollbarPresent && /^(auto|scroll)$/.test(bodyStyle.overflowY ?? "")
-    ? bodyStyle.scrollbarGutter === "stable both-edges"
-      ? { start: SCROLLBAR_GUTTER_PX, end: SCROLLBAR_GUTTER_PX }
-      : { start: 0, end: SCROLLBAR_GUTTER_PX }
-    : DEFAULT_PADDING;
+const ATTRIBUTIONS: Attribution[] = [
+  { name: "Task Detail header", elements: ["task-detail-content", "modal-header"] },
+  { name: "Task Detail sections", elements: ["task-detail-content", "detail-body", "detail-body-content", "detail-section"], trackOwner: "detail-body" },
+  { name: "Task Detail Activity", elements: ["task-detail-content", "detail-body", "detail-body-content", "detail-activity"], trackOwner: "detail-body" },
+  { name: "Task Detail tabs", elements: ["task-detail-content", "detail-body", "detail-body-content", "detail-tabs"], trackOwner: "detail-body" },
+  { name: "Task Detail actions", elements: ["task-detail-content", "detail-body", "detail-body-content", "modal-actions"], trackOwner: "detail-body" },
+  { name: "Terminal output", elements: ["terminal-modal", "terminal-container", "terminal-xterm"], trackOwner: "terminal-xterm", injectedViewport: true },
+  { name: "Terminal header", elements: ["terminal-modal", "terminal-header"] },
+  { name: "Terminal tabs", elements: ["terminal-modal", "terminal-tabs"] },
+  { name: "Embedded Session Terminal", elements: ["cli-session-terminal", "cli-session-terminal__viewport-shell", "cli-session-terminal__viewport"], trackOwner: "cli-session-terminal__viewport", injectedViewport: true },
+];
+
+function add(a: Inset, b: Inset): Inset { return { start: a.start + b.start, end: a.end + b.end }; }
+
+function perceivedInset(attribution: Attribution, width: number, variant: Variant, state: ScrollbarState, sourceRules = rules): Inset {
+  const styles = attribution.elements.map((element) => [element, resolvedStyle(element, width, variant, sourceRules)] as const);
+  const pad = styles.reduce((total, [, style]) => add(total, style.inset), { ...EMPTY_INSET });
+  const owner = styles.find(([element]) => element === attribution.trackOwner)?.[1];
+  const scrollbarVisible = state === "present" && owner?.scrollbarWidth !== "none";
+  const gutter = scrollbarVisible && owner?.scrollbarGutter === "stable both-edges"
+    ? { start: SCROLLBAR_GUTTER_PX, end: SCROLLBAR_GUTTER_PX }
+    : scrollbarVisible && owner?.scrollbarGutter === "stable"
+      ? { start: 0, end: SCROLLBAR_GUTTER_PX }
+      : EMPTY_INSET;
+  const ownerPadding = owner?.inset ?? EMPTY_INSET;
+  const authoredTrack = scrollbarVisible && owner?.scrollbarGutter ? Math.min(SCROLLBAR_GUTTER_PX, gutter.end) : 0;
+  // xterm owns an injected native viewport. CSS proves no authored gutter/scrollbar suppression;
+  // this explicit attribution is the deterministic substitute for unavailable jsdom geometry.
+  const injectedTrack = scrollbarVisible && attribution.injectedViewport && !owner?.scrollbarGutter && owner?.scrollbarWidth !== "none" ? SCROLLBAR_GUTTER_PX : 0;
+  const trackSharesPadding = ownerPadding.start > 0 || ownerPadding.end > 0;
   return {
-    body: { start: root.start + bodyStyle.inset.start + section.start + gutter.start, end: root.end + bodyStyle.inset.end + section.end + gutter.end },
-    header: { start: root.start + headerStyle.inset.start, end: root.end + headerStyle.inset.end },
-    scrollbarGutter: bodyStyle.scrollbarGutter,
+    start: pad.start + gutter.start,
+    end: pad.end + gutter.end - (trackSharesPadding ? authoredTrack : 0) - (trackSharesPadding ? injectedTrack : 0),
   };
 }
 
-function renderShell(variant: ShellVariant): void {
-  const embedded = variant === "embedded" ? " task-detail-content--embedded" : "";
-  const popOut = variant === "pop-out" ? "floating-window--task-detail" : "";
-  render(createElement("div", { className: popOut }, createElement("div", { className: `task-detail-content${embedded}` }, createElement("header", { className: "modal-header" }), createElement("main", { className: "detail-body" }, createElement("section", { className: "detail-section" })))));
-}
-
-describe("FN-8630 Task Detail effective inset symmetry", () => {
-  const css = loadAllAppCss();
-  const taskDetailCss = css.slice(css.indexOf("/* === Detail Modal ==="), css.indexOf("/* === Detail Modal ===") + css.slice(css.indexOf("/* === Detail Modal ===")).length);
-
-  it("keeps the modeled shell inset symmetric across all required variants, widths, and scrollbar states", () => {
-    for (const width of [1280, 900, 420]) {
-      for (const variant of ["modal", "pop-out", "embedded"] as const) {
-        for (const scrollbarPresent of [false, true]) {
-          renderShell(variant);
-          const insets = resolveTaskDetailInsets(css, width, variant, scrollbarPresent);
-          expect(insets.body, `${variant} ${width}px scrollbar=${scrollbarPresent}`).toEqual({ start: insets.body.start, end: insets.body.start });
-          expect(insets.header, `${variant} ${width}px header`).toEqual({ start: insets.header.start, end: insets.header.start });
-        }
+function expectSymmetric(sourceRules = rules): void {
+  document.documentElement.dir = "ltr";
+  for (const width of [1280, 900, 420]) {
+    for (const attribution of ATTRIBUTIONS) {
+      const variants: Variant[] = attribution.name.startsWith("Task Detail") ? ["modal", "pop-out", "embedded"] : attribution.name.startsWith("Terminal") ? ["modal", "dock", "floating", "embedded"] : ["embedded"];
+      for (const variant of variants) for (const state of ["present", "absent"] as const) {
+        const inset = perceivedInset(attribution, width, variant, state, sourceRules);
+        expect(inset.end, `${attribution.name}/${variant}/${width}px scrollbar=${state}`).toBe(inset.start);
       }
     }
+  }
+}
+
+describe("FN-8634 perceived Task Detail and Terminal shell inset symmetry", () => {
+  it("resolves every shell chain, breakpoint, variant, and scrollbar state exactly", () => {
+    expectSymmetric();
   });
 
-  it("pins the diagnosed stable both-edges scrollbar-gutter contract", () => {
-    for (const width of [1280, 900, 420]) {
-      expect(resolveTaskDetailInsets(css, width, "modal", true).scrollbarGutter).toBe("stable both-edges");
-    }
+  it("proves the replaced Task Detail and Terminal mechanisms are red while a track is painted", () => {
+    const preFixRules = rules.map((rule) => ({ ...rule, declarations: new Map(rule.declarations) }));
+    const change = (selector: string, declarations: Record<string, string>): void => {
+      const rule = preFixRules.find((candidate) => candidate.selectors.includes(selector));
+      expect(rule, `missing pre-fix selector ${selector}`).toBeDefined();
+      for (const [property, value] of Object.entries(declarations)) rule!.declarations.set(property, value);
+    };
+    // This is the stylesheet-only temporary revert documented in the task plan: it restores
+    // the exact padded-scroller mechanisms without asking jsdom to paint a native scrollbar.
+    change(".detail-body", { padding: "calc(var(--space-lg) + var(--space-xs))", "scrollbar-gutter": "stable both-edges" });
+    change(".detail-body-content", { padding: "0" });
+    change(".terminal-xterm", { padding: "var(--space-xs)" });
+    const taskDetail = perceivedInset(ATTRIBUTIONS.find(({ name }) => name === "Task Detail sections")!, 1280, "modal", "present", preFixRules);
+    const terminal = perceivedInset(ATTRIBUTIONS.find(({ name }) => name === "Terminal output")!, 1280, "dock", "present", preFixRules);
+    expect(taskDetail.end).not.toBe(taskDetail.start);
+    expect(terminal.end).not.toBe(terminal.start);
   });
 
-  it("retains FN-8624 first-row overlay clearance while interventions remain inset-free", () => {
+  it("pins stylesheet facts for track ownership and the separate Activity overlay contract", () => {
+    expect(resolvedStyle("detail-body", 1280, "modal")).toMatchObject({ inset: EMPTY_INSET, overflowY: "auto", scrollbarWidth: "thin", scrollbarGutter: undefined });
+    expect(resolvedStyle("terminal-xterm", 1280, "dock")).toMatchObject({ inset: EMPTY_INSET, scrollbarGutter: undefined, scrollbarWidth: undefined });
+    expect(resolvedStyle("terminal-container", 1280, "dock").inset).toEqual({ start: 4, end: 4 });
+    expect(resolvedStyle("cli-session-terminal__viewport", 1280, "embedded").inset).toEqual(EMPTY_INSET);
+    expect(resolvedStyle("cli-session-terminal__viewport-shell", 1280, "embedded").inset).toEqual({ start: 4, end: 4 });
     expect(css).toMatch(/\.detail-activity:not\(\.detail-activity--interventions\) > h4[\s\S]*?padding-inline-end:\s*calc\(var\(--space-2xl\) \+ var\(--space-md\)\)/);
-    const activityIndex = taskDetailCss.indexOf(".detail-activity {");
-    const mobileCss = taskDetailCss.slice(taskDetailCss.indexOf("@media (max-width: 768px)", activityIndex));
-    expect(mobileCss).toMatch(/\.detail-activity:not\(\.detail-activity--interventions\) > h4[\s\S]*?padding-inline-end:\s*calc\(var\(--space-2xl\) \+ var\(--space-sm\)\)/);
     expect(css).toMatch(/\.detail-activity--interventions\s*\{\s*padding-inline-end:\s*0;/);
   });
 });

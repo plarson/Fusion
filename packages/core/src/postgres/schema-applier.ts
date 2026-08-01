@@ -54,7 +54,7 @@ FNXC:MissionTaskPrefix 2026-07-30-21:10 (rebase onto migrated main):
 SCHEMA_BASELINE_VERSION advances to 0038 for optional per-mission task_prefix — 0037 is the
 capacity-model table drop that landed while this PR was open.
 */
-export const SCHEMA_BASELINE_VERSION = "0038";
+export const SCHEMA_BASELINE_VERSION = "0039";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -173,6 +173,8 @@ second would read as already-applied and silently never run. Renumbered rather t
 is landed on real databases and its identity is immutable, per the MONITOR_APPROVAL note above.
 */
 export const MISSION_TASK_PREFIX_VERSION = "0038";
+/** FNXC:CredentialInstanceSelection 2026-08-01-05:43: explicit registration prevents migration 0039 from being silently skipped on upgraded PostgreSQL databases. */
+export const CREDENTIAL_INSTANCE_SELECTION_VERSION = "0039";
 
 /** SECURITY DEFINER helper that only inserts LEGACY_ADOPTION_DRAINED_MARKER. */
 export const LEGACY_ADOPTION_DRAINED_MARKER_FUNCTION = "fusion_mark_legacy_adoption_drained";
@@ -385,6 +387,7 @@ const MISSION_LINEAGE_STOP_MIGRATION_PATH = join(MIGRATIONS_DIR, "0035_fn_8543_m
 const CHAT_SESSION_TAGS_MIGRATION_PATH = join(MIGRATIONS_DIR, "0036_chat_session_tags.sql");
 const DROP_GLOBAL_CONCURRENCY_MIGRATION_PATH = join(MIGRATIONS_DIR, "0037_drop_global_concurrency.sql");
 const MISSION_TASK_PREFIX_MIGRATION_PATH = join(MIGRATIONS_DIR, "0038_mission_task_prefix.sql");
+const CREDENTIAL_INSTANCE_SELECTION_MIGRATION_PATH = join(MIGRATIONS_DIR, "0039_fn_8660_credential_instance_selection.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -493,6 +496,7 @@ export async function applySchemaBaseline(
     const chatSessionTagsAlreadyApplied = applied.includes(CHAT_SESSION_TAGS_VERSION);
     const dropGlobalConcurrencyAlreadyApplied = applied.includes(DROP_GLOBAL_CONCURRENCY_VERSION);
     const missionTaskPrefixAlreadyApplied = applied.includes(MISSION_TASK_PREFIX_VERSION);
+    const credentialInstanceSelectionAlreadyApplied = applied.includes(CREDENTIAL_INSTANCE_SELECTION_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -1039,6 +1043,14 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(MISSION_TASK_PREFIX_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${MISSION_TASK_PREFIX_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+
+    /* FNXC:CredentialInstanceSelection 2026-08-01-05:43: upgraded task rows need nullable persisted instance companions before model-selection writers can store them; this is data-only and does not resolve credentials at runtime. */
+    if (!credentialInstanceSelectionAlreadyApplied) {
+      const migrationSql = await readFile(CREDENTIAL_INSTANCE_SELECTION_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${CREDENTIAL_INSTANCE_SELECTION_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
 

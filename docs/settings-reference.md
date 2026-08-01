@@ -1865,3 +1865,20 @@ Project-scoped ordered list of up to six mobile footer quick actions. The defaul
 ### Plugin-provided MCP servers
 
 Enabled plugins may declare `mcpServers` declaratively. The contribution is project-scoped: only plugins enabled in that project's plugin state participate. Resolution is global → enabled plugin declarations → project settings, by server `name`; later declarations win and a project `enabled:false` entry removes an inherited plugin server. The Global MCP card never includes plugin declarations. Project MCP UI identifies them as `plugin:<id>` and writes only project overrides or tombstones.
+
+### Credential instance companions
+
+Every provider/model selection can now persist an optional `*CredentialInstanceId` companion: the
+project/global default and fallback pairs, per-lane project/global pairs, selected-workflow lane
+values, and task overrides. `ModelPreset` entries similarly accept
+`executorCredentialInstanceId` and `validatorCredentialInstanceId`. These fields follow the same
+scope and precedence as their sibling `*Provider`/`*ModelId` pair; the instance belongs only to the
+winning pair and is omitted when unset.
+
+Credential instance ids are validated when authored. Invalid values (including empty,
+whitespace-only, bracket-containing, oversized, or non-string values) are rejected for project and
+global settings, workflow setting values, workflow IR node overrides, and task writes. Settings
+validation also visits every `modelPresets[]` element: one invalid executor or validator instance
+id rejects the entire settings write without changing the stored presets. These values are
+persisted-but-inert in this release; runtime credential resolution will consume them in the
+follow-up runtime-resolution work.

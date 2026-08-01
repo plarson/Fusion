@@ -227,6 +227,8 @@ export interface CentralClaimStore {
 export interface TaskTokenUsagePerModel {
   /** Provider of the actually-used model for this bucket. */
   modelProvider?: string;
+  /** Optional credential instance for `modelProvider`; persisted but inert until runtime resolution. */
+  credentialInstanceId?: string;
   /** Id of the actually-used model for this bucket. */
   modelId?: string;
   /** Cumulative prompt/input tokens consumed by this model for the task. */
@@ -272,6 +274,8 @@ export interface TaskTokenUsage {
    * Snapshot the provider of the actually-used model for analytics only. This is intentionally distinct from task.modelProvider, which is an own-model override used by model resolution and must not be written by token bookkeeping.
    */
   modelProvider?: string;
+  /** Optional credential instance for `modelProvider`; persisted but inert until runtime resolution. */
+  credentialInstanceId?: string;
   /**
    * FNXC:TokenAnalytics 2026-06-18-16:23:
    * Snapshot the id of the actually-used model for analytics only. This is intentionally distinct from task.modelId, which is an own-model override used by model resolution and must not be written by token bookkeeping.
@@ -790,10 +794,17 @@ export interface Task {
   reviewLevel?: number;
   /** Model preset selected during task creation. Presets resolve to concrete model overrides at creation time. */
   modelPresetId?: string;
+  /*
+   * FNXC:CredentialInstanceSelection 2026-08-01-05:43:
+   * Task model overrides persist optional credential-instance ids alongside their provider/model
+   * pairs. This slice stores and resolves the value only; runtime credential use is unchanged.
+   */
   /** AI model provider override for the executor agent (e.g., "anthropic").
    *  Must be set together with `modelId`. When both model fields are undefined,
    *  the executor uses global settings defaults. */
   modelProvider?: string;
+  /** Optional credential instance for `modelProvider`; persisted but inert until runtime resolution. */
+  credentialInstanceId?: string;
   /** AI model ID override for the executor agent (e.g., "claude-sonnet-4-5").
    *  Must be set together with `modelProvider`. When both model fields are undefined,
    *  the executor uses global settings defaults. */
@@ -802,6 +813,8 @@ export interface Task {
    *  Must be set together with `validatorModelId`. When both validator model fields
    *  are undefined, the reviewer uses global settings defaults. */
   validatorModelProvider?: string;
+  /** Optional credential instance for `validatorModelProvider`; persisted but inert until runtime resolution. */
+  validatorCredentialInstanceId?: string;
   /** AI model ID override for the validator/reviewer agent.
    *  Must be set together with `validatorModelProvider`. When both validator model
    *  fields are undefined, the reviewer uses global settings defaults. */
@@ -810,6 +823,8 @@ export interface Task {
    *  Must be set together with `planningModelId`. When both planning model fields
    *  are undefined, the triage agent uses global settings defaults. */
   planningModelProvider?: string;
+  /** Optional credential instance for `planningModelProvider`; persisted but inert until runtime resolution. */
+  planningCredentialInstanceId?: string;
   /** AI model ID override for the planning/triage agent.
    *  Must be set together with `planningModelProvider`. When both planning model
    *  fields are undefined, the triage agent uses global settings defaults. */
@@ -819,6 +834,8 @@ export interface Task {
    * Per-task merger overrides take precedence over the project/global merger lane only when both fields are set; merger sessions otherwise retain their existing settings-based resolution.
    */
   mergerModelProvider?: string;
+  /** Optional credential instance for `mergerModelProvider`; persisted but inert until runtime resolution. */
+  mergerCredentialInstanceId?: string;
   /** Must be set together with `mergerModelProvider`. */
   mergerModelId?: string;
   /** IDs of workflow steps enabled for this task, run after implementation completes */
@@ -1354,10 +1371,17 @@ export interface TaskCreateInput {
   workflowId?: string | null;
   /** Model preset selected during task creation. Presets resolve to concrete model overrides at creation time. */
   modelPresetId?: string;
+  /*
+   * FNXC:CredentialInstanceSelection 2026-08-01-05:43:
+   * Task model overrides persist optional credential-instance ids alongside their provider/model
+   * pairs. This slice stores and resolves the value only; runtime credential use is unchanged.
+   */
   /** AI model provider override for the executor agent (e.g., "anthropic").
    *  Must be set together with `modelId`. When both model fields are undefined,
    *  the executor uses global settings defaults. */
   modelProvider?: string;
+  /** Optional credential instance for `modelProvider`; persisted but inert until runtime resolution. */
+  credentialInstanceId?: string;
   /** AI model ID override for the executor agent (e.g., "claude-sonnet-4-5").
    *  Must be set together with `modelProvider`. When both model fields are undefined,
    *  the executor uses global settings defaults. */
@@ -1366,6 +1390,8 @@ export interface TaskCreateInput {
    *  Must be set together with `validatorModelId`. When both validator model fields
    *  are undefined, the reviewer uses global settings defaults. */
   validatorModelProvider?: string;
+  /** Optional credential instance for `validatorModelProvider`; persisted but inert until runtime resolution. */
+  validatorCredentialInstanceId?: string;
   /** AI model ID override for the validator/reviewer agent.
    *  Must be set together with `validatorModelProvider`. When both validator model
    *  fields are undefined, the reviewer uses global settings defaults. */
@@ -1374,12 +1400,16 @@ export interface TaskCreateInput {
    *  Must be set together with `planningModelId`. When both planning model fields
    *  are undefined, the triage agent uses global settings defaults. */
   planningModelProvider?: string;
+  /** Optional credential instance for `planningModelProvider`; persisted but inert until runtime resolution. */
+  planningCredentialInstanceId?: string;
   /** AI model ID override for the planning/triage agent.
    *  Must be set together with `planningModelProvider`. When both planning model
    *  fields are undefined, the triage agent uses global settings defaults. */
   planningModelId?: string;
   /** Per-task merger override; provider and model id must be supplied together. */
   mergerModelProvider?: string;
+  /** Optional credential instance for `mergerModelProvider`; persisted but inert until runtime resolution. */
+  mergerCredentialInstanceId?: string;
   mergerModelId?: string;
   /** Thinking level for AI agent sessions — controls reasoning effort (off/minimal/low/medium/high) */
   thinkingLevel?: ThinkingLevel;

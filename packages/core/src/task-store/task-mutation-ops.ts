@@ -48,9 +48,9 @@ export function getTaskSelectClauseWithActivityLogLimitImpl(store: TaskStore, li
     const columns = [
       "id", "lineageId", "title", "description", "priority", "\"column\"", "status", "size", "reviewLevel", "currentStep",
       "worktree", "blockedBy", "overlapBlockedBy", "paused", "pausedReason", "userPaused", "baseBranch", "branch", "autoMerge", "autoMergeProvenance", "executionStartBranch", "baseCommitSha",
-      "modelPresetId", "modelProvider", "modelId",
-      "validatorModelProvider", "validatorModelId",
-      "planningModelProvider", "planningModelId", "mergerModelProvider", "mergerModelId",
+      "modelPresetId", "modelProvider", "credentialInstanceId", "modelId",
+      "validatorModelProvider", "validatorCredentialInstanceId", "validatorModelId",
+      "planningModelProvider", "planningCredentialInstanceId", "planningModelId", "mergerModelProvider", "mergerCredentialInstanceId", "mergerModelId",
       "mergeRetries", "workflowStepRetries", "stuckKillCount", "resumeLimboCount", "executeRequeueLoopCount", "graphResumeRetryCount", "consecutiveToolFailureRetryCount", "executorEscalationAttempted", "toolFailureDetectorLogCursor", "toolFailureRetryExhaustedAuditEmitted", "resumeLimboTipSha", "resumeLimboStepSignature", "executeRequeueLoopSignature", "postReviewFixCount", "planReviewReplanCount", "recoveryRetryCount", "taskDoneRetryCount", "bulkCompletionRefusalAt", "worktreeSessionRetryCount", "completionHandoffLimboRecoveryCount", "verificationFailureCount", "mergeConflictBounceCount", "mergeAuditBounceCount", "mergeTransientRetryCount", "branchConflictRecoveryCount", "reviewerContextRetryCount", "reviewerFallbackRetryCount", "nextRecoveryAt",
       // FNXC:WorkflowIrPin 2026-07-19-03:10 (U9b / KTD-3 + KTD-8): this projection is a SECOND
       // copy of the slim column list (see getTaskSelectClauseImpl2). The IR pin, its node entry,

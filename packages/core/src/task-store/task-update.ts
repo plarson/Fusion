@@ -27,8 +27,15 @@ import {__setTaskActivityLogLimitsForTesting, isBootstrapPromptStub, rewriteHead
 import {applyOriginalDescription} from "../original-description-policy.js";
 import {normalizeTaskReviewState} from "../task-store/review-state.js";
 import {hasOwnDeclaredSymbols, normalizeDeclaredSymbols, extractDeclaredSymbolsFromPrompt, resolveTaskSymbolsForTask} from "../task-symbol-resolution.js";
+import {assertValidProviderInstanceId} from "../provider-instance.js";
 
 export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updates: Parameters<TaskStore["updateTask"]>[1], runContext?: RunMutationContext,): Promise<Task> {
+  /* FNXC:CredentialInstanceSelection 2026-08-01-05:43: validate task authoring input before persistence; ids are stored but runtime credential resolution remains unchanged. */
+  for (const key of ["credentialInstanceId", "validatorCredentialInstanceId", "planningCredentialInstanceId", "mergerCredentialInstanceId"] as const) {
+    const value = (updates as Record<string, unknown>)[key];
+    if (value !== undefined && value !== null) assertValidProviderInstanceId(value);
+  }
+
     {
       if (updates.dependencies !== undefined) {
         await store.assertNoDependencyCycle(
@@ -643,6 +650,11 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       } else if (updates.modelProvider !== undefined) {
         task.modelProvider = updates.modelProvider;
       }
+      if (updates.credentialInstanceId === null) {
+        task.credentialInstanceId = undefined;
+      } else if (updates.credentialInstanceId !== undefined) {
+        task.credentialInstanceId = updates.credentialInstanceId;
+      }
       if (updates.modelId === null) {
         task.modelId = undefined;
       } else if (updates.modelId !== undefined) {
@@ -652,6 +664,11 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
         task.validatorModelProvider = undefined;
       } else if (updates.validatorModelProvider !== undefined) {
         task.validatorModelProvider = updates.validatorModelProvider;
+      }
+      if (updates.validatorCredentialInstanceId === null) {
+        task.validatorCredentialInstanceId = undefined;
+      } else if (updates.validatorCredentialInstanceId !== undefined) {
+        task.validatorCredentialInstanceId = updates.validatorCredentialInstanceId;
       }
       if (updates.validatorModelId === null) {
         task.validatorModelId = undefined;
@@ -663,6 +680,11 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       } else if (updates.planningModelProvider !== undefined) {
         task.planningModelProvider = updates.planningModelProvider;
       }
+      if (updates.planningCredentialInstanceId === null) {
+        task.planningCredentialInstanceId = undefined;
+      } else if (updates.planningCredentialInstanceId !== undefined) {
+        task.planningCredentialInstanceId = updates.planningCredentialInstanceId;
+      }
       if (updates.planningModelId === null) {
         task.planningModelId = undefined;
       } else if (updates.planningModelId !== undefined) {
@@ -670,6 +692,8 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       }
       if (updates.mergerModelProvider === null) task.mergerModelProvider = undefined;
       else if (updates.mergerModelProvider !== undefined) task.mergerModelProvider = updates.mergerModelProvider;
+      if (updates.mergerCredentialInstanceId === null) task.mergerCredentialInstanceId = undefined;
+      else if (updates.mergerCredentialInstanceId !== undefined) task.mergerCredentialInstanceId = updates.mergerCredentialInstanceId;
       if (updates.mergerModelId === null) task.mergerModelId = undefined;
       else if (updates.mergerModelId !== undefined) task.mergerModelId = updates.mergerModelId;
       if (updates.validatorThinkingLevel === null) {

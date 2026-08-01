@@ -1,4 +1,15 @@
 /* === Detail Modal === */
+/*
+FNXC:TaskDetailLayout 2026-08-01-04:23:
+SHELL NAMING MAP — read before fixing any Task Detail inset/padding bug. "Task Detail modal"
+is ONE surface with THREE shells, and only one of them lives in this file's `.modal-overlay`
+rules: (1) the fixed desktop modal (`.modal-overlay` + `.modal.task-detail-modal`, this file),
+(2) the tablet popup and desktop pop-out (FloatingWindow.css — class floating-window--task-detail,
+whose shared body element owns the FN-8015 inline-end gutter and the tablet-viewport zeroing),
+and (3) the mobile full-screen sheet. The right-
+padding bug recurred across FN-8630, FN-8634, and the 2026-08-01 tablet fix precisely because
+fixes landed only in shell (1) while the reporter was looking at shell (2).
+*/
 .task-detail-content {
   display: flex;
   flex-direction: column;

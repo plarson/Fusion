@@ -210,13 +210,13 @@ describe("FloatingWindow", () => {
     */
     const tabletBody = cssRuleContaining(
       floatingWindowCss,
-      ".floating-window--tablet .floating-window__body",
+      ".floating-window--tablet-viewport .floating-window__body",
       "margin-inline-end",
     );
     expect(tabletBody).toContain("margin-inline-end: 0;");
     const tabletGitHubImportPanel = cssRuleContaining(
       allAppCss,
-      ".floating-window--tablet .github-import-detail-panel",
+      ".floating-window--tablet-viewport .github-import-detail-panel",
       "padding-inline-end",
     );
     expect(tabletGitHubImportPanel).toContain("padding-inline-end: var(--space-lg);");
@@ -251,10 +251,10 @@ describe("FloatingWindow", () => {
   /*
   FNXC:ModalTouchGeometry 2026-08-01-03:48:
   Tablet MODE is its own styling marker, distinct from `--touch-geometry`: a non-touch window
-  at tablet widths must still receive `floating-window--tablet` so the FN-8015 gutter zeroing
+  at tablet widths must still receive `floating-window--tablet-viewport` so the FN-8015 gutter zeroing
   applies everywhere the app classifies the viewport as tablet.
   */
-  it("marks tablet-mode windows with floating-window--tablet even without touch", () => {
+  it("marks tablet-mode windows with floating-window--tablet-viewport even without touch", () => {
     vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
       matches: query === "(min-width: 769px) and (max-width: 1024px)",
       media: query,
@@ -271,7 +271,7 @@ describe("FloatingWindow", () => {
       </FloatingWindow>
     );
     const panel = screen.getByTestId("floating-window-tablet-mode");
-    expect(panel.className).toContain("floating-window--tablet");
+    expect(panel.className).toContain("floating-window--tablet-viewport");
   });
 
   it("keeps task-detail long content clear of right handles while preserving short-content right-edge resize", () => {

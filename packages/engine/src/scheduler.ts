@@ -935,28 +935,39 @@ export function nonWipWorktreeHolderIdsOf(
 }
 
 /**
- * Slots a candidate must clear to dispatch. A candidate that ALREADY holds a worktree subtracts its
- * own slot: on release the slot TRANSFERS (it executes in the same worktree) rather than adding.
+ * FNXC:WorktreeCapacity 2026-08-01-04:07:
+ * Resolve whether worktree capacity applies to this candidate. A task that already holds a
+ * worktree allocates no additional tree when it dispatches, so the worktree dimension must not
+ * gate that transfer. Agent and per-column capacity continue to apply independently.
  */
-export function effectiveActiveWorktrees(reservedWorktreeSlots: number, candidateHoldsWorktree: boolean): number {
-  return reservedWorktreeSlots - (candidateHoldsWorktree ? 1 : 0);
+export function resolveCandidateWorktreeCapacityLimit(
+  maxWorktrees: number | null,
+  candidateHoldsWorktree: boolean,
+): number | null {
+  return candidateHoldsWorktree ? null : maxWorktrees;
 }
 
 /**
  * FNXC:WorktreeCapacity 2026-08-01-01:05:
- * The two ledger MUTATIONS, named so they can be pinned alongside the totals they modify.
+ * The ledger MUTATIONS, named so they can be pinned alongside the totals they modify.
  *
- * `reserveWorktreeOnDispatch` is the exact counterpart of `effectiveActiveWorktrees`: a candidate
- * that already holds a worktree reuses it, so dispatch TRANSFERS the slot rather than adding one.
- * The two must agree — subtracting for the gate but incrementing anyway would leak a slot per
- * dispatch until the cap wedged.
+ * `reserveWorktreeOnDispatch` is the ledger counterpart of
+ * `resolveCandidateWorktreeCapacityLimit`: a candidate that already holds a worktree reuses it, so
+ * dispatch TRANSFERS the slot rather than adding one. The two must agree — bypassing allocation
+ * capacity for a transfer but incrementing anyway would leak a slot per dispatch until the cap
+ * wedged.
  *
- * `releaseReservedSlot` carries the floor. A failed dispatch gives its slot back, and the
- * `Math.max(0, …)` is what stops a double-release from handing out capacity that does not exist —
- * a negative reserved count reads as free slots to every later comparison in the loop.
+ * `releaseWorktreeReservation` gives back only a slot that this candidate added.
+ * `releaseReservedSlot` carries the floor; its `Math.max(0, …)` stops a double-release from handing
+ * out capacity that does not exist — a negative reserved count reads as free slots to every later
+ * comparison in the loop.
  */
 export function reserveWorktreeOnDispatch(reservedWorktreeSlots: number, candidateHoldsWorktree: boolean): number {
   return candidateHoldsWorktree ? reservedWorktreeSlots : reservedWorktreeSlots + 1;
+}
+
+export function releaseWorktreeReservation(reservedWorktreeSlots: number, candidateHoldsWorktree: boolean): number {
+  return candidateHoldsWorktree ? reservedWorktreeSlots : releaseReservedSlot(reservedWorktreeSlots);
 }
 
 export function releaseReservedSlot(reservedSlots: number): number {
@@ -2966,11 +2977,19 @@ export class Scheduler {
             tasks,
           });
           const candidateHoldsWorktree = nonWipWorktreeHolderIdSet.has(task.id);
+          /*
+          FNXC:WorktreeCapacity 2026-08-01-03:55 (live over-cap transfer deadlock):
+          A retained-worktree candidate consumes zero NEW worktree slots. Subtracting only its own
+          slot still deadlocked an already-over-cap durable ledger (12 - 1 remained 11 against 9),
+          and even a ledger exactly at cap produced zero slack and blocked the transfer. Remove only
+          the worktree dimension for this candidate; maxConcurrent, semaphore, and column capacity
+          still decide whether another agent may run. Candidates without a tree keep the full gate.
+          */
           const concurrencyDiagnostic = computeConcurrencyGateDiagnostic({
             agentSlots: reservedConcurrentSlots,
             maxConcurrent,
-            activeWorktrees: effectiveActiveWorktrees(reservedWorktreeSlots, candidateHoldsWorktree),
-            maxWorktrees,
+            activeWorktrees: reservedWorktreeSlots,
+            maxWorktrees: resolveCandidateWorktreeCapacityLimit(maxWorktrees, candidateHoldsWorktree),
             worktreeHolderTaskIds: [...inProgressTaskIds, ...nonWipWorktreeHolderIds],
             semaphore: this.options.semaphore,
             inProgressTaskIds,
@@ -3066,7 +3085,7 @@ export class Scheduler {
                 activeScopes.delete(task.id);
                 activeScopeColumns.delete(task.id);
               }
-              reservedWorktreeSlots = releaseReservedSlot(reservedWorktreeSlots);
+              reservedWorktreeSlots = releaseWorktreeReservation(reservedWorktreeSlots, candidateHoldsWorktree);
               reservedConcurrentSlots = releaseReservedSlot(reservedConcurrentSlots);
               dispatchPrepByTaskId.delete(task.id);
               if (dropPreHeldExecutorSlot(task.id)) sem?.release();

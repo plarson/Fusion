@@ -398,7 +398,7 @@ describe("Scheduler workflow cutover", () => {
 
   it("does not clear status or release work when maxConcurrent is full", async () => {
     const active = task({ id: "FN-001", column: "in-progress" });
-    const ready = task({ id: "FN-002", status: "queued" });
+    const ready = task({ id: "FN-002", status: "queued", worktree: "/tmp/project/.worktrees/fn-002" });
     const store = storeWith([active, ready], { maxConcurrent: 1, maxWorktrees: 4 });
     const onSchedule = vi.fn();
     const scheduler = new Scheduler(store, { onSchedule });
@@ -458,6 +458,20 @@ describe("Scheduler workflow cutover", () => {
     );
     expect(onSchedule).not.toHaveBeenCalled();
     expect(ready.column).toBe("todo");
+  });
+
+  it("releases a retained-worktree task while already over maxWorktrees", async () => {
+    const active = task({ id: "FN-101", column: "in-progress", worktree: "/tmp/project/.worktrees/fn-101" });
+    const ready = task({ id: "FN-200", status: "queued", worktree: "/tmp/project/.worktrees/fn-200" });
+    const store = storeWith([active, ready], { maxConcurrent: 4, maxWorktrees: 1 });
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, { onSchedule });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.moveTaskIf).toHaveBeenCalledWith("FN-200", "in-progress", expect.any(Function), expect.anything());
+    expect(onSchedule).toHaveBeenCalledWith(expect.objectContaining({ id: "FN-200", column: "in-progress" }));
   });
 
   /*
@@ -600,8 +614,36 @@ describe("Scheduler workflow cutover", () => {
     expect(ready.status).toBe("queued");
   });
 
+  it("does not invent capacity when a retained-worktree transfer rejects", async () => {
+    const retained = task({ id: "FN-001", status: "queued", worktree: "/tmp/project/.worktrees/fn-001" });
+    const fresh = task({ id: "FN-002", status: "queued" });
+    const store = storeWith([retained, fresh], { maxConcurrent: 4, maxWorktrees: 1 });
+    vi.mocked(store.moveTaskIf).mockRejectedValueOnce(
+      new TransitionRejectionError(
+        makeTransitionRejection(
+          "capacity-exhausted",
+          "transition.rejected.capacityExhausted",
+          true,
+          "Column is at capacity",
+        ),
+        "Column is at capacity",
+      ),
+    );
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, { onSchedule });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.moveTaskIf).toHaveBeenCalledTimes(1);
+    expect(store.moveTaskIf).toHaveBeenCalledWith("FN-001", "in-progress", expect.any(Function), expect.anything());
+    expect(store.moveTaskIf).not.toHaveBeenCalledWith("FN-002", "in-progress", expect.anything(), expect.anything());
+    expect(onSchedule).not.toHaveBeenCalled();
+    expect(fresh.column).toBe("todo");
+  });
+
   it("does not release work when the shared semaphore is saturated", async () => {
-    const ready = task({ id: "FN-002", status: "queued" });
+    const ready = task({ id: "FN-002", status: "queued", worktree: "/tmp/project/.worktrees/fn-002" });
     const store = storeWith([ready], { maxConcurrent: 4, maxWorktrees: 4 });
     const semaphore = new AgentSemaphore(1);
     await semaphore.acquire();

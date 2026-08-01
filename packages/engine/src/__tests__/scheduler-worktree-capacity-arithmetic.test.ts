@@ -28,7 +28,7 @@ it here would make this file fail for that reason instead of this one.
 
 import { describe, expect, it } from "vitest";
 import type { Task } from "@fusion/core";
-import { effectiveActiveWorktrees, nonWipWorktreeHolderIdsOf, releaseReservedSlot, reserveWorktreeOnDispatch } from "../scheduler.js";
+import { nonWipWorktreeHolderIdsOf, releaseReservedSlot, releaseWorktreeReservation, reserveWorktreeOnDispatch, resolveCandidateWorktreeCapacityLimit } from "../scheduler.js";
 
 const task = (id: string, overrides: Partial<Task> = {}): Task => ({
   id,
@@ -103,25 +103,26 @@ describe("worktree-capacity holder set", () => {
   });
 });
 
-describe("effectiveActiveWorktrees", () => {
-  it("subtracts a candidate's OWN retained worktree — the slot transfers, it does not add", () => {
+describe("resolveCandidateWorktreeCapacityLimit", () => {
+  it("does not gate a candidate that reuses its retained worktree, even while the ledger is over cap", () => {
     /*
-    The self-deadlock fix. Without the subtraction a Ready card holding the very worktree it would
-    reuse is gated out by itself: 5 >= 4 blocks, where 4 >= 4 ... also blocks, but 5-1=4 is the
-    number the gate is supposed to compare. Pinned as the arithmetic, not as the comparison.
+    FNXC:WorktreeCapacity 2026-08-01-04:07:
+    Live regression: 12 non-terminal cards retained worktrees against maxWorktrees=9. A queued
+    candidate already owned one of those trees, so dispatch would transfer the existing slot and
+    leave the ledger at 12. Subtracting only the candidate (12 - 1 = 11) still wedged every queued
+    card forever. The worktree dimension must be absent for a zero-allocation transfer; the separate
+    maxConcurrent gate continues to arbitrate whether another agent may run.
     */
-    expect(effectiveActiveWorktrees(5, true)).toBe(4);
+    expect(resolveCandidateWorktreeCapacityLimit(9, true)).toBeNull();
   });
 
-  it("leaves the total alone for a candidate that holds no worktree — it will ADD one", () => {
-    expect(effectiveActiveWorktrees(5, false)).toBe(5);
+  it("keeps the configured gate for a candidate that must allocate a worktree", () => {
+    expect(resolveCandidateWorktreeCapacityLimit(9, false)).toBe(9);
   });
 
-  it("never invents capacity when nothing is reserved", () => {
-    expect(effectiveActiveWorktrees(0, false)).toBe(0);
-    /* A holder implies a reservation, so 0-with-holder cannot arise; assert it degrades rather than
-       silently handing out a negative slot count if a future caller gets the pairing wrong. */
-    expect(effectiveActiveWorktrees(0, true)).toBeLessThanOrEqual(0);
+  it("preserves a disabled worktree gate for every candidate", () => {
+    expect(resolveCandidateWorktreeCapacityLimit(null, false)).toBeNull();
+    expect(resolveCandidateWorktreeCapacityLimit(null, true)).toBeNull();
   });
 });
 
@@ -134,20 +135,12 @@ describe("ledger mutations", () => {
     expect(reserveWorktreeOnDispatch(4, false)).toBe(5);
   });
 
-  it("the gate subtraction and the dispatch increment agree — the pairing invariant", () => {
-    /*
-    These two must move together. Subtracting the candidate's own slot for the gate check while
-    incrementing anyway on dispatch leaks one slot per dispatch, and the cap wedges after enough
-    Ready cards reuse their planning worktrees. Asserted as a round trip rather than two constants:
-    for a HOLDER the ledger must be unchanged across gate-then-dispatch.
-    */
-    const reserved = 5;
-    for (const holds of [true, false]) {
-      const gated = effectiveActiveWorktrees(reserved, holds);
-      const after = reserveWorktreeOnDispatch(reserved, holds);
-      /* A holder occupies the slot it was gated against; a non-holder adds the one it was gated for. */
-      expect(after - gated).toBe(1);
-    }
+  it("a failed retained transfer leaves the worktree ledger unchanged", () => {
+    expect(releaseWorktreeReservation(5, true)).toBe(5);
+  });
+
+  it("a failed fresh allocation gives its worktree slot back", () => {
+    expect(releaseWorktreeReservation(5, false)).toBe(4);
   });
 
   it("a failed dispatch gives the slot back", () => {

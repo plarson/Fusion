@@ -26,12 +26,12 @@ import { getPriorityColorVar, getPriorityLabel } from "../../utils/priorityIndic
 
 // Mock lucide-react to avoid SVG rendering issues in test env
 vi.mock("lucide-react", () => ({
-  Link: () => null,
+  Link: (props: React.SVGProps<SVGSVGElement>) => <svg {...props} />,
   GitBranch: () => null,
   Gitlab: () => null,
   Clock: () => null,
   Pencil: () => null,
-  Layers: () => null,
+  Layers: (props: React.SVGProps<SVGSVGElement>) => <svg {...props} />,
   ChevronDown: () => null,
   Folder: () => null,
   GitPullRequest: () => null,
@@ -4847,12 +4847,12 @@ describe("TaskCard", () => {
     expect(screen.getByTestId("provider-icon-github")).toBeDefined();
   });
 
-  it("renders the GitHub tracking link inline with queued metadata when the footer has no leading content", () => {
+  it("renders queued as a header status badge and leaves no clock tag at the bottom", () => {
     const { container } = render(
       <TaskCard
         task={makeTask({
           column: "todo",
-          status: "queued",
+          status: null,
           sourceType: "dashboard_ui",
           githubTracking: {
             issue: {
@@ -4864,20 +4864,42 @@ describe("TaskCard", () => {
             },
           },
         })}
+        queued
         onOpenDetail={noop}
         addToast={noop}
       />,
     );
 
     const link = screen.getByRole("link", { name: "Linked GitHub issue #42" });
-    const metaRow = container.querySelector(".card-meta");
-    const queuedBadge = container.querySelector(".queued-badge");
-    expect(container.querySelector(".card-footer-row")).toBeNull();
-    expect(link.closest(".card-meta")).toBe(metaRow);
-    expect(link.closest(".card-footer-row-right")?.closest(".card-meta")).toBe(metaRow);
-    expect(container.querySelector(".card-bottom-right-row")).toBeNull();
-    expect(queuedBadge).not.toBeNull();
-    expect(queuedBadge?.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const queuedBadge = screen.getByText("Queued");
+    expect(link.closest(".card-footer-row")).not.toBeNull();
+    expect(queuedBadge).toHaveClass("card-status-badge", "card-status-badge--todo");
+    expect(queuedBadge.closest(".card-header-badges")).not.toBeNull();
+    expect(container.querySelector(".queued-badge")).toBeNull();
+    expect(queuedBadge.querySelector("svg")).toBeNull();
+    expect(link.closest(".card-meta")).toBeNull();
+  });
+
+  it.each([
+    ["file overlap", { overlapBlockedBy: "FN-OVERLAP" }, "card-queued-overlap-icon", "card-queued-dependency-icon", "Queued due to file overlap with FN-OVERLAP"],
+    ["dependency", { blockedBy: "FN-DEPENDENCY" }, "card-queued-dependency-icon", "card-queued-overlap-icon", "Queued on dependency FN-DEPENDENCY"],
+    ["file overlap when both blockers are present", { overlapBlockedBy: "FN-OVERLAP", blockedBy: "FN-DEPENDENCY" }, "card-queued-overlap-icon", "card-queued-dependency-icon", "Queued due to file overlap with FN-OVERLAP"],
+  ] as const)("shows the %s icon after Queued without putting the blocker id in the badge", (_case, blocker, expectedIcon, absentIcon, title) => {
+    const queuedTask = makeTask({ column: "todo", status: "queued", ...blocker });
+    const { container } = render(
+      <TaskCard task={queuedTask} onOpenDetail={noop} addToast={noop} />,
+    );
+
+    const badge = screen.getByText("Queued").closest(".card-status-badge") as HTMLElement;
+    expect(badge).toHaveTextContent(/^Queued$/);
+    expect(badge).toHaveClass("card-status-badge--queued-with-reason");
+    const icon = badge.querySelector(`[data-testid="${expectedIcon}-${queuedTask.id}"]`);
+    expect(icon).not.toBeNull();
+    expect(icon).toHaveClass("card-queued-reason-icon");
+    expect(icon).toHaveAttribute("size", "8");
+    expect(badge.querySelector(`[data-testid="${absentIcon}-${queuedTask.id}"]`)).toBeNull();
+    expect(badge).toHaveAttribute("title", title);
+    expect(container.querySelector(".queued-badge")).toBeNull();
   });
 
 

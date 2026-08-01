@@ -1596,7 +1596,7 @@ function TaskCardComponent({
     && !visualStatus
     && !planReviewRunning
     && !isAgentActive;
-  const showReadyBadge = showIdleTodoBadge && !awaitingPlanning;
+  const showReadyBadge = showIdleTodoBadge && !queued && !awaitingPlanning;
   /*
   FNXC:CodingIdeasWorkflow 2026-07-25-12:05:
   "Queued to plan" is the exact complement of Ready: same idle-in-Todo conditions, but the card has
@@ -1613,7 +1613,7 @@ function TaskCardComponent({
   Both badges now derive from the single `awaitingPlanning` value above, so "exact complement" is
   structural rather than a property of the step count that two independent conditions had to agree on.
   */
-  const showQueuedToPlanBadge = showIdleTodoBadge && awaitingPlanning;
+  const showQueuedToPlanBadge = showIdleTodoBadge && !queued && awaitingPlanning;
   // Native HTML5 drag is desktop-mouse only — it doesn't move cards via touch.
   // On touch-primary devices the `draggable` attribute still arms the browser's
   // touch-drag heuristic, which intermittently hijacks horizontal swipes meant
@@ -2145,8 +2145,6 @@ function TaskCardComponent({
   const showAddressPrFeedbackAction = canStartPrFeedbackAddressing(task, taskColumnFlags);
   const metaRowVisible =
     (task.dependencies?.length ?? 0) > 0
-    || queued
-    || task.status === "queued"
     || Boolean(task.blockedBy)
     || Boolean(task.overlapBlockedBy)
     || Boolean(fanout && fanout.totalCount > 0);
@@ -3394,6 +3392,16 @@ function TaskCardComponent({
     && !visualStatus
     && Boolean(task.recentAgentActivityAt)
     && isAgentActive;
+  /*
+  FNXC:TaskStatusBadge 2026-08-01-07:20 (operator: queued belongs with Planning and Ready):
+  Queued used to render as a clock-and-text footer tag, separating the waiting state from the
+  Planning and Ready badges operators compare it with. Treat every non-WIP queued card as a normal
+  header status badge instead. The shared badge geometry and column color carry desktop/mobile
+  behavior; no standalone queued visual remains at the bottom of the card.
+  */
+  const showQueuedBadge = !isPaused
+    && !isWipColumn
+    && (queued || visualStatus === "queued");
   const showStatusBadge = !isPaused
     && (hasTaskStatusBadge(visualStatus) || isTransientPlannerActive)
     && visualStatus !== "queued";
@@ -3424,6 +3432,8 @@ function TaskCardComponent({
             */
             : showQueuedToPlanBadge
               ? t("tasks.queuedToPlan", "Queued to plan")
+              : showQueuedBadge
+                ? t("tasks.statusQueued", "Queued")
               : getTaskStatusLabel(visualStatus ?? "", t, showOptionalGateBadge ? undefined : getRunningWorkflowStepLabel(task), { idle: !isAgentActive, overlapBlockedBy: task.overlapBlockedBy ?? null });
   const hasCardMetaBadges = showPriorityBadge
     || task.executionMode === "fast"
@@ -3435,6 +3445,7 @@ function TaskCardComponent({
     || showStatusBadge
     || showOptionalGateBadge
     || showReadyBadge
+    || showQueuedBadge
     // FNXC:CodingIdeasWorkflow 2026-07-25-12:05: the header wrapper only renders when it has a
     // real child, so a new badge must be declared here or it never mounts (Queued to plan is the
     // only badge on an unplanned idle Todo card — without this the whole cluster stays absent).
@@ -3568,9 +3579,9 @@ function TaskCardComponent({
               : pausedByAgent ? t("tasks.pausedByAgent", "paused by agent") : t("tasks.paused", "paused")}
           </span>
         )}
-        {(showStatusBadge || showQueuedToPlanBadge) && (
+        {(showStatusBadge || showQueuedToPlanBadge || showQueuedBadge) && (
           <span
-            className={`card-status-badge card-status-badge--${task.column}${showQueuedToPlanBadge ? " queued-to-plan" : ""}${isAwaitingApproval ? " awaiting-approval" : ""}${isPlanReviewReplanCapApproval ? " awaiting-approval--plan-review-replan-cap" : ""}${isAwaitingInput ? " awaiting-input" : ""}${isAgentActive ? " pulsing" : ""}${isFailed ? " failed" : ""}${isStuck ? " stuck" : ""}`}
+            className={`card-status-badge card-status-badge--${task.column}${showQueuedToPlanBadge ? " queued-to-plan" : ""}${showQueuedBadge && (task.overlapBlockedBy || task.blockedBy) ? " card-status-badge--queued-with-reason" : ""}${isAwaitingApproval ? " awaiting-approval" : ""}${isPlanReviewReplanCapApproval ? " awaiting-approval--plan-review-replan-cap" : ""}${isAwaitingInput ? " awaiting-input" : ""}${isAgentActive ? " pulsing" : ""}${isFailed ? " failed" : ""}${isStuck ? " stuck" : ""}`}
             title={
               isPlanReviewReplanCapApproval
                 ? t(
@@ -3597,6 +3608,10 @@ function TaskCardComponent({
                         "tasks.queuedToPlanTitle",
                         "Waiting for a planning slot — planning starts when an agent slot frees up",
                       )
+                  : showQueuedBadge && task.overlapBlockedBy
+                    ? t("tasks.queuedFileOverlapTitle", "Queued due to file overlap with {{taskId}}", { taskId: task.overlapBlockedBy })
+                  : showQueuedBadge && task.blockedBy
+                    ? t("tasks.queuedDependencyTitle", "Queued on dependency {{taskId}}", { taskId: task.blockedBy })
                   : task.status === "needs-replan" && !isAgentActive
                     ? t(
                         "tasks.needsReplanQueuedTitle",
@@ -3609,6 +3624,12 @@ function TaskCardComponent({
             data-awaiting-approval-reason={isAwaitingApproval ? (task.awaitingApprovalReason ?? "manual") : undefined}
           >
             {statusBadgeLabel}
+            {showQueuedBadge && task.overlapBlockedBy && (
+              <Layers className="card-queued-reason-icon" size={8} aria-hidden="true" data-testid={`card-queued-overlap-icon-${task.id}`} />
+            )}
+            {showQueuedBadge && !task.overlapBlockedBy && task.blockedBy && (
+              <Link className="card-queued-reason-icon" size={8} aria-hidden="true" data-testid={`card-queued-dependency-icon-${task.id}`} />
+            )}
           </span>
         )}
         {showOptionalGateBadge && optionalGateBadge && (
@@ -4213,7 +4234,6 @@ function TaskCardComponent({
               </span>
             </span>
           )}
-          {(queued || task.status === "queued") && !isWipColumn && <span className="queued-badge"><Clock size={12} style={{ verticalAlign: "middle" }} /> {t("tasks.queued", "Queued")}</span>}
           {placeFooterRightInMeta && footerRightCluster}
         </div>
       )}

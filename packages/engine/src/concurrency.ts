@@ -139,11 +139,22 @@ export class ProjectAdmissionCoordinator {
     claimed: () => Promise<number> | number;
     claimedTaskIds?: () => Promise<Iterable<string>> | Iterable<string>;
   }): Promise<number> {
+    /*
+    FNXC:ConcurrencyAdmission 2026-08-01-07:35:
+    A durable handoff can release its in-memory reservation while an asynchronous task snapshot is
+    being read. The snapshot then predates the durable row while a post-read reservation lookup
+    postdates its release, making one real holder disappear between the two ledgers. Union the
+    reservations observed on both sides of the read so that transfer window is conservatively
+    counted once. The next admission gets a fresh durable snapshot and naturally sheds the old id.
+    */
+    const reservations = new Set(this.reservations.get(params.projectId) ?? []);
     const claimed = await params.claimed();
-    if (!params.claimedTaskIds) return claimed + this.reservationCount(params.projectId);
+    for (const taskId of this.reservations.get(params.projectId) ?? []) reservations.add(taskId);
+    if (!params.claimedTaskIds) return claimed + reservations.size;
     const claimedIds = new Set(await params.claimedTaskIds());
+    for (const taskId of this.reservations.get(params.projectId) ?? []) reservations.add(taskId);
     let pendingReservations = 0;
-    for (const taskId of this.reservations.get(params.projectId) ?? []) {
+    for (const taskId of reservations) {
       if (!claimedIds.has(taskId)) pendingReservations += 1;
     }
     return claimed + pendingReservations;

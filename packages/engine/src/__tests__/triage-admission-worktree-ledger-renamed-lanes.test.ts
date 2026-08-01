@@ -72,7 +72,9 @@ function createStore(
       const found = tasks.find((candidate) => candidate.id === id);
       return found ? { ...found, prompt: "", attachments: [], comments: [] } : null;
     }),
-    listTasks: vi.fn().mockResolvedValue(tasks),
+    listTasks: vi.fn(async (options?: { slim?: boolean }) => options?.slim === true
+      ? tasks.map(({ workflowStepResults: _omitted, ...candidate }) => candidate as Task)
+      : tasks),
     getSettings: vi.fn().mockResolvedValue({
       maxConcurrent: 20,
       maxWorktrees,
@@ -213,6 +215,28 @@ describe("planning admission's worktree ledger on a renamed board", () => {
 
     const throttle = recorded.filter((event) => event.type === "task:plan-admission-throttled");
     expect(throttle.length, "a live task must still consume its worktree-capacity slot").toBeGreaterThan(0);
+    expect(specifyTask).not.toHaveBeenCalled();
+  });
+
+  it("counts a pending optional workflow-step lease in final planning admission", async () => {
+    const store = createStore([
+      task("FN-WAITING", "drafting"),
+      task("FN-LIVE-REVIEW", "drafting", {
+        steps: [{ name: "Implementation", status: "pending" }] as Task["steps"],
+        workflowStepResults: [{
+          workflowStepId: "code-review",
+          workflowStepName: "Code Review",
+          phase: "pre-merge",
+          source: "optional-group",
+          status: "pending",
+          startedAt: "2026-08-01T00:00:00.000Z",
+        }],
+      }),
+    ], recorded, 1);
+
+    const specifyTask = await pollOnce(store);
+
+    expect(store.listTasks).toHaveBeenCalledWith({ slim: false, includeArchived: false });
     expect(specifyTask).not.toHaveBeenCalled();
   });
 });

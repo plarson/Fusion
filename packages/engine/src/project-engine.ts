@@ -457,6 +457,14 @@ export class ProjectEngine {
   // ── Auto-merge state ──
   private mergeQueue: string[] = [];
   private mergeActive = new Set<string>();
+  /** Capacity-deferred ids stay out of the runnable queue until their retry timer fires. */
+  private readonly capacityDeferredMergeTaskIds = new Set<string>();
+  private readonly capacityDeferredMerges = new Map<string, {
+    timer: ReturnType<typeof setTimeout>;
+    resolvers: MergeResolver[];
+    generation: number;
+    manual: boolean;
+  }>();
   /** Merge ids selected by the shared coordinator but not yet handed to rawMerge. */
   private readonly coordinatorAdmittedMergeTaskIds = new Set<string>();
   private unregisterMergeAdmissionProvider?: () => void;
@@ -805,7 +813,9 @@ export class ProjectEngine {
   window, checking it in addition to `mergeQueue` closes that TOCTOU gap.
   */
   isMergePending(taskId: string): boolean {
-    return this.mergeActive.has(taskId) || this.mergeQueue.includes(taskId);
+    return this.mergeActive.has(taskId)
+      || this.mergeQueue.includes(taskId)
+      || this.capacityDeferredMergeTaskIds.has(taskId);
   }
 
   /**
@@ -1316,6 +1326,14 @@ export class ProjectEngine {
       clearInterval(this.mergeActiveReconcileTimer);
       this.mergeActiveReconcileTimer = null;
     }
+    for (const [taskId, deferred] of this.capacityDeferredMerges) {
+      clearTimeout(deferred.timer);
+      for (const resolver of deferred.resolvers) {
+        resolver.reject(new Error(`Engine shutting down — deferred merge for ${taskId} aborted`));
+      }
+    }
+    this.capacityDeferredMerges.clear();
+    this.capacityDeferredMergeTaskIds.clear();
     this.stopPlannerOverseerPoll();
 
     /*
@@ -2311,6 +2329,15 @@ export class ProjectEngine {
       };
       abort = () => {
         this.removeMergeResolver(taskId, resolver);
+        const deferred = this.capacityDeferredMerges.get(taskId);
+        if (deferred) {
+          deferred.resolvers = deferred.resolvers.filter((candidate) => candidate !== resolver);
+          if (deferred.manual && deferred.resolvers.length === 0 && !this.hasMergeResolvers(taskId)) {
+            clearTimeout(deferred.timer);
+            this.capacityDeferredMerges.delete(taskId);
+            this.capacityDeferredMergeTaskIds.delete(taskId);
+          }
+        }
         if (this.activeMergeTaskId === taskId) {
           this.mergeAbortController?.abort();
           this.mergeAbortController = null;
@@ -2328,7 +2355,7 @@ export class ProjectEngine {
 
       // If this task is already queued or actively merging, wait for the
       // existing merge to finish rather than starting a second one.
-      if (this.mergeActive.has(taskId)) return;
+      if (this.mergeActive.has(taskId) || this.capacityDeferredMergeTaskIds.has(taskId)) return;
 
       if (!this.internalEnqueueMerge(taskId)) {
         this.removeMergeResolver(taskId, resolver);
@@ -2813,6 +2840,7 @@ export class ProjectEngine {
 
   private internalEnqueueMerge(taskId: string): boolean {
     if (this.shuttingDown || !this.started) return false;
+    if (this.capacityDeferredMergeTaskIds.has(taskId)) return false;
     if (this.mergeActive.has(taskId)) {
       // Distinguish "actually being processed" (queued or active) from a
       // leaked entry. Reconcile leaks immediately so recovery paths and fresh
@@ -3895,7 +3923,9 @@ export class ProjectEngine {
             const admissionSettings = await store.getSettings();
             let mergeClaimSnapshot: Promise<{ count: number; ids: string[] }> | undefined;
             const getMergeClaimSnapshot = () => mergeClaimSnapshot ??= (async () => {
-              const tasks = await store.listTasks({ slim: true, includeArchived: false });
+              // Full rows preserve pending optional workflow-step leases, which may be the only
+              // live-agent signal for a task while its ordinary status is null.
+              const tasks = await store.listTasks({ slim: false, includeArchived: false });
               const ids = await persistedTopLevelAgentTaskIdsFromStore(store, tasks);
               return { count: ids.length, ids };
             })();
@@ -3943,6 +3973,36 @@ export class ProjectEngine {
               projectAdmissionCoordinator.releaseReservation(taskId);
             }
           };
+          const deferMergeForCapacity = (): void => {
+            const retryMs = settings.pollIntervalMs ?? 15_000;
+            const stashedResolvers = this.takeMergeResolvers(taskId);
+            const generation = this.startupGeneration;
+            this.mergeActive.delete(taskId);
+            this.capacityDeferredMergeTaskIds.add(taskId);
+            const timer = setTimeout(() => {
+              const deferred = this.capacityDeferredMerges.get(taskId);
+              if (!deferred || deferred.timer !== timer) return;
+              this.capacityDeferredMerges.delete(taskId);
+              this.capacityDeferredMergeTaskIds.delete(taskId);
+              if (this.shuttingDown || deferred.generation !== this.startupGeneration) {
+                for (const resolver of deferred.resolvers) resolver.reject(new Error("Engine shutting down"));
+                return;
+              }
+              for (const resolver of deferred.resolvers) this.addMergeResolver(taskId, resolver);
+              if (!this.internalEnqueueMerge(taskId)) {
+                for (const resolver of this.takeMergeResolvers(taskId)) {
+                  resolver.reject(new Error(`Deferred merge enqueue rejected for ${taskId}`));
+                }
+              }
+            }, retryMs);
+            timer.unref?.();
+            this.capacityDeferredMerges.set(taskId, {
+              timer,
+              resolvers: stashedResolvers,
+              generation,
+              manual: stashedResolvers.length > 0,
+            });
+          };
 
           if (mergeStrategy === "pull-request" && this.options.processPullRequestMerge && !routeWorkspaceDirect) {
             /*
@@ -3966,10 +4026,11 @@ export class ProjectEngine {
             });
             if (result === undefined) {
               // Another older lane won the shared capacity pass. Re-queue rather
-              // than treating this deferral as a pull-request merge failure.
-              this.mergeActive.delete(taskId);
-              this.internalEnqueueMerge(taskId);
-              continue;
+              // than treating this deferral as a pull-request merge failure. End
+              // this drain: continuing would dequeue the same item immediately
+              // and spin at full speed while capacity remains unavailable.
+              deferMergeForCapacity();
+              break;
             }
             if (result === "merged") {
               runtimeLog.log(`${hasManualResolver ? "Manual" : "Auto"}-merge PR merged: ${taskId}`);
@@ -4127,9 +4188,10 @@ export class ProjectEngine {
             if (!result) {
               // An older lane won this admission pass. Keep this merge queued;
               // treating the deferral as a merge failure would consume retries.
-              this.mergeActive.delete(taskId);
-              this.internalEnqueueMerge(taskId);
-              continue;
+              // Exit this drain so the queued item waits for a normal future wake
+              // instead of retrying the same denied admission in a tight loop.
+              deferMergeForCapacity();
+              break;
             }
 
             this.activeMergeSession = null;

@@ -1176,6 +1176,75 @@ describe("ProjectAdmissionCoordinator", () => {
     coordinator.releaseReservation("FN-PLANNING");
   });
 
+  it("does not lose a holder that transfers from reservation to durable state during a claim read", async () => {
+    const coordinator = new ProjectAdmissionCoordinator();
+    expect(await coordinator.reserveIfAvailable({
+      projectId: "project-transfer",
+      taskId: "FN-HANDOFF",
+      maxConcurrent: 1,
+      claimed: () => 0,
+    })).toBe(true);
+
+    let finishSnapshot!: () => void;
+    const snapshotBlocked = new Promise<void>((resolve) => { finishSnapshot = resolve; });
+    let snapshotStarted!: () => void;
+    const snapshotDidStart = new Promise<void>((resolve) => { snapshotStarted = resolve; });
+    const candidate = coordinator.reserveIfAvailable({
+      projectId: "project-transfer",
+      taskId: "FN-CANDIDATE",
+      maxConcurrent: 1,
+      claimed: async () => {
+        snapshotStarted();
+        await snapshotBlocked;
+        // This is the pre-persistence snapshot: the handoff is not durable in it yet.
+        return 0;
+      },
+      claimedTaskIds: () => [],
+    });
+
+    await snapshotDidStart;
+    // The handoff becomes durable and releases its transient reservation while the stale read is open.
+    coordinator.releaseReservation("FN-HANDOFF");
+    finishSnapshot();
+
+    expect(await candidate).toBe(false);
+    coordinator.releaseReservation("FN-CANDIDATE");
+  });
+
+  it("evaluates a waiting admission claim only after the prior project drain finishes", async () => {
+    const coordinator = new ProjectAdmissionCoordinator();
+    let releaseDrain!: () => void;
+    const drainBlocked = new Promise<void>((resolve) => { releaseDrain = resolve; });
+    let drainStarted!: () => void;
+    const drainDidStart = new Promise<void>((resolve) => { drainStarted = resolve; });
+    const first = coordinator.reserveIfAvailable({
+      projectId: "project-serialized-snapshot",
+      taskId: "FN-BLOCKER",
+      maxConcurrent: 0,
+      claimed: async () => {
+        drainStarted();
+        await drainBlocked;
+        return 0;
+      },
+    });
+    await drainDidStart;
+
+    const freshClaim = vi.fn(() => 1);
+    const second = coordinator.reserveIfAvailable({
+      projectId: "project-serialized-snapshot",
+      taskId: "FN-WAITING",
+      maxConcurrent: 1,
+      claimed: freshClaim,
+    });
+    await Promise.resolve();
+    expect(freshClaim).not.toHaveBeenCalled();
+
+    releaseDrain();
+    expect(await first).toBe(false);
+    expect(await second).toBe(false);
+    expect(freshClaim).toHaveBeenCalledOnce();
+  });
+
   it("admits the oldest same-project candidate atomically and partitions projects", async () => {
     const coordinator = new ProjectAdmissionCoordinator();
     const started: string[] = [];

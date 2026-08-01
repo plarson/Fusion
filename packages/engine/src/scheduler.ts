@@ -2846,22 +2846,11 @@ export class Scheduler {
             topLevelClaimedSlots: reservedWorktreeSlots,
           });
           /*
-          FNXC:WorkflowScheduling 2026-06-23-20:58:
-          The workflow hold/release sweep is the only todo pickup path, so it must honor the same maxConcurrent, maxWorktrees, and shared semaphore pressure before releasing a task to in-progress.
-
-          FNXC:GlobalConcurrencyControls 2026-07-14-18:30:
-          Preflight is no longer non-mutating for the shared semaphore: tryAcquire reserves a real slot before the move so triage cannot fill the global cap while this card is already counted as an in-progress runner. On move failure the reservation is released; on success the pre-held slot is transferred to the executor/graph run.
+          The sweep diagnostic is intentionally descriptive only. Worktree preparation can outlive
+          a holder, so using this older snapshot as an admission gate strands queued cards even after
+          capacity frees. The serialized fresh reservation below is the sole capacity authority; the
+          diagnostic remains available to explain a rejection from that authoritative check.
           */
-          if (concurrencyDiagnostic.available <= 0) {
-            if (reservedScope) {
-              activeScopes.delete(task.id);
-              activeScopeColumns.delete(task.id);
-            }
-            const reason = formatConcurrencyLimitReason(concurrencyDiagnostic);
-            await this.store.updateTask(task.id, { status: "queued" });
-            await this.logDispatchQueuedReason(task.id, reason, formatConcurrencyLimitMemoKey(concurrencyDiagnostic));
-            return null;
-          }
 
           /*
           FNXC:WorktreeCapacity 2026-08-01-04:38:
@@ -2870,12 +2859,28 @@ export class Scheduler {
           claim the final slot. The reservation remains until the executor observes the persisted
           WIP row and takes the handoff.
           */
+          let finalClaimSnapshot: Promise<{ count: number; ids: string[] }> | undefined;
+          const getFinalClaimSnapshot = () => finalClaimSnapshot ??= (async () => {
+            /*
+            FNXC:WorkflowContinuationCapacity 2026-08-01-07:10:
+            Worktree preparation and startup recovery can make the sweep's original task list stale
+            before this serialized admission point. A planner that became live after that snapshot
+            was absent from `activeWorktreeTaskIds`; once its handoff reservation transferred to the
+            durable planning status, the coordinator could no longer see either claim and admitted a
+            tenth active task against maxWorktrees=9. Re-read full rows lazily inside the coordinator
+            drain so pending workflow-step leases and every newly durable lane holder participate in
+            the final decision. Same-sweep transient starts remain covered by coordinator reservations.
+            */
+            const liveTasks = await this.store.listTasks({ slim: false, includeArchived: false });
+            const ids = await persistedTopLevelAgentTaskIdsFromStore(this.store, liveTasks);
+            return { count: ids.length, ids };
+          })();
           const projectSlotReserved = await projectAdmissionCoordinator.reserveIfAvailable({
             projectId: this.store.getRootDir(),
             taskId: task.id,
             maxConcurrent: activeTaskLimit,
-            claimed: () => activeWorktreeTaskIds.length,
-            claimedTaskIds: () => activeWorktreeTaskIds,
+            claimed: async () => (await getFinalClaimSnapshot()).count,
+            claimedTaskIds: async () => (await getFinalClaimSnapshot()).ids,
           });
           if (!projectSlotReserved) {
             if (reservedScope) {

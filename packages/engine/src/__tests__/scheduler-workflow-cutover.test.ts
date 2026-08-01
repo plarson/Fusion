@@ -625,6 +625,88 @@ describe("Scheduler workflow cutover", () => {
     expect(second.status).toBe("queued");
   });
 
+  it("rechecks canonical live tasks inside final admission after the sweep snapshot goes stale", async () => {
+    const active = Array.from({ length: 8 }, (_, index) =>
+      task({ id: `FN-ACTIVE-${index}`, column: "in-progress" }),
+    );
+    const ready = task({ id: "FN-READY", status: "queued" });
+    const latePlanner = task({ id: "FN-LATE-PLANNER", status: "planning" });
+    const store = storeWith([...active, ready], { maxConcurrent: 12, maxWorktrees: 9 });
+    vi.mocked(store.listTasks)
+      .mockResolvedValueOnce([...active, ready])
+      .mockResolvedValue([...active, latePlanner, ready]);
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, { onSchedule });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.listTasks).toHaveBeenCalledWith({ slim: false, includeArchived: false });
+    expect(store.moveTaskIf).not.toHaveBeenCalledWith(
+      ready.id,
+      "in-progress",
+      expect.any(Function),
+      expect.anything(),
+    );
+    expect(onSchedule).not.toHaveBeenCalled();
+    expect(ready.column).toBe("todo");
+    expect(ready.status).toBe("queued");
+  });
+
+  it("counts a pending optional workflow-step lease in final scheduler admission", async () => {
+    const active = Array.from({ length: 8 }, (_, index) =>
+      task({ id: `FN-LEASE-ACTIVE-${index}`, column: "in-progress" }),
+    );
+    const liveLease = task({
+      id: "FN-LIVE-LEASE",
+      status: null,
+      workflowStepResults: [{
+        workflowStepId: "code-review",
+        workflowStepName: "Code Review",
+        phase: "pre-merge",
+        source: "optional-group",
+        status: "pending",
+        startedAt: "2026-08-01T00:00:00.000Z",
+      }],
+    });
+    const ready = task({ id: "FN-READY", status: "queued" });
+    const store = storeWith([...active, liveLease, ready], { maxConcurrent: 12, maxWorktrees: 9 });
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, { onSchedule });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.listTasks).toHaveBeenCalledWith({ slim: false, includeArchived: false });
+    expect(onSchedule).not.toHaveBeenCalled();
+    expect(ready.column).toBe("todo");
+  });
+
+  it("does not let a stale full sweep hide capacity that freed before final admission", async () => {
+    const initiallyActive = Array.from({ length: 9 }, (_, index) =>
+      task({ id: `FN-STALE-ACTIVE-${index}`, column: "in-progress" }),
+    );
+    const ready = task({ id: "FN-READY", status: "queued" });
+    const store = storeWith([...initiallyActive, ready], { maxConcurrent: 12, maxWorktrees: 9 });
+    vi.mocked(store.listTasks)
+      .mockResolvedValueOnce([...initiallyActive, ready])
+      .mockResolvedValue(initiallyActive.slice(0, 8).concat(ready));
+    const onSchedule = vi.fn();
+    const scheduler = new Scheduler(store, { onSchedule });
+    (scheduler as unknown as { running: boolean }).running = true;
+
+    await scheduler.schedule();
+
+    expect(store.listTasks).toHaveBeenCalledWith({ slim: false, includeArchived: false });
+    expect(store.moveTaskIf).toHaveBeenCalledWith(
+      ready.id,
+      "in-progress",
+      expect.any(Function),
+      expect.anything(),
+    );
+    expect(onSchedule).toHaveBeenCalledWith(expect.objectContaining({ id: ready.id }));
+  });
+
   it("leaves a task queued when the authoritative release move rejects after reservation", async () => {
     const ready = task({ id: "FN-002", status: "queued" });
     const store = storeWith([ready], { maxConcurrent: 4, maxWorktrees: 4 });

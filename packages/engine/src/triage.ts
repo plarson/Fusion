@@ -2273,7 +2273,9 @@ export class TriageProcessor {
         worktreeBudget -= 1;
         let freshClaimSnapshot: Promise<{ count: number; ids: string[] }> | undefined;
         const getFreshClaimSnapshot = () => freshClaimSnapshot ??= (async () => {
-          const fresh = await this.store.listTasks({ slim: true, includeArchived: false });
+          // Full rows are required here: a pending optional workflow-step lease can be the task's
+          // only live-agent signal, and slim rows intentionally omit workflowStepResults.
+          const fresh = await this.store.listTasks({ slim: false, includeArchived: false });
           let pending = 0;
           for (const id of this.processing) {
             const row = fresh.find((task) => task.id === id);

@@ -337,6 +337,8 @@ The CI job uses `fetch-depth: 0` because these tests run real git operations.
 
 Flaky tests are quarantined ON SIGHT and deleted on a 2-week clock. This is written policy with minimal mechanics — deliberately no loader module, no automation (see the AGENTS.md standing rule "Flaky Tests Are Quarantined on Sight").
 
+Quarantine is the default when a sighting is reproducible enough to justify evicting a file's coverage. The only exception is the narrow first-sighting record authority in AGENTS.md: a high-value file may be recorded in the [observed suite-only flakes register](solutions/test-failures/suite-only-flakes-observed-register.md) instead (`docs/solutions/test-failures/suite-only-flakes-observed-register.md`). A second sighting of a registered flake moves it to the ledger plus matching Vitest `exclude` in one lockstep commit.
+
 **To quarantine a test** (a test that failed without a corresponding real bug in the change), in one commit:
 
 1. Add an entry to `scripts/lib/test-quarantine.json`:
@@ -358,6 +360,8 @@ Flags:
 **Rescue** (before the clock runs out) requires both: evidence the test catches real regressions, and a root-cause fix for the flake. Stabilization passes — widened timeouts, retries, loosened assertions — are appeasement, not rescue, and are banned (for agents especially).
 
 ### Validate before excluding and preserve timeout budgets
+
+Capture **full runner output** before recording or filing a ledger entry—for example, tee it to a file. Never pipe a dot reporter through `tail`: the summary remains but the `FAIL` identity lines needed for evidence are truncated.
 
 Validate a quarantine-bound file **before** adding its exclusion. The dashboard quarantine array is spread into every dashboard project exclude, so even an explicitly named CLI file is suppressed afterward; no CLI flag removes a configured exclusion. The only local route back to validation is an uncommitted removal of both lockstep entries. Hoisting expensive real-dependency construction into a reusable per-file `beforeAll` is a valid structural rescue, but it inherits the hook timeout and does not by itself fix a duration-driven flake. Do not widen a timeout under a “deliberate budget” framing without an owner-approved policy exception; FN-8647 and [#3245](https://github.com/Runfusion/Fusion/issues/3245) document this distinction.
 

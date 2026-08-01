@@ -736,6 +736,7 @@ Import issues:
 
 - GitHub-imported tasks retain typed source issue metadata (`sourceIssue.provider/repository/externalIssueId/issueNumber/url`), which executor and merger flows use to include `Ref: owner/repo#N` in commit bodies.
 - When `githubCloseSourceIssueOnDone` is enabled (default: `false`), Fusion also closes linked source-imported GitHub issues with `state_reason: completed` when the task moves into `done`. On startup, a bounded reconciliation sweep checks done tasks and closes any still-open source issue links that were missed due to transient failures.
+- When triage splits an imported GitHub task into subtasks and closes the parent, Fusion comments on each affected source/tracking issue with the parent and child task IDs immediately before closing it. A source and tracking link to the same issue have one deterministic owner, so that issue receives exactly one comment and one close; different issues each receive one of both. The `task:deleted` run-audit row records only `closureKind` and `closureChildTaskIds` (no comment prose). This notification is delivered by the deleting store's in-process event; PostgreSQL does not support cross-process observation of `task:deleted` through the legacy SQLite polling path.
 
 ```bash
 fn task import owner/repo --labels bug --limit 20

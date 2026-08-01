@@ -16,8 +16,8 @@ import {mkdir, writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {and, eq} from "drizzle-orm";
 import * as schema from "../postgres/schema/index.js";
-import type {Task, Column, ArchivedTaskEntry, GithubIssueAction} from "../types.js";
-import {buildDeleteCallerAuditFields, type TaskDeleteAuditContext} from "../task-delete-attribution.js";
+import type {Task, Column, ArchivedTaskEntry, GithubIssueAction, TaskDeleteClosureContext} from "../types.js";
+import {buildDeleteCallerAuditFields, buildDeleteClosureAuditFields, type TaskDeleteAuditContext} from "../task-delete-attribution.js";
 import {notifyOperatorOfNonOperatorDelete} from "../task-delete-notice.js";
 import "../builtin-traits.js";
 import {normalizeTaskPriority} from "../task-priority.js";
@@ -137,7 +137,7 @@ export async function taskToArchiveEntryImpl(store: TaskStore, task: Task, archi
     };
   }
 
-export async function deleteTaskBackendImpl(store: TaskStore, id: string, options?: { removeDependencyReferences?: boolean; removeLineageReferences?: boolean; allowResurrection?: boolean; githubIssueAction?: GithubIssueAction; auditContext?: TaskDeleteAuditContext; },): Promise<Task> {
+export async function deleteTaskBackendImpl(store: TaskStore, id: string, options?: { removeDependencyReferences?: boolean; removeLineageReferences?: boolean; allowResurrection?: boolean; githubIssueAction?: GithubIssueAction; closureContext?: TaskDeleteClosureContext; auditContext?: TaskDeleteAuditContext; },): Promise<Task> {
   /*
   FNXC:TaskDeletion 2026-07-01-00:00:
   Task-bound runtime callers may never soft-delete the task they are executing; this guard is the PostgreSQL-backend mirror of the SQLite-path guard in deleteTaskImpl so direct callers of deleteTaskBackend inherit the same invariant before any mutation or audit.
@@ -219,13 +219,17 @@ export async function deleteTaskBackendImpl(store: TaskStore, id: string, option
           // FNXC:TaskDeleteAttribution 2026-07-26-14:30: caller class + calling
           // task id; `taskId` reached this function but was never persisted.
           ...buildDeleteCallerAuditFields(options?.auditContext),
+          ...buildDeleteClosureAuditFields(options?.closureContext),
         },
       });
     });
 
     // Emit lifecycle event (best-effort, outside the transaction).
     store.laneCache.invalidate(task.id);
-    store.emit("task:deleted", task, { githubIssueAction: options?.githubIssueAction ?? "auto" });
+    store.emit("task:deleted", task, {
+      githubIssueAction: options?.githubIssueAction ?? "auto",
+      ...(options?.closureContext ? { closureContext: options.closureContext } : {}),
+    });
     /*
     FNXC:TaskDeleteNotice 2026-07-26-16:10:
     Operator mailbox notice for a delete the operator did not perform. Deliberately placed here,
@@ -247,7 +251,7 @@ export async function deleteTaskIfBackendImpl(
   store: TaskStore,
   id: string,
   predicate: (live: Task) => boolean | Promise<boolean>,
-  options?: { removeDependencyReferences?: boolean; removeLineageReferences?: boolean; allowResurrection?: boolean; githubIssueAction?: GithubIssueAction; auditContext?: TaskDeleteAuditContext },
+  options?: { removeDependencyReferences?: boolean; removeLineageReferences?: boolean; allowResurrection?: boolean; githubIssueAction?: GithubIssueAction; closureContext?: TaskDeleteClosureContext; auditContext?: TaskDeleteAuditContext },
 ): Promise<{ task: Task; deleted: boolean }> {
   if (options?.auditContext?.taskId === id) throw new TaskSelfDeleteError(id);
   return store.withTaskLock(id, async () => {

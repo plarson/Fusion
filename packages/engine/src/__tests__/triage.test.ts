@@ -4218,6 +4218,10 @@ describe("taskCreate tool model inheritance", () => {
       );
       expect(store.deleteTask).toHaveBeenCalledWith("FN-500", expect.objectContaining({
         removeLineageReferences: true,
+        closureContext: {
+          kind: "split-into-subtasks",
+          childTaskIds: ["FN-501", "FN-502"],
+        },
         auditContext: expect.objectContaining({
           agentId: "triage",
           runId: expect.stringMatching(/^triage-delete-FN-500-/),

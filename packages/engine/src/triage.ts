@@ -3003,8 +3003,18 @@ export class TriageProcessor {
             );
             try {
               // FN-5129 / FN-5131: split-close must unlink lineage children when deleting the parent.
+              /*
+              FNXC:GitHubSourceIssueSplitClose 2026-08-01-09:24:
+              The imported issue reporter needs to learn that this parent closed in favor of these
+              child tasks. Preserve the exact ids as typed delete context so the in-process GitHub
+              lifecycle owner can comment immediately before its close.
+              */
               await this.store.deleteTask(task.id, {
                 removeLineageReferences: true,
+                closureContext: {
+                  kind: "split-into-subtasks",
+                  childTaskIds: [...createdSubtasksRef.current],
+                },
                 auditContext: {
                   // FNXC:TaskDeleteAttribution 2026-07-26-14:30: labelling only — this
                   // split-close delete is intended engine behavior and is unchanged.

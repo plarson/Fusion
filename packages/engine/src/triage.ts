@@ -10,6 +10,7 @@ import type {
   AgentPermissionPolicy,
   PermanentAgentGatingContext,
   WorkflowIr,
+  TaskMoveLanes,
 } from "@fusion/core";
 import {
   DUPLICATE_OF_METADATA_KEY,
@@ -71,6 +72,16 @@ const TRIAGE_STUCK_RESUME_LOG_ACTION = "Triage stuck re-queue will resume existi
 const TRIAGE_STUCK_RESUME_FEEDBACK = "The previous triage session was killed by the stuck-task detector after writing a non-empty planning draft. Resume from the existing draft below: preserve useful structure and decisions, fill gaps, and continue toward review instead of restarting planning from scratch.";
 
 /*
+FNXC:WorkflowEvents 2026-08-01-07:21:
+When a task:updated bridge omits lanes, planner membership is unknown and synchronous wake and
+ evacuation handlers retain their historic builtin-board fallback. Keep those compatibility sets
+separate from the PostgreSQL sync resolver, which would falsely claim default lanes for renamed
+workflows; metadata is the only authoritative renamed-lane answer in this event tick.
+*/
+const LEGACY_PLANNER_WAKE_COLUMNS = new Set(["todo", "triage"]);
+const LEGACY_PLANNER_COLUMNS = new Set([...LEGACY_PLANNER_WAKE_COLUMNS, "in-progress"]);
+
+/*
 FNXC:PlanReviewReplan 2026-07-13-00:00:
 The triage pre-execution Plan Review gate (runPlanReviewBeforeExecution) routes a REVISE
 verdict back to `needs-replan`, which re-plans and re-reviews. Without a ceiling, a planner
@@ -122,7 +133,7 @@ import type {
   AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import { ModelFallbackExhaustedError, describeModel, formatModelMarkerDetails, promptWithFallback } from "./pi.js";
-import { hasAdvancedPastPlanning, isTaskStillInPlanningStage, resolvePlannerLanes, resolvePlannerLanesForTaskAsync } from "./replan-target.js";
+import { hasAdvancedPastPlanning, isTaskStillInPlanningStage, resolvePlannerLanesForTaskAsync } from "./replan-target.js";
 import {
   createResolvedAgentSession,
   extractRuntimeHint,
@@ -448,9 +459,9 @@ export class TriageProcessor {
   private taskDeletedHandler?: (task: Task) => void;
   private taskPausedHandler?: (task: Task) => void;
   /** FNXC:CodingIdeasWorkflow 2026-07-25-11:20: store-event wake for planning-eligible columns. */
-  private taskColumnWakeHandler?: (task: Task) => void;
+  private taskColumnWakeHandler?: (task: Task, meta?: { lanes?: TaskMoveLanes }) => void;
   /** FNXC:PlanningEvacuation 2026-07-25-23:00: stops planning when a card leaves the planner lanes. */
-  private taskEvacuatedFromPlanningHandler?: (task: Task) => void;
+  private taskEvacuatedFromPlanningHandler?: (task: Task, meta?: { lanes?: TaskMoveLanes }) => void;
   private _approvalRequestStore?: ApprovalRequestStore;
 
   /**
@@ -703,10 +714,12 @@ export class TriageProcessor {
     The handler is deliberately dumb: it filters on column only and delegates every real decision
     to the poll, so it cannot bypass a pause, dependency, seed-prompt, or concurrency gate.
     */
-    this.taskColumnWakeHandler = (task: Task) => {
+    this.taskColumnWakeHandler = (task: Task, meta?: { lanes?: TaskMoveLanes }) => {
       if (!task?.id) return;
-      const wakeLanes = resolvePlannerLanes(this.store, task.id);
-      if (task.column !== wakeLanes.hold && task.column !== wakeLanes.intake) return;
+      const isPlannerWakeColumn = meta?.lanes
+        ? task.column === meta.lanes.hold || task.column === meta.lanes.intake
+        : LEGACY_PLANNER_WAKE_COLUMNS.has(task.column);
+      if (!isPlannerWakeColumn) return;
       if (task.paused === true || task.userPaused === true) return;
       // Already being planned (or mid-plan) — the running poll/session owns it.
       if (this.processing.has(task.id) || this.hasLivePlanningWork(task.id)) return;
@@ -735,7 +748,7 @@ export class TriageProcessor {
     that legitimately advances into execution is not an evacuation — its session is already
     unwinding on its own.
     */
-    this.taskEvacuatedFromPlanningHandler = (task: Task) => {
+    this.taskEvacuatedFromPlanningHandler = (task: Task, meta?: { lanes?: TaskMoveLanes }) => {
       if (!task?.id) return;
       /*
       Only an explicit, known destination column is evidence of evacuation. `task:updated` also
@@ -745,76 +758,16 @@ export class TriageProcessor {
       */
       if (typeof task.column !== "string") return;
       /*
-      FNXC:WorkflowResolvedColumns 2026-07-31-23:58 (RECONCILING TWO NOTES THAT CONTRADICTED EACH OTHER
-      — the earlier one was mine):
-
-      My flag here said the third arm must not be converted with the same helper because that adds a
-      third INERT comparison. #3114 then converted it. Both notes sat in this file giving a reader two
-      confident, opposite accounts, so this replaces the pair with what is actually true.
-
-      #3114 IS RIGHT ABOUT THE SHAPE AND THE BUG. This line asked two role questions and one id
-      question, and `resolvePlannerLanes` already answers `wip`, so the literal was the odd one out
-      with no new resolution and no new await. Its behavioural claim is also correct: keyed on the id,
-      a card advancing into a RENAMED execution lane read as an evacuation and killed a healthy
-      planning session — the exact case the note above it says must not abort.
-
-      WHAT IT DOES NOT DO IS FIX THAT UNDER POSTGRESQL, and the evidence is mechanical rather than
-      argued: `resolvePlannerLanes` resolves through `resolveTaskWorkflowIrSync`, which cannot answer
-      for a CUSTOM workflow — the sync selection reader returns `undefined` unconditionally, AND the
-      custom-workflow IR read goes through `store.db`, whose implementation is an unconditional throw
-      (`sync-workflow-ir-second-blocker.test.ts`). All three arms therefore evaluate to `todo` /
-      `triage` / `in-progress` on every board the product ships. `check-inert-sync-lane-conversions`
-      records this file at SEVEN inert guards, which is where the truth now lives.
-
-      SO READ THE ZERO CAREFULLY. This file's lifecycle-column-census count is now 0, and the census's
-      own `--triage` output warns that for a sync-resolved file "a count of 0 is the WORST case, not
-      the best — the file reads as fully converted". That is this file. The guard is uniform and
-      honest in shape, and still wrong on a renamed board.
-
-      UNBLOCKING is not "convert the remaining arm" — there is none. It needs the answer to arrive
-      without the sync resolver: the emitter-carried lanes #3109 added for `task:moved`, extended to
-      `task:updated` (measured as NOT a cheap follow-on — 26 emit sites against 7, on the hottest
-      write path; see `sync-workflow-ir-second-blocker.test.ts`), or a sync reader that answers for
-      custom workflows.
-
-      The guard's answer is also consumed SYNCHRONOUSLY — `pauseAborted.add`, `session.dispose()` and
-      `activeSessions.delete` all mutate in-memory state in this tick — so whatever supplies it must
-      not require an await.
+      FNXC:WorkflowEvents 2026-08-01-06:57:
+      `task:updated` now carries a cache-warmed lane answer for this synchronous evacuation guard.
+      Metadata can be absent at cache misses and runtime bridges, so that case remains unknown and
+      intentionally preserves the legacy planner-column fallback rather than consulting PostgreSQL's
+      default-only sync workflow resolver.
       */
-      const disposeLanes = resolvePlannerLanes(this.store, task.id);
-      /*
-      FNXC:WorkflowResolvedColumns 2026-07-31-21:30 (fleet — the third lane on this line):
-      `disposeLanes.wip`, not the literal — the same resolver already answers the other two.
-
-      This line asked two role questions and one id question. `resolvePlannerLanes` is already called
-      immediately above and its result carries `wip`, so no new resolution and no new await are
-      introduced: the literal simply stops being the odd one out. On a board whose execution lane is
-      renamed, the previous form treated a card advancing into execution as an EVACUATION and killed
-      a healthy planning session — the one case the note above says must not abort.
-
-      `wip` is optional by design (PR #2628: a missing role stays undefined so callers refuse rather
-      than invent a column). Undefined here means the board declares no execution lane, so there is
-      no advance-into-execution to exclude and the comparison is correctly false.
-
-      FNXC:WorkflowResolvedColumns 2026-07-31-23:58 (the conversion is REVERTED; the analysis is kept):
-      The bug described above is REAL and this is the clearest statement of it in the file, which is
-      why the paragraphs stay. The change did not fix it.
-
-      Measured: `disposeLanes.wip` resolves through `resolveTaskWorkflowIrSync`, which answers with the
-      DEFAULT board under PostgreSQL, so it evaluates to `in-progress` — the same value as the literal
-      it replaced. A card advancing into a renamed execution lane still matches nothing, still reads as
-      an evacuation, and still kills a healthy planning session. Identical behaviour, on every board.
-
-      What the change DID do was add an eighth entry to `check-inert-sync-lane-conversions` for this
-      file (7 -> 8) and leave `main` red on that gate. Its failure text is explicit that the fix is not
-      to re-record: "Do NOT re-record the baseline to clear this — that is the same false green one
-      layer up." So the arm goes back to the literal, which is honest about being one and keeps this
-      file's census entry pointing at work that is still outstanding.
-
-      DELIBERATE-LITERAL — THE SPECIFICATION IS ABOVE. Whoever supplies a lane answer that is not sync-resolved should make
-      this line read `disposeLanes.wip` and delete this note. LEFT COUNTED until then.
-      */
-      if (task.column === disposeLanes.hold || task.column === disposeLanes.intake || task.column === "in-progress") return;
+      const disposeLanes = meta?.lanes;
+      if (disposeLanes
+        ? task.column === disposeLanes.hold || task.column === disposeLanes.intake || task.column === disposeLanes.wip
+        : LEGACY_PLANNER_COLUMNS.has(task.column)) return;
       if (this.activeSubagentSessions.has(task.id)) {
         this.disposeSubagentsForTask(task.id, `task moved to ${task.column}`);
       }

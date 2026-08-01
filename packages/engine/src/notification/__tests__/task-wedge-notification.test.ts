@@ -68,6 +68,25 @@ describe("task wedge notifications", () => {
   });
 
   /*
+  FNXC:TaskWedgeNotifications 2026-08-01-07:44:
+  A recovery and re-wedge can be emitted back-to-back by synchronous task lifecycle writers. The
+  per-task chain must run the recovery's resolve before the second wedge's claim; otherwise the old
+  active episode rejects the claim and drops the second operator alert.
+  */
+  it("serializes back-to-back recovery and re-wedge task updates", async () => {
+    const { store, service, sendMessageOnce, task } = fixture();
+    await service.start();
+
+    store.emit(task());
+    await vi.waitFor(() => expect(sendMessageOnce).toHaveBeenCalledTimes(1));
+    store.emit(task({ status: "queued", error: undefined, column: "todo", updatedAt: "2026-07-22T12:02:00.000Z" }));
+    store.emit(task({ updatedAt: "2026-07-22T12:03:00.000Z" }));
+
+    await vi.waitFor(() => expect(sendMessageOnce).toHaveBeenCalledTimes(2));
+    await service.stop();
+  });
+
+  /*
   FNXC:WorkflowResolvedColumns 2026-07-31-18:50 (fleet):
   Clearing a wedge episode asks "has the card moved on?", which was four column literals. On a renamed
   board none matched, so a RECOVERED card never cleared its episode and the operator kept an alert for

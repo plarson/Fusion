@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { TaskMoveLanes } from "./workflow-lifecycle-traits.js";
+import { TaskLaneCache } from "./task-lane-cache.js";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
@@ -161,7 +162,13 @@ export interface TaskStoreEvents {
   never "legacy".
   */
   "task:moved": [data: { task: Task; from: ColumnId; to: ColumnId; source: "user" | "engine" | "scheduler"; lanes?: TaskMoveLanes }];
-  "task:updated": [task: Task];
+  /*
+  FNXC:WorkflowEvents 2026-08-01-06:11:
+  `task:updated` listeners are synchronous and may receive cache-warmed resolved lanes as an optional
+  second argument. The first argument remains the Task so existing one-argument subscribers are
+  unchanged; absent metadata is unknown, never a legacy-lane claim.
+  */
+  "task:updated": [task: Task, meta?: { lanes?: TaskMoveLanes }];
   "task:deleted": [task: Task, meta?: { githubIssueAction?: GithubIssueAction }];
   "task:merged": [result: MergeResult];
   "settings:updated": [data: { settings: Settings; previous: Settings }];
@@ -404,6 +411,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
   public watcher: FSWatcher | null = null;
   public taskCache: Map<string, Task> = new Map();
+  /** Per-store, bounded answer cache used only to decorate synchronous task:updated events. */
+  public readonly laneCache = new TaskLaneCache();
   /*
   FNXC:IncompletePgPorts 2026-07-26-20:35:
   Sync getDatabaseHealth/healthCheck cannot await PostgreSQL. Cache the last
@@ -528,7 +537,17 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     this.globalSettingsDir = resolvedGlobalSettingsDir;
     this.globalSettingsStore = new GlobalSettingsStore(resolvedGlobalSettingsDir, this.asyncLayer ?? undefined);
   }
+  /*
+  FNXC:WorkflowEvents 2026-08-01-06:28:
+  Safe lifecycle emission invokes listeners directly to isolate listener failures, so it bypasses
+  EventEmitter.emit. Decorate this path too; otherwise the hot update surfaces silently miss lanes.
+  */
   public emitTaskLifecycleEventSafely( event: "task:created" | "task:updated", args: TaskStoreEvents["task:created"] | TaskStoreEvents["task:updated"], ): boolean {
+    if (event === "task:updated" && args.length === 1) {
+      const task = args[0] as Task;
+      const lanes = this.laneCache.get(task.id);
+      if (lanes !== undefined) return emitTaskLifecycleEventSafelyImpl(this, event, [task, { lanes }]);
+    }
     return emitTaskLifecycleEventSafelyImpl(this, event, args);
   }
 
@@ -1564,6 +1583,21 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
       return task;
     });
   }
+  /*
+  FNXC:WorkflowEvents 2026-08-01-06:11:
+  One seam decorates every TaskStore `task:updated` emission, including hot synchronous paths, with a
+  cached answer only. Explicit metadata wins; runtime and process bridge EventEmitters do not call this
+  method and deliberately DROP lanes because absent metadata safely preserves their listener fallback.
+  */
+  override emit<E extends string | symbol>(event: E, ...args: any[]): boolean {
+    if (event === "task:updated" && args.length === 1) {
+      const task = args[0] as Task;
+      const lanes = this.laneCache.get(task.id);
+      if (lanes !== undefined) return EventEmitter.prototype.emit.call(this, event, task, { lanes });
+    }
+    return EventEmitter.prototype.emit.call(this, event, ...args);
+  }
+
   async updateStep( id: string, stepIndex: number, status: import("./types.js").StepStatus, options?: { source?: "graph" }, ): Promise<Task> {
     return updateStepImpl(this, id, stepIndex, status, options);
   }

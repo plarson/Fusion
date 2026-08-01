@@ -2383,12 +2383,16 @@ The done-task Summary tab is a scrollable overview composed from existing detail
   display: flex;
   flex-direction: column;
   gap: var(--space-lg);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .task-summary-section {
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
+  min-width: 0;
+  max-width: 100%;
   padding: var(--space-lg);
   background: var(--card);
   border: var(--btn-border-width) solid var(--border);
@@ -2467,9 +2471,14 @@ The desktop table needs a token-scale min-width and non-anywhere model-name wrap
 
 FNXC:TaskDetailSummaryTokenCost 2026-07-11-00:00:
 Mobile per-model breakdowns must stay real tables and scroll horizontally inside .task-summary-token-table-wrap, matching the Command Center .cc-table-wrap pattern. Do not stack rows into cards; side-by-side model token/cost columns are the user-facing scan path.
+
+FNXC:TaskDetailSummaryTab 2026-08-01-07:15:
+Mobile token/cost scrolling requires min-width: 0 containment through the Summary flex ancestors. Overflow-x alone cannot shrink an intrinsically wide table's flex/grid child, so the wrapper must own horizontal overflow rather than widening the detail body.
 */
 .task-summary-token-table-wrap {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
 }
 

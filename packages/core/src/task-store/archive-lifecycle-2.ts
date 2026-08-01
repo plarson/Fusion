@@ -224,6 +224,7 @@ export async function deleteTaskBackendImpl(store: TaskStore, id: string, option
     });
 
     // Emit lifecycle event (best-effort, outside the transaction).
+    store.laneCache.invalidate(task.id);
     store.emit("task:deleted", task, { githubIssueAction: options?.githubIssueAction ?? "auto" });
     /*
     FNXC:TaskDeleteNotice 2026-07-26-16:10:
@@ -393,7 +394,9 @@ export async function archiveTaskBackendImpl(store: TaskStore, id: string, optio
     lane-less left that leak reachable through this path even after the listener itself was fixed.
     */
     const movedLanes = toTaskMoveLanes(await resolveWorkflowIrForTask(store, task.id).catch(() => undefined));
+    store.laneCache.set(task.id, movedLanes);
     store.emit("task:moved", { task, from: fromColumn, to: "archived" as Column, source: "engine", lanes: movedLanes });
+    store.laneCache.invalidate(task.id);
 
     // Best-effort near-duplicate cleanup.
     await store.clearNearDuplicateReferencesToFailSoft(id, {

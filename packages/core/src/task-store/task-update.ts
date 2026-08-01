@@ -1011,6 +1011,7 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
            PostgreSQL. So these two paths kept the pre-#3109 behaviour while the listeners read as
            resolved. */
         const lanes = toTaskMoveLanes(await resolveWorkflowIrForTask(store, id).catch(() => undefined));
+        store.laneCache.set(task.id, lanes);
         store.emit("task:moved", { task, from: "todo" as Column, to: "triage" as Column, source: "engine", lanes });
       }
       store.emitTaskLifecycleEventSafely("task:updated", [task]);

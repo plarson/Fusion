@@ -1215,7 +1215,7 @@ export class Scheduler {
      * PR Monitoring: Start monitoring when PR is linked to an in-review task.
      * Also detects task-level unpause transitions and triggers immediate scheduling.
      */
-    this.store.on("task:updated", (task) => {
+    this.store.on("task:updated", (task, meta) => {
       const nextFingerprint = computeAutoClaimFingerprint(task);
       const previousFingerprint = this.lastAutoClaimFingerprint.get(task.id);
       if (!previousFingerprint || previousFingerprint !== nextFingerprint) {
@@ -1223,51 +1223,17 @@ export class Scheduler {
         this.options.snapshotManager?.invalidate("task:updated");
       }
       /*
-      FNXC:WorkflowResolvedColumns 2026-07-31-23:58 (FLAGGED AND LEFT COUNTED — do NOT convert with
-      `resolveTaskParkedColumnsSync`):
-      This literal and the `in-review` one further down are the two the sync-lane pass did not take,
-      and nothing in this file said why. Converting them the way the other ten were converted would
-      make them INERT, not fixed: `getTaskWorkflowSelectionImpl` returns `undefined` unconditionally
-      under PostgreSQL, so `resolveTaskWorkflowIrSync` always answers with the DEFAULT builtin IR and
-      every lane it yields is the legacy id (proved in `postgres/sync-workflow-ir-is-always-default.pg.test.ts`;
-      `check-inert-sync-lane-conversions` baselines the twenty guards already in that state here).
-
-      They stay literal and COUNTED, which is the honest state: an unconverted literal is at least
-      visible to the census, while an inert conversion leaves the backlog and takes the evidence with
-      it. Both live in a synchronous `task:updated` listener, so the async resolver is unavailable
-      without reordering this handler against every other subscriber.
-
-      FNXC:WorkflowResolvedColumns 2026-07-31-23:59 (THE REASON CHANGED — #3128 made async resolution
-      available here, so "it would be inert" is no longer why these two stay):
-      #3128 converted the rest of this listener by deferring the resolve into `void (async () => ...)`
-      blocks, which reach the ASYNC resolver and are genuinely correct. So the sync-resolver argument
-      above no longer explains these two. The real reason is the one #3128's own note states, three
-      branches down:
-
-        "The `planningTaskIds.delete` stays SYNCHRONOUS — it is the edge-trigger bookkeeping, and
-         deferring it would let a second update re-enter this branch."
-
-      Both remaining literals are that case:
-        - `failedTaskIds.add` below is edge-trigger bookkeeping raced against `moveTask` clearing the
-          failure metadata — the comment on it says so. Deferring the add can miss that window.
-        - the PR-monitoring guard further down gates `prMonitor.getTrackedPrs()` /
-          `startMonitoring()`, where `tracked.has(task.id)` IS the re-entrance guard. Move the lane
-          answer behind an await and two updates for the same task can both pass that check before
-          either starts, double-starting a monitor.
-
-      LEFT COUNTED, both of them: an unconverted literal is visible to the census, and marking these
-      exempt would assert the code is fine when it is blocked.
-
-      So these are not waiting on a resolver. They are waiting on somewhere to put the answer that is
-      not behind an await — the emitter-carried `lanes` that #3109 added to `task:moved` would do it,
-      and extending that to `task:updated` is measured as expensive rather than impossible
-      (`sync-workflow-ir-second-blocker.test.ts`: 26 emit sites against 7, on the hottest write path).
+      FNXC:WorkflowEvents 2026-08-01-07:14:
+      TaskStore decorates `task:updated` with its cache-warmed lanes, letting the failure and PR
+      edge-trigger guards remain synchronous on renamed boards. A missing payload is unknown, not a
+      legacy claim, so its fallback stays literal instead of consulting PostgreSQL's default-only sync
+      resolver; that preserves existing bridge and cold-cache behaviour without reordering listeners.
       */
+      const eventLanes = meta?.lanes;
+      // DELIBERATE-LITERAL — absent event metadata is unknown, so the legacy wip fallback stays explicit.
       // Track mission failure signals before moveTask clears failure metadata.
       if (task.sliceId && task.status === "failed") {
-        /* DELIBERATE-LITERAL — see the note above: converting this needs the async resolver on the
-         hottest write path (26 emit sites against 7, measured), not a signature change here. */
-      if (task.column === "in-progress") this.failedTaskIds.add(task.id);
+        if (eventLanes ? task.column === eventLanes.wip : task.column === "in-progress") this.failedTaskIds.add(task.id);
         /*
         FNXC:MissionReconciliation 2026-08-01-00:00:
         In-place failure parks do not emit task:moved, but they release the
@@ -1350,14 +1316,8 @@ export class Scheduler {
       }
 
       if (!this.options.prMonitor) return;
-      /* FNXC:WorkflowResolvedColumns 2026-07-31-23:59: the second of the two honest literals. NOT
-         because a conversion would be inert — #3128 made the async resolver reachable in this
-         listener — but because `tracked.has(task.id)` below is a re-entrance guard, and moving this
-         answer behind an await lets two updates for the same task both pass it and double-start a
-         monitor. LEFT COUNTED. See the fuller note on the mission-failure guard above. */
-      /* DELIBERATE-LITERAL — see the note directly above: an await here lets two updates for the
-         same task both pass the `tracked.has` re-entrance guard and double-start a monitor. */
-      if (task.column !== "in-review") return;
+      // DELIBERATE-LITERAL — runtime bridges drop lanes; never replace this unknown fallback with the sync resolver.
+      if (eventLanes ? task.column !== eventLanes.review : task.column !== "in-review") return;
       if (!task.prInfo) return;
 
       // Check if we're already monitoring this task

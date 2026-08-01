@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { DbTransaction } from "../postgres/data-layer.js";
+import type { TaskDeleteClosureContext } from "../types.js";
 
 export type TaskDeletedLifecyclePayload = {
   taskId: string;
@@ -9,6 +10,7 @@ export type TaskDeletedLifecyclePayload = {
   deletedAt: string;
   allowResurrection: boolean;
   githubIssueAction: string | null;
+  closureContext: TaskDeleteClosureContext | null;
   deletedBy: string | null;
 };
 

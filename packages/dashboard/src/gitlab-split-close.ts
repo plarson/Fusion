@@ -2,7 +2,10 @@ import type { Task, TaskDeleteClosureContext, TaskStore } from "@fusion/core";
 import { resolveGitLabClient, resolveGitLabTarget, safeLogGitLabEntry, type GitLabLifecycleTarget } from "./gitlab-lifecycle.js";
 import { retryTransient, updateGitLabTargetState } from "./gitlab-tracking-state.js";
 
-type TaskDeletedMeta = { closureContext?: TaskDeleteClosureContext | { kind?: string; childTaskIds?: unknown } };
+type TaskDeletedMeta = {
+  closureContext?: TaskDeleteClosureContext | { kind?: string; childTaskIds?: unknown };
+  observed?: boolean;
+};
 
 export type GitLabSplitNoteResult =
   | { status: "posted"; target: GitLabLifecycleTarget }
@@ -84,6 +87,8 @@ export class GitLabSplitCloseService {
   }
 
   private async handleTaskDeleted(store: TaskStore, task: Task, meta?: TaskDeletedMeta): Promise<void> {
+    /* FNXC:CrossProcessDeleteObservation 2026-08-01-13:03: Split notes are writer-owned and must not repeat on at-least-once observed delivery. */
+    if (meta?.observed) return;
     try {
       const result = await postGitLabSplitNoteBeforeClose(store, task, meta);
       if (result.status === "posted") {

@@ -266,6 +266,7 @@ async function deleteTaskBackendWithClaimResultImpl(store: TaskStore, id: string
           deletedAt,
           allowResurrection,
           githubIssueAction: options?.githubIssueAction ?? null,
+          closureContext: options?.closureContext ?? null,
           deletedBy: options?.auditContext?.agentId ?? null,
         },
       });

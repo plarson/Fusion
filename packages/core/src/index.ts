@@ -835,6 +835,17 @@ export {
   type LegacyAutoMergeStampReconcileResult,
 } from "./store.js";
 export {
+  pruneTaskLifecycleEvents,
+  TASK_LIFECYCLE_RETENTION_DAYS,
+  TASK_LIFECYCLE_RETENTION_MAX_DELETES,
+  type TaskLifecycleRetentionResult,
+} from "./task-store/task-lifecycle-event-retention.js";
+export {
+  buildConsumerId,
+  TASK_LIFECYCLE_CONSUMER_ROLES,
+  type TaskLifecycleConsumerRole,
+} from "./task-store/task-lifecycle-consumer-identity.js";
+export {
   STOPWORDS,
   tokenize,
   computeContentFingerprint,

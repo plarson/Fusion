@@ -818,6 +818,7 @@ export class InProcessRuntime
         // InProcessRuntime.start(). When the factory returns a backend result,
         // the engine owns the result's shutdown() for process teardown.
         createTaskStoreForBackend,
+        buildConsumerId,
         createProjectScopedPluginMcpProvider,
         registerTaskDeleteNoticeMailbox,
       } = await import("@fusion/core");
@@ -828,6 +829,8 @@ export class InProcessRuntime
         const backendBoot = await createTaskStoreForBackend({
           rootDir: this.config.workingDirectory,
           projectId: this.config.projectId,
+          /* FNXC:CrossProcessDeleteObservation 2026-08-01-11:39: the engine owns this store, so its role-only identity is restart-stable and never derives from boot state. */
+          consumerId: buildConsumerId("engine"),
           onMigrationProgress: this.config.onMigrationProgress,
         });
         // FNXC:PostgresFinalCutover 2026-07-14-17:20: Engine runtimes must fail
@@ -1712,6 +1715,12 @@ export class InProcessRuntime
 
       // 8. Set up event forwarding from TaskStore
       this.setupEventForwarding();
+      /*
+      FNXC:CrossProcessDeleteObservation 2026-08-01-13:03:
+      Engine-owned stores do not call watch(), so runtime startup owns durable delete observation.
+      Start only after its bridge is attached so the initial poll cannot lose a cross-process delete.
+      */
+      await this.taskStore.startTaskDeletedOutboxConsumer();
 
       const startupSettings = await this.taskStore.getSettings();
       if (startupSettings.globalPause || startupSettings.enginePaused) {
@@ -2645,8 +2654,12 @@ export class InProcessRuntime
       this.emit("task:updated", task);
     });
 
-    // Forward task:deleted events
-    this.taskStore.on("task:deleted", (task: Task, meta?: { githubIssueAction?: GithubIssueAction }) => {
+    /*
+    FNXC:CrossProcessDeleteObservation 2026-08-01-12:02:
+    Preserve observed outbox provenance through the runtime bridge. Downstream project and IPC
+    bridges must distinguish cross-process deletion delivery without re-running writer effects.
+    */
+    this.taskStore.on("task:deleted", (task: Task, meta?: { githubIssueAction?: GithubIssueAction; observed?: boolean; outboxEventId?: string }) => {
       this.recordActivity();
       this.emit("task:deleted", task, meta);
     });

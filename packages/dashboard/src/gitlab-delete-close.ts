@@ -5,6 +5,7 @@ import { updateGitLabTargetState } from "./gitlab-tracking-state.js";
 type TaskDeletedMeta = {
   githubIssueAction?: GithubIssueAction;
   closureContext?: TaskDeleteClosureContext | { kind?: string };
+  observed?: boolean;
 };
 
 export type GitLabDeleteAction =
@@ -59,6 +60,8 @@ export class GitLabDeleteCloseService {
   }
 
   private async handleTaskDeleted(store: TaskStore, task: Task, meta?: TaskDeletedMeta): Promise<void> {
+    /* FNXC:CrossProcessDeleteObservation 2026-08-01-13:03: Observed outbox replays never repeat GitLab close/delete-side effects. */
+    if (meta?.observed) return;
     let stage = "resolve";
     try {
       const target = resolveGitLabTarget(task, { fallbackToSourceOnInvalidTracking: true });

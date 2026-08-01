@@ -591,6 +591,51 @@ export const taskLifecycleEventSeq = projectSchema.table("task_lifecycle_event_s
   lastSeq: bigint("last_seq", { mode: "bigint" }).notNull().default(sql`0`),
 }, (t) => [primaryKey({ columns: [t.projectId] })]);
 
+/*
+FNXC:CrossProcessDeleteObservation 2026-08-01-11:39:
+The transactional delete outbox needs durable state per independently observing identity.
+Registration, cursor/lease, receipt, and dead-letter rows stay project-scoped so one
+runtime's acknowledgement never suppresses another runtime's at-least-once delivery.
+*/
+export const taskLifecycleConsumerRegistrations = projectSchema.table("task_lifecycle_consumer_registrations", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  consumerId: text("consumer_id").notNull(),
+  registeredAt: text("registered_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull(),
+  active: integer("active").notNull().default(1),
+}, (t) => [primaryKey({ columns: [t.projectId, t.consumerId] })]);
+
+export const taskLifecycleConsumerCursors = projectSchema.table("task_lifecycle_consumer_cursors", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  consumerId: text("consumer_id").notNull(),
+  lastAckedSeq: bigint("last_acked_seq", { mode: "bigint" }).notNull().default(sql`0`),
+  retryAttempts: integer("retry_attempts").notNull().default(0),
+  retryBackoffUntil: text("retry_backoff_until"),
+  leaseToken: text("lease_token"),
+  fencingToken: bigint("fencing_token", { mode: "bigint" }).notNull().default(sql`0`),
+  leaseExpiresAt: text("lease_expires_at"),
+  updatedAt: text("updated_at").notNull(),
+}, (t) => [primaryKey({ columns: [t.projectId, t.consumerId] })]);
+
+export const taskLifecycleConsumerReceipts = projectSchema.table("task_lifecycle_consumer_receipts", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  consumerId: text("consumer_id").notNull(),
+  eventId: text("event_id").notNull(),
+  seq: bigint("seq", { mode: "bigint" }).notNull(),
+  processedAt: text("processed_at").notNull(),
+}, (t) => [primaryKey({ columns: [t.projectId, t.consumerId, t.eventId] })]);
+
+export const taskLifecycleConsumerDeadLetters = projectSchema.table("task_lifecycle_consumer_dead_letters", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  consumerId: text("consumer_id").notNull(),
+  eventId: text("event_id").notNull(),
+  seq: bigint("seq", { mode: "bigint" }).notNull(),
+  attempts: integer("attempts").notNull(),
+  failureClass: text("failure_class").notNull(),
+  parkedAt: text("parked_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (t) => [primaryKey({ columns: [t.projectId, t.consumerId, t.eventId] })]);
+
 // ── Workflow step definitions ────────────────────────────────────────
 export const workflowSteps = projectSchema.table("workflow_steps", {
   id: text("id").primaryKey(),

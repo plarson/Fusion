@@ -16,7 +16,7 @@ applies_when: A Fusion deployment has more than one TaskStore process sharing a 
 
 Use a **transactional PostgreSQL outbox with per-consumer durable cursors** for cross-process lifecycle observation. The initial scope is `task:deleted`; its event contract must be deliberately extended before other lifecycle events join the stream.
 
-This is a design decision, not an implementation. The unreachable polling replica is removed by FN-8683. Implementation is tracked by the linked follow-up tasks recorded in the FN-8683 task documents.
+The unreachable polling replica is removed by FN-8683. FN-8684 lands the transactional writer and FN-8685 lands the consumer-state migration, explicit identity helper, observed dispatcher, fenced polling seam, and bounded self-healing retention invocation. The consumer remains at-least-once: dispatch precedes the durable receipt/cursor acknowledgement, so crash-window duplicates are expected and observed listeners must remain idempotent.
 
 ## Problem and current boundary
 
@@ -123,6 +123,10 @@ This prevents pruning events that an active consumer has not acknowledged and le
 5. Add a NOTIFY wake-up only as an optimization after cursor catch-up is proven; it is never the delivery authority.
 6. Enable per deployment, observe cursor lag/dead letters, and retain the old full-cache reconciliation fallback during rollout. The removed SQLite polling replica is not a rollback path because it cannot run in PostgreSQL mode.
 
+## Implementation status
+
+FN-8684 landed the transactional writer and FN-8685 landed the consumer-state tables, explicit consumer identity helper, observed dispatch, fenced polling, reconciliation boundary, retry/dead-letter handling, and bounded self-healing retention invocation. Delivery is available only to PostgreSQL `TaskStore` instances constructed with an explicit durable consumer identity; stores without one intentionally remain observation-disabled. Runtime wiring must source any instance key from a named persisted field, never boot-generated process state.
+
 ## Consequences
 
-Until the rollout ships, cross-process `task:deleted` observation is a known PostgreSQL gap. In-process deletes and their existing listeners remain supported and unchanged. Any feature that needs cross-process lifecycle correctness must depend on the outbox implementation rather than reintroducing `store.db` polling.
+Cross-process `task:deleted` observation is available through the configured outbox consumer. In-process deletes and their existing listeners remain supported and unchanged. Any feature that needs cross-process lifecycle correctness must depend on the outbox implementation rather than reintroducing `store.db` polling.

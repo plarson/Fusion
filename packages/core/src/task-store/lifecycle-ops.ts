@@ -362,7 +362,14 @@ export function setupActivityLogListenersImpl(store: TaskStore): void {
     });
 
     // Task deleted
-    store.on("task:deleted", (task) => {
+    store.on("task:deleted", (task, meta) => {
+      /*
+      FNXC:CrossProcessDeleteObservation 2026-08-01-11:39:
+      Observed outbox replay is intentionally at-least-once. Activity is writer-owned and
+      accumulating, so observed events must not create a duplicate activity/audit side effect.
+      Cache eviction and bridge fan-out remain safe for duplicate observed notifications.
+      */
+      if (meta?.observed) return;
       store.recordActivityFromListener(
         {
           type: "task:deleted",
@@ -604,6 +611,8 @@ export async function watchImpl(store: TaskStore): Promise<void> {
     for (const task of tasks) {
       store.taskCache.set(task.id, { ...task });
     }
+    // Cache must be populated before observed deletes can safely evict local task state.
+    await store.startTaskDeletedOutboxConsumer();
 }
 
 export async function migrateAgentLogEntriesImpl(store: TaskStore): Promise<void> {
@@ -1127,7 +1136,7 @@ export async function migrateLegacyWorkflowStepsImpl(store: TaskStore): Promise<
  */
 export function emitTaskLifecycleEventSafelyImpl(
   store: TaskStore,
-  event: "task:created" | "task:updated",
+  event: "task:created" | "task:updated" | "task:deleted",
   args: Parameters<TaskStore["emitTaskLifecycleEventSafely"]>[1],
 ): boolean {
   const listeners = store.listeners(event) as Array<(...listenerArgs: typeof args) => unknown>;

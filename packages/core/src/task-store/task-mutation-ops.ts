@@ -1199,6 +1199,7 @@ export async function listApprovedCliAutonomyAdaptersImpl(store: TaskStore): Pro
 
 export async function closeImpl(store: TaskStore): Promise<void> {
     store.closing = true;
+    await store.stopTaskDeletedOutboxConsumer();
     if (store.deferredTaskCreatedWork.size > 0) {
       await Promise.allSettled([...store.deferredTaskCreatedWork]);
     }

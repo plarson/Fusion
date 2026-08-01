@@ -139,7 +139,11 @@ type GitHubIssueActionEvent = {
   error?: string;
 };
 
-type TaskDeletedMeta = { githubIssueAction?: GithubIssueAction; closureContext?: TaskDeleteClosureContext };
+type TaskDeletedMeta = {
+  githubIssueAction?: GithubIssueAction;
+  closureContext?: TaskDeleteClosureContext;
+  observed?: boolean;
+};
 
 type SplitCommentLog = (message: string, details: string) => Promise<void>;
 
@@ -522,6 +526,12 @@ export class GitHubTrackingStateService {
   }
 
   private async handleTaskDeleted(store: TaskStore, task: Task, meta?: TaskDeletedMeta): Promise<void> {
+    /*
+    FNXC:CrossProcessDeleteObservation 2026-08-01-13:03:
+    Durable observers replay committed deletes at least once. GitHub close/delete/comment actions are
+    writer-owned side effects, so observed notifications are bridge-only and must never invoke them.
+    */
+    if (meta?.observed) return;
     if (task.githubTracking?.enabled !== true) {
       await this.handleSourceIssueDelete(store, task, meta);
       return;

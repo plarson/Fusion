@@ -18,7 +18,7 @@ export interface ProjectManagerEvents {
   /** Emitted when a task is created in any project */
   "task:created": [data: { projectId: string; projectName: string; task: Task }];
   /** Emitted when a task is deleted in any project */
-  "task:deleted": [data: { projectId: string; projectName: string; task: Task; meta?: { githubIssueAction?: import("@fusion/core").GithubIssueAction } }];
+  "task:deleted": [data: { projectId: string; projectName: string; task: Task; meta?: { githubIssueAction?: import("@fusion/core").GithubIssueAction; observed?: boolean; outboxEventId?: string } }];
   /** Emitted when a task is moved in any project */
   "task:moved": [
     data: {
@@ -381,7 +381,7 @@ export class ProjectManager extends EventEmitter<ProjectManagerEvents> {
     });
 
     // Forward task:deleted
-    runtime.on("task:deleted", (task: Task, meta?: { githubIssueAction?: import("@fusion/core").GithubIssueAction }) => {
+    runtime.on("task:deleted", (task: Task, meta?: { githubIssueAction?: import("@fusion/core").GithubIssueAction; observed?: boolean; outboxEventId?: string }) => {
       this.emit("task:deleted", { projectId, projectName, task, meta });
     });
 

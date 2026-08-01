@@ -35,6 +35,7 @@ import { type TaskMoveLanes, resolveColumnFlags, IN_REVIEW_STALL_DEADLOCK_LOG_PR
   TERMINAL_ROLES,
   resolveProjectColumnsForRoles,
   REVIEW_ROLES,
+  pruneTaskLifecycleEvents,
 } from "@fusion/core";
 import { finalizePlanningSegment } from "@fusion/core";
 import type { MeshLeaseManager } from "./mesh-lease-manager.js";
@@ -915,6 +916,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
   private symbolLockNoActionAudited = false;
   private preservedQueuedOverlapLogged = new Map<string, string>();
   private maintenanceTickCounter = 0;
+  private readonly taskLifecycleRetentionLastPrunedAt = new Map<string, number>();
   private readonly processBootStartedAt = Date.now();
   private lastDbCorruptionNotifiedAt: number | null = null;
 
@@ -2159,6 +2161,27 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
     }, intervalMs);
   }
 
+  /*
+  FNXC:CrossProcessDeleteObservation 2026-08-01-11:39:
+  Periodic self-healing owns outbox retention. Each already-open PostgreSQL project is gated to
+  one bounded prune every six hours; failures stay diagnostic-only so retention never blocks
+  task execution or another maintenance step.
+  */
+  private async pruneTaskLifecycleEventsForMaintenance(): Promise<void> {
+    const layer = this.store.getAsyncLayer();
+    const projectId = layer?.projectId;
+    if (!layer || !projectId) return;
+    const now = Date.now();
+    const lastPrunedAt = this.taskLifecycleRetentionLastPrunedAt.get(projectId) ?? 0;
+    if (now - lastPrunedAt < 6 * 60 * 60 * 1000) return;
+    try {
+      await pruneTaskLifecycleEvents(layer, projectId);
+      this.taskLifecycleRetentionLastPrunedAt.set(projectId, now);
+    } catch (error) {
+      log.warn(`Task lifecycle retention failed for project ${projectId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private isPastInterruptedMergeGrace(task: Task, timeoutMs: number): boolean {
     const updatedAt = task.updatedAt ? Date.parse(task.updatedAt) : 0;
     if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
@@ -2527,6 +2550,10 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       // Batch 1 — housekeeping (safe under pause: filesystem/db cleanup only)
       const batch1Fns: Array<{ name: string; fn: () => Promise<unknown> }> = [
         { name: "prune-worktrees", fn: () => this.pruneWorktrees() },
+        {
+          name: "prune-task-lifecycle-events",
+          fn: async () => this.pruneTaskLifecycleEventsForMaintenance(),
+        },
         { name: "cleanup-orphans", fn: () => this.cleanupOrphans() },
         {
           name: "cleanup-stale-temp-merge-worktrees",

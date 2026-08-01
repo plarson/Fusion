@@ -119,6 +119,7 @@ import { flushAgentLogBufferImpl, appendAgentLogBatchImpl } from "./task-store/a
 import { refineTaskImpl, updateTaskDependenciesImpl } from "./task-store/update-task-deps.js";
 import { createWorkflowStepImpl, updateWorkflowStepImpl, updateWorkflowDefinitionImpl, deleteWorkflowDefinitionImpl, setDefaultWorkflowIdImpl, selectTaskWorkflowImpl } from "./task-store/workflow-ops.js";
 import { initImpl, setupActivityLogListenersImpl, reconcileOrphanedTaskDirsImpl, watchImpl, migrateAgentLogEntriesImpl, migrateMovedSettingsImpl, recoverStaleTransitionPendingImpl, migrateLegacyWorkflowStepsImpl, emitTaskLifecycleEventSafelyImpl } from "./task-store/lifecycle-ops.js";
+import { TaskDeletedOutboxConsumer } from "./task-store/task-deleted-outbox-consumer.js";
 import { updateStepImpl, startStepImpl, acquireMergeQueueLeaseImpl, mergeTaskImpl } from "./task-store/merge-queue-ops.js";
 import { addCommentImpl, publishArchivedTaskDocumentAdditionImpl, upsertTaskDocumentImpl } from "./task-store/comments-ops.js";
 import { deleteTaskImpl, archiveTaskImpl, type DeleteTaskIfResult } from "./task-store/archive-lifecycle.js";
@@ -169,7 +170,13 @@ export interface TaskStoreEvents {
   unchanged; absent metadata is unknown, never a legacy-lane claim.
   */
   "task:updated": [task: Task, meta?: { lanes?: TaskMoveLanes }];
-  "task:deleted": [task: Task, meta?: { githubIssueAction?: GithubIssueAction; closureContext?: TaskDeleteClosureContext }];
+  /*
+  FNXC:CrossProcessDeleteObservation 2026-08-01-11:39:
+  Observed outbox delivery is at-least-once, including a crash-window duplicate. The explicit
+  marker lets listener paths suppress writer-owned accumulating effects while bridge/cache work
+  remains idempotent; event identity makes duplicate provenance inspectable without payload prose.
+  */
+  "task:deleted": [task: Task, meta?: { githubIssueAction?: GithubIssueAction; closureContext?: TaskDeleteClosureContext; observed?: boolean; outboxEventId?: string }];
   "task:merged": [result: MergeResult];
   "settings:updated": [data: { settings: Settings; previous: Settings }];
   "workflow:setting-values-updated": [data: {
@@ -373,8 +380,8 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public static readonly DEFAULT_WORKFLOW_POOL_ID = DEFAULT_WORKFLOW_POOL_ID;
 
   /** FNXC:RuntimeBackendInjection 2026-06-24-14:20: Backend-mode factory. */
-  static async getOrCreateForProject( projectId?: string, centralCore?: CentralCore, globalSettingsDir?: string, asyncLayer?: AsyncDataLayer, ): Promise<TaskStore> {
-    return getOrCreateForProjectImpl(this, projectId, centralCore, globalSettingsDir, asyncLayer);
+  static async getOrCreateForProject( projectId?: string, centralCore?: CentralCore, globalSettingsDir?: string, asyncLayer?: AsyncDataLayer, consumerId?: string, ): Promise<TaskStore> {
+    return getOrCreateForProjectImpl(this, projectId, centralCore, globalSettingsDir, asyncLayer, consumerId);
   }
 
   /** FNXC:PostgresRuntimeStorage 2026-07-14-18:47: Task metadata is authoritative in PostgreSQL; task document/blob files remain on disk. */
@@ -389,6 +396,9 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
    * FNXC:PostgresRuntimeStorage 2026-07-14-18:47: Production TaskStores receive an AsyncDataLayer and delegate all persistence to PostgreSQL. A missing layer is a construction error; retained sync members exist only until compatibility tests and types are removed.
    */
   public readonly asyncLayer: AsyncDataLayer | null = null;
+  /** Explicitly absent means cross-process lifecycle observation is disabled. */
+  public readonly consumerId: string | null;
+  private taskDeletedOutboxConsumer: TaskDeletedOutboxConsumer | null = null;
   private pluginPostgresSchemaExecutor: ((contracts: readonly LoadedPluginSchemaContract[]) => Promise<void>) | null = null;
 
   /*
@@ -517,7 +527,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   }
 
   /** FNXC:RuntimeBackendInjection 2026-06-24-14:05: asyncLayer → backend mode (PostgreSQL, no SQLite); absent → legacy SQLite. */
-  constructor( public rootDir: string, globalSettingsDir?: string, options?: { asyncLayer?: AsyncDataLayer }, ) {
+  constructor( public rootDir: string, globalSettingsDir?: string, options?: { asyncLayer?: AsyncDataLayer; consumerId?: string }, ) {
     super();
     this.setMaxListeners(100);
     assertProjectRootDir(rootDir, "TaskStore");
@@ -526,6 +536,7 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
     this.tasksDir = join(this.fusionDir, "tasks");
     this.configPath = join(this.fusionDir, "config.json");
     this.asyncLayer = options?.asyncLayer ?? null;
+    this.consumerId = options?.consumerId ?? null;
     const resolvedGlobalSettingsDir = globalSettingsDir
       ?? (process.env.VITEST === "true" ? join(rootDir, ".fusion-global-settings") : undefined);
     this.globalSettingsDir = resolvedGlobalSettingsDir;
@@ -536,13 +547,46 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   Safe lifecycle emission invokes listeners directly to isolate listener failures, so it bypasses
   EventEmitter.emit. Decorate this path too; otherwise the hot update surfaces silently miss lanes.
   */
-  public emitTaskLifecycleEventSafely( event: "task:created" | "task:updated", args: TaskStoreEvents["task:created"] | TaskStoreEvents["task:updated"], ): boolean {
+  public emitTaskLifecycleEventSafely( event: "task:created" | "task:updated" | "task:deleted", args: TaskStoreEvents["task:created"] | TaskStoreEvents["task:updated"] | TaskStoreEvents["task:deleted"], ): boolean {
     if (event === "task:updated" && args.length === 1) {
       const task = args[0] as Task;
       const lanes = this.laneCache.get(task.id);
       if (lanes !== undefined) return emitTaskLifecycleEventSafelyImpl(this, event, [task, { lanes }]);
     }
     return emitTaskLifecycleEventSafelyImpl(this, event, args);
+  }
+
+  /** Dispatch a committed outbox row without replaying delete-writer side effects. */
+  public emitObservedTaskDeleted(
+    task: Task,
+    outboxEventId: string,
+    metadata: Pick<NonNullable<TaskStoreEvents["task:deleted"][1]>, "githubIssueAction" | "closureContext"> = {},
+  ): boolean {
+    /*
+    FNXC:CrossProcessDeleteObservation 2026-08-01-13:03:
+    Observed delivery must retain the delete's integration intent while marking it replay-safe.
+    Bridges can report the original split handoff/action, but listener-owned GitHub/GitLab mutation
+    paths must not repeat a committed writer's effects during at-least-once crash-window delivery.
+    */
+    this.taskCache.delete(task.id);
+    return emitTaskLifecycleEventSafelyImpl(this, "task:deleted", [task, {
+      ...metadata,
+      observed: true,
+      outboxEventId,
+    }]);
+  }
+
+  /** Start durable task:deleted observation only for explicitly named backend consumers. */
+  async startTaskDeletedOutboxConsumer(): Promise<void> {
+    if (!this.asyncLayer || !this.consumerId || this.taskDeletedOutboxConsumer) return;
+    this.taskDeletedOutboxConsumer = new TaskDeletedOutboxConsumer(this);
+    await this.taskDeletedOutboxConsumer.start();
+  }
+
+  async stopTaskDeletedOutboxConsumer(): Promise<void> {
+    const consumer = this.taskDeletedOutboxConsumer;
+    this.taskDeletedOutboxConsumer = null;
+    await consumer?.stop();
   }
 
   /**

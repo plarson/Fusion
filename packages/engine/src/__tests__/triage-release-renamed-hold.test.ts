@@ -145,8 +145,10 @@ function createStore(task: Task, ir: WorkflowIr | null): { store: TaskStore; mov
     getTaskWorkflowSelectionAsync: vi.fn(async () => selection),
     getWorkflowDefinition: vi.fn(async () => (ir ? { ir } : null)),
     /*
-    FNXC:WorkflowResolvedColumns 2026-07-31-23:59:
-    THE SYNC READER STUB IS GONE, and its absence is the point.
+    FNXC:WorkflowResolvedColumns 2026-08-01-02:07 REDUNDANT:
+    THE SYNC READER STUB IS GONE, and its absence is the point. Re-running
+    `pnpm --filter @fusion/engine exec vitest run src/__tests__/triage-release-renamed-hold.test.ts --silent=passed-only --reporter=dot`
+    passed 5/5; its existing mutation check fails 1/4 when the release target reverts to the sync read.
 
     This harness fed `resolveTaskWorkflowIrSync` the test's own IR — the shape this repo's learnings
     call out as feeding the broken reader the right answer. In production that reader answers with the

@@ -49,7 +49,14 @@ function createStore(): TaskStore {
     getTaskWorkflowSelection: vi.fn(() => undefined),
     getTaskWorkflowSelectionAsync: vi.fn(async () => selection),
     getWorkflowDefinition: vi.fn(async () => ({ ir: RENAMED_IR })),
-    /* Mirrors the real sync resolver's contract: no selection → the DEFAULT workflow IR. */
+    /*
+    FNXC:WorkflowResolvedColumns 2026-08-01-02:07 DELIBERATE-SYNC:
+    Removing this production-faithful DEFAULT-IR stub and running
+    `pnpm --filter @fusion/engine exec vitest run src/__tests__/planner-lanes-async-resolution.test.ts --silent=passed-only --reporter=dot`
+    produced 1 failed / 3 passed: the named SYNC contrast no longer reported
+    `resolvedFromWorkflow: true`. The stub intentionally proves that an inert sync read can look
+    resolved, while the authoritative async reader returns the renamed workflow.
+    */
     resolveTaskWorkflowIrSync: vi.fn(() => BUILTIN_DEFAULT_IR),
   } as unknown as TaskStore;
 }

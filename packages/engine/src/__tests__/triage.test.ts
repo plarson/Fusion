@@ -7301,23 +7301,14 @@ is NEVER REACHED: `resolvePlannerLanes` reads `resolveTaskWorkflowIrSync`, which
 define, so it returns LEGACY_PLANNER_LANES (`intake: "triage"`) and a `triage` card matches the FIRST
 arm. Every earlier fixture I wrote passed through that short-circuit and proved nothing.
 
-So all three cases below stub `resolveTaskWorkflowIrSync` with the MERGED DEFAULT shape, which is what
-production resolves: `intake` and `hold` both `todo`. That makes the first arm fail for a `triage` card
-and leaves the orphan arm as the only thing deciding the outcome.
+The fixture must instead rely on the authoritative async readers below. A sync fixture made the
+recovery assertion about a mock implementation rather than production's resolved workflow.
 
 The three cases differ ONLY in the workflow readers, so the outcome difference can have no other cause.
 Case B is the positive control: without it, "returns false" is unfalsifiable — every case would pass if
 the arm were dead.
 */
 describe("recoverApprovedTask — the orphan-`triage` arm, with the intake short-circuit disabled", () => {
-  const MERGED_DEFAULT = {
-    version: "v2", id: "builtin:coding", nodes: [], edges: [],
-    columns: [
-      { id: "todo", name: "Planning", traits: [{ trait: "intake" }, { trait: "hold", config: { release: "capacity" } }] },
-      { id: "in-progress", name: "in-progress", traits: [{ trait: "wip", config: { limitSetting: "maxConcurrent" } }] },
-      { id: "done", name: "done", traits: [{ trait: "complete" }] },
-    ],
-  } as never;
   const customIr = (id: string, withTriage: boolean) => ({
     version: "v2", id, nodes: [], edges: [],
     columns: [
@@ -7345,8 +7336,14 @@ describe("recoverApprovedTask — the orphan-`triage` arm, with the intake short
         maxConcurrent: 2, maxWorktrees: 4, pollIntervalMs: 10000,
         groupOverlappingFiles: false, autoMerge: true, requirePlanApproval: true,
       } as Settings),
-      // Production resolves the MERGED default here, so `lanes.intake` is `todo`, not `triage`.
-      resolveTaskWorkflowIrSync: vi.fn(() => MERGED_DEFAULT),
+      /*
+      FNXC:WorkflowResolvedColumns 2026-08-01-02:07 REDUNDANT:
+      Deleting the MERGED-default sync stub and running
+      `pnpm --filter @fusion/engine exec vitest run src/__tests__/triage.test.ts --silent=passed-only --reporter=dot`
+      passed 232/232. The async selection and workflow-definition readers are the production-faithful
+      fixture. Mutation replacing `resolvePlannerLanesForTaskAsync` with `resolvePlannerLanes` in
+      `recoverApprovedTask` produced 1 failed / 231 passed: named case C failed as required.
+      */
       ...workflowReaders,
     } as Partial<TaskStore>);
     return new TriageProcessor(store, root).recoverApprovedTask({

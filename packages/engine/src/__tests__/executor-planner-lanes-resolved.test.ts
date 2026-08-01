@@ -87,43 +87,18 @@ function completedTaskIn(column: string) {
   };
 }
 
-/**
- * @param syncResolvesIr Feed the SYNC reader the test's IR instead of the default lineage.
- *
- * Default is `false`, which mirrors production: the sync reader answers with the DEFAULT workflow for
- * every task, whatever the card is bound to. Pass `true` ONLY for cases exercising a classifier that
- * is still synchronous — there the sync reader is genuinely the input path, so feeding it the IR
- * tests the classifier's logic rather than the (separately tracked) fact that the reader does not
- * resolve. Those classifiers live in the synchronous `task:moved` listener; converting them needs a
- * restructure of that handler's else-if chain, and their production inertness is held by the
- * `resolveTaskWorkflowIrSync` call-site allow-list.
- */
-function harness(ir: WorkflowIr | undefined, column: string, syncResolvesIr = false) {
+function harness(ir: WorkflowIr | undefined, column: string) {
   const store = createMockStore();
   let task: Record<string, unknown> = completedTaskIn(column);
   const moves: Array<[string, string]> = [];
 
   /*
-  FNXC:WorkflowLifecycleColumns 2026-07-31-23:10 (the sync seam could not see production):
-  THE AUTHORITATIVE READERS, not just the sync one.
-
-  This harness injected ONLY `resolveTaskWorkflowIrSync`, so every case here proved the promotion
-  LOGIC while being structurally blind to whether production resolves anything at all. It does not:
-  that reader's selection lookup returns `undefined` unconditionally in PostgreSQL mode, so the real
-  call site resolved the DEFAULT workflow for every card and the recovery never fired on a renamed
-  board — with this suite green.
-
-  Feeding the async readers makes the suite exercise the path the call site now takes. The sync
-  reader stays wired so a revert to it is visible as a failure here rather than as silence.
+  FNXC:WorkflowResolvedColumns 2026-08-01-02:07 REDUNDANT:
+  Deleting the complete sync-resolver assignment and running
+  `pnpm --filter @fusion/engine exec vitest run src/__tests__/executor-planner-lanes-resolved.test.ts --silent=passed-only --reporter=dot`
+  passed 12/12. The harness's async selection and definition readers supply the production path;
+  its direct classifier cases already pass explicit move lanes, so no sync fixture is required.
   */
-  /*
-  The sync reader returns the DEFAULT lineage, which is what it ACTUALLY does in production for every
-  task regardless of binding. Handing it the test's `ir` — as this harness used to — is the part that
-  made the suite unable to tell a resolved answer from an unresolved one: it fed the broken reader the
-  right answer. With this, reverting the call site to the sync resolver fails these cases.
-  */
-  (store as unknown as { resolveTaskWorkflowIrSync: (id: string) => WorkflowIr })
-    .resolveTaskWorkflowIrSync = () => (syncResolvesIr ? (ir as WorkflowIr) : (BUILTIN_CODING_WORKFLOW_IR as unknown as WorkflowIr));
   const workflowId = (ir as { id?: string } | undefined)?.id ?? "builtin:coding";
   store.getTaskWorkflowSelectionAsync = vi.fn(async () => (ir ? { workflowId, stepIds: [] } : undefined));
   store.getWorkflowDefinition = vi.fn(async () => (ir ? { ir } : undefined));
@@ -154,7 +129,7 @@ function harness(ir: WorkflowIr | undefined, column: string, syncResolvesIr = fa
 
 describe("stranded-completed recovery promotes through the task's OWN planner lanes", () => {
   it("re-homes intake -> hold -> wip on a renamed board that separates the two roles", async () => {
-    const h = harness(RENAMED_SPLIT_IR, "backlog", true);
+    const h = harness(RENAMED_SPLIT_IR, "backlog");
 
     const recovered = await h.executor.recoverCompletedTask(completedTaskIn("backlog") as never);
 
@@ -268,7 +243,7 @@ describe("a forward move off a renamed planner lane is not an evacuation", () =>
   it("does NOT evacuate a card advancing into the renamed wip/review/complete lanes", () => {
     // Pre-fix each of these returned true, so the executor aborted live planning work and
     // deleted the pre-execution worktree of a card that was merely advancing.
-    const h = harness(RENAMED_SPLIT_IR, "backlog", true);
+    const h = harness(RENAMED_SPLIT_IR, "backlog");
 
     expect(isBackward(h, "backlog", "building", RENAMED_SPLIT_IR)).toBe(false);
     expect(isBackward(h, "queued", "checking", RENAMED_SPLIT_IR)).toBe(false);
@@ -278,7 +253,7 @@ describe("a forward move off a renamed planner lane is not an evacuation", () =>
   it("DOES evacuate a card withdrawn to a non-lifecycle column", () => {
     // The paired positive: the branch must still fire for the case it was written for
     // (the reported symptom was todo -> Ideas).
-    const h = harness(RENAMED_SPLIT_IR, "backlog", true);
+    const h = harness(RENAMED_SPLIT_IR, "backlog");
 
     expect(isBackward(h, "backlog", "ideas", RENAMED_SPLIT_IR)).toBe(true);
   });
@@ -293,7 +268,7 @@ describe("a forward move off a renamed planner lane is not an evacuation", () =>
   });
 
   it("never fires for a card that was not in a planner lane", () => {
-    const h = harness(RENAMED_SPLIT_IR, "building", true);
+    const h = harness(RENAMED_SPLIT_IR, "building");
 
     expect(isBackward(h, "building", "ideas", RENAMED_SPLIT_IR)).toBe(false);
   });

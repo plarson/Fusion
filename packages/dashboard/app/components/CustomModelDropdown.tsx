@@ -42,7 +42,8 @@ export interface CustomModelDropdownProps {
 }
 
 interface DropdownPosition {
-  top: number;
+  top: number | null;
+  bottom: number | null;
   left: number;
   width: number;
   maxHeight: number;
@@ -362,12 +363,22 @@ export function CustomModelDropdown({
       Math.max(triggerLeft, horizontalPadding),
       viewportWidth - horizontalPadding - dropdownWidth,
     ) + offsetLeft;
+    /*
+    FNXC:ModelDropdown 2026-08-01-07:11:
+    The model menu's maxHeight includes a 160px scroll floor, so upward top placement based on that
+    cap separates short model lists from their trigger. Anchor the bottom instead; the visual-viewport
+    offset preserves the existing effective-viewport coordinate conversion for keyboard and zoom cases.
+    */
     const top = openUpward
-      ? Math.max(verticalPadding + offsetTop, triggerTop - maxHeight - gap + offsetTop)
+      ? null
       : Math.min(triggerBottom + gap + offsetTop, viewportHeight + offsetTop - verticalPadding - maxHeight);
+    const bottom = openUpward
+      ? viewportHeight + offsetTop - rect.top + gap
+      : null;
 
     setDropdownPosition({
       top,
+      bottom,
       left,
       width: dropdownWidth,
       maxHeight,
@@ -593,7 +604,8 @@ export function CustomModelDropdown({
       data-menu-width={menuWidth}
       onKeyDown={handleKeyDown}
       style={{
-        top: `${dropdownPosition.top}px`,
+        top: dropdownPosition.bottom === null ? `${dropdownPosition.top}px` : "auto",
+        bottom: dropdownPosition.bottom === null ? undefined : `${dropdownPosition.bottom}px`,
         left: `${dropdownPosition.left}px`,
         width: `${dropdownPosition.width}px`,
         maxHeight: `${dropdownPosition.maxHeight}px`,

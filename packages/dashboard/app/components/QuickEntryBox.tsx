@@ -221,14 +221,20 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
   const nodePickerPortalRef = useRef<HTMLDivElement>(null);
   const priorityPickerRef = useRef<HTMLDivElement>(null);
   const priorityPickerPortalRef = useRef<HTMLDivElement>(null);
-  const [agentPickerPosition, setAgentPickerPosition] = useState<{ top: number; left: number; width: number; maxHeight?: number } | null>(null);
-  const [nodePickerPosition, setNodePickerPosition] = useState<{ top: number; left: number; width: number; maxHeight?: number } | null>(null);
-  const [priorityPickerPosition, setPriorityPickerPosition] = useState<{ top: number; left: number; width: number; maxHeight?: number } | null>(null);
-  const [modelMenuPosition, setModelMenuPosition] = useState<{ top: number; left: number; width: number; maxHeight?: number } | null>(null);
+  /*
+  FNXC:QuickAddMenuAnchor 2026-08-01-07:11:
+  Preserve both shared-helper vertical anchors in Quick Add state. Portal styles must use `bottom`
+  with `top: auto` upward, because a natural-height menu cannot remain attached when top is derived
+  from its independent max-height scroll cap.
+  */
+  const [agentPickerPosition, setAgentPickerPosition] = useState<{ top: number | null; bottom: number | null; left: number; width: number; maxHeight?: number } | null>(null);
+  const [nodePickerPosition, setNodePickerPosition] = useState<{ top: number | null; bottom: number | null; left: number; width: number; maxHeight?: number } | null>(null);
+  const [priorityPickerPosition, setPriorityPickerPosition] = useState<{ top: number | null; bottom: number | null; left: number; width: number; maxHeight?: number } | null>(null);
+  const [modelMenuPosition, setModelMenuPosition] = useState<{ top: number | null; bottom: number | null; left: number; width: number; maxHeight?: number } | null>(null);
   // Dependency dropdown portal refs and state
   const depTriggerRef = useRef<HTMLButtonElement>(null);
   const depDropdownPortalRef = useRef<HTMLDivElement>(null);
-  const [depDropdownPosition, setDepDropdownPosition] = useState<{ top: number; left: number; width: number; maxHeight?: number } | null>(null);
+  const [depDropdownPosition, setDepDropdownPosition] = useState<{ top: number | null; bottom: number | null; left: number; width: number; maxHeight?: number } | null>(null);
   const [portalRoot] = useState<HTMLElement | null>(() =>
     typeof document !== "undefined" ? document.body : null,
   );
@@ -236,7 +242,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
   const workflowPickerRef = useRef<HTMLDivElement>(null);
   const workflowTriggerRef = useRef<HTMLButtonElement>(null);
   const workflowPickerPortalRef = useRef<HTMLDivElement>(null);
-  const [workflowPickerPosition, setWorkflowPickerPosition] = useState<{ top: number; left: number; width: number; maxHeight?: number } | null>(null);
+  const [workflowPickerPosition, setWorkflowPickerPosition] = useState<{ top: number | null; bottom: number | null; left: number; width: number; maxHeight?: number } | null>(null);
   const previousWorkflowDefaultRef = useRef<{ workflowId: string | null | undefined; defaultWorkflowId: string | null | undefined }>({ workflowId, defaultWorkflowId });
   const [showWorkflowPicker, setShowWorkflowPicker] = useState(false);
   /*
@@ -1106,9 +1112,9 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
   /*
   FNXC:QuickAddDepsMenu 2026-07-25-12:00:
   All Quick Add portaled menus (Deps, Models, workflow, agent, node, priority) share anchor-first
-  layout-viewport positioning. Mixing visualViewport offsets with getBoundingClientRect, or clamping
-  top away from the trigger to preserve a min height floor, made Deps (and siblings) float too high
-  and unattached when free space was tight.
+  layout-viewport positioning. Mixing visualViewport offsets with getBoundingClientRect, or deriving
+  upward `top` from a height cap, made short menus float too high; upward portals consume `bottom`
+  and `top: auto` so their rendered bottom remains attached regardless of content height.
   */
   const updateModelMenuPosition = useCallback(() => {
     const trigger = modelTriggerRef.current;
@@ -1136,6 +1142,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
     });
     setModelMenuPosition({
       top: position.top,
+      bottom: position.bottom,
       left: position.left,
       width: position.width,
       maxHeight: position.maxHeight,
@@ -1173,6 +1180,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
     });
     setWorkflowPickerPosition({
       top: position.top,
+      bottom: position.bottom,
       left: position.left,
       width: position.width,
       maxHeight: position.maxHeight,
@@ -1206,6 +1214,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
     });
     setDepDropdownPosition({
       top: position.top,
+      bottom: position.bottom,
       left: position.left,
       width: position.width,
       maxHeight: position.maxHeight,
@@ -1238,6 +1247,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
     });
     setAgentPickerPosition({
       top: position.top,
+      bottom: position.bottom,
       left: position.left,
       width: position.width,
       maxHeight: position.maxHeight,
@@ -1270,6 +1280,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
     });
     setNodePickerPosition({
       top: position.top,
+      bottom: position.bottom,
       left: position.left,
       width: position.width,
       maxHeight: position.maxHeight,
@@ -1292,6 +1303,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
     });
     setPriorityPickerPosition({
       top: position.top,
+      bottom: position.bottom,
       left: position.left,
       width: position.width,
       maxHeight: position.maxHeight,
@@ -1801,7 +1813,8 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
                     data-testid="quick-entry-workflow-menu"
                     style={{
                       position: "fixed",
-                      top: `${workflowPickerPosition.top}px`,
+                      top: workflowPickerPosition.bottom === null ? `${workflowPickerPosition.top}px` : "auto",
+                      bottom: workflowPickerPosition.bottom === null ? undefined : `${workflowPickerPosition.bottom}px`,
                       left: `${workflowPickerPosition.left}px`,
                       width: `${workflowPickerPosition.width}px`,
                       maxHeight: workflowPickerPosition.maxHeight ? `${workflowPickerPosition.maxHeight}px` : undefined,
@@ -1929,7 +1942,8 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
                   onMouseDown={(e) => e.preventDefault()}
                   style={{
                     position: "fixed",
-                    top: `${depDropdownPosition.top}px`,
+                    top: depDropdownPosition.bottom === null ? `${depDropdownPosition.top}px` : "auto",
+                    bottom: depDropdownPosition.bottom === null ? undefined : `${depDropdownPosition.bottom}px`,
                     left: `${depDropdownPosition.left}px`,
                     width: `${depDropdownPosition.width}px`,
                     maxHeight: depDropdownPosition.maxHeight ? `${depDropdownPosition.maxHeight}px` : undefined,
@@ -2032,7 +2046,8 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
                 onMouseDown={(e) => e.preventDefault()}
                 style={{
                   position: "fixed",
-                  top: `${nodePickerPosition.top}px`,
+                  top: nodePickerPosition.bottom === null ? `${nodePickerPosition.top}px` : "auto",
+                  bottom: nodePickerPosition.bottom === null ? undefined : `${nodePickerPosition.bottom}px`,
                   left: `${nodePickerPosition.left}px`,
                   width: `${nodePickerPosition.width}px`,
                   maxHeight: nodePickerPosition.maxHeight ? `${nodePickerPosition.maxHeight}px` : undefined,
@@ -2108,7 +2123,8 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
                 onMouseDown={(e) => e.preventDefault()}
                 style={{
                   position: "fixed",
-                  top: `${agentPickerPosition.top}px`,
+                  top: agentPickerPosition.bottom === null ? `${agentPickerPosition.top}px` : "auto",
+                  bottom: agentPickerPosition.bottom === null ? undefined : `${agentPickerPosition.bottom}px`,
                   left: `${agentPickerPosition.left}px`,
                   width: `${agentPickerPosition.width}px`,
                   maxHeight: agentPickerPosition.maxHeight ? `${agentPickerPosition.maxHeight}px` : undefined,
@@ -2293,7 +2309,8 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
                   onMouseDown={(e) => e.preventDefault()}
                   style={{
                     position: "fixed",
-                    top: `${priorityPickerPosition.top}px`,
+                    top: priorityPickerPosition.bottom === null ? `${priorityPickerPosition.top}px` : "auto",
+                    bottom: priorityPickerPosition.bottom === null ? undefined : `${priorityPickerPosition.bottom}px`,
                     left: `${priorityPickerPosition.left}px`,
                     width: `${priorityPickerPosition.width}px`,
                     maxHeight: priorityPickerPosition.maxHeight ? `${priorityPickerPosition.maxHeight}px` : undefined,
@@ -2369,7 +2386,8 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
               data-testid="model-nested-menu"
               style={{
                 position: "fixed",
-                top: `${modelMenuPosition.top}px`,
+                top: modelMenuPosition.bottom === null ? `${modelMenuPosition.top}px` : "auto",
+                bottom: modelMenuPosition.bottom === null ? undefined : `${modelMenuPosition.bottom}px`,
                 left: `${modelMenuPosition.left}px`,
                 width: `${modelMenuPosition.width}px`,
                 maxHeight: modelMenuPosition.maxHeight ? `${modelMenuPosition.maxHeight}px` : undefined,

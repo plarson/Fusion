@@ -2,6 +2,73 @@
 
 User-facing release notes aggregated across all packages. This file is auto-synced from each `packages/*/CHANGELOG.md` by `scripts/release.mjs` — do not edit by hand.
 
+## 0.74.0-beta.6
+
+### Highlights
+
+- Boards with renamed or custom columns now work end to end — merges, retries, self-healing, analytics
+- Breaking: machine-wide concurrency cap removed — capacity is now two numbers per project
+- Breaking: spawned child agents count against Max Concurrent Tasks and the worktree cap
+- Approval and permission gates enforce: no self-approval, bash containment, fn serve authed
+- Plan Review runs before a task takes a slot, and 5–10 min "Queued to plan" stalls are fixed
+
+### Breaking
+
+- The machine-wide concurrency cap is gone. Capacity is now two per-project numbers; Scheduling · Global and Scheduling · Project merge into a single Scheduling section, and the global sliders in the footer and Command Center are removed. A stored global limit is ignored, and the cross-project concurrency table is dropped from the central database.
+- Spawned child agents now count against Max Concurrent Tasks and the worktree cap instead of a hidden spawn budget (previously 5 per parent / 20 global). Children each get their own worktree, so a fan-out could previously push a project past its limit while the scheduler believed it was at capacity.
+
+### Security
+
+- Full approval and permission hardening pass: the approvals decision route derives the decider server-side and blocks self-approval and forged actors, same-verdict replays and races return a conflict, pending requests expire after 24h and approved grants after a configurable TTL (default 1h).
+- Unclassified tools now fail closed to policy-governed command execution, an unconditional bash containment floor denies daemon-token and credential-store reads and shell calls to the approvals API at every preset, and bash approvals bind to the exact command hash.
+- `fn serve` mints or reuses the daemon token by default; opt out with `--no-auth`. Destructive task tools are withheld from agent principals, secret-read approvals are execute-once, and plugin task stores must declare destructive task permissions in their manifest.
+
+### New
+
+- Plan Review now runs in the planning lane before a task takes an implementation slot, with a "Plan Review" card badge; a card crosses into the work lane exactly once.
+- New "Limit concurrent worktrees" project setting. Turn it off and Max Concurrent Tasks becomes the only limit — tasks still run in their own git worktree.
+- Pick the workflow used for CLI- and agent-created tasks and for refinements; refinement cards are now titled from your feedback and carry a "Refines" provenance chip.
+- Multiple named credential instances per AI provider, with the selection persisted across model configuration (inert this release).
+- Chat sessions expose the full permission-gated task toolset (archive, delete, retry, pause, merge and more).
+- Agent Detail, Import Tasks, Task Detail, New Task, Create Room, right-dock pop-outs and floating terminals are now movable and resizable, including on tablets, with saved geometry.
+- Two new dashboard themes: Factory Dark and Factory Light, plus Sage.
+- Missions can override the project task prefix for their task IDs.
+- Read-only APIs that enumerate dashboard views and settings sections.
+
+### Fixed
+
+- Renamed and custom board columns are honored across the product: merges and merge re-enqueue, PR merges and "changes requested" reviews, retries, escalation and loop protection, replan targets, review-stall surfacing, dependency unblocking, archive and restore, duplicate flags, mission roadmaps, planner oversight, the scheduler, and roughly forty self-healing recoveries that previously matched nothing and left cards stuck.
+- New tasks no longer sit queued for minutes: a hung triage poll now recovers loudly past 120s, planning admission no longer freezes for the duration of every merge, and the scheduler, merge queue and continuation drain each force-open a stuck pass with a warning.
+- Planning admission respects the worktree cap, so a 4-worktree board no longer starts 8 planners; a planned card's retained worktree transfers on release instead of blocking it.
+- Worktrees are no longer deleted while a planning agent is still working in them, and leaked verification checkouts are reaped so planning stops queueing behind exhausted slots.
+- Stop AI Engine now actually halts the workflow graph — new Plan Review sessions no longer start while paused.
+- Column WIP limits are enforced again: a move into a full column is refused instead of silently allowed. Only actively running tasks count against worktree capacity, and queued tasks can resume in their retained worktrees when capacity is full.
+- Terminals, planning sessions and popped-out task windows no longer reset when you switch views or tabs.
+- Restoring an archived card returns it to the lane it was archived from instead of Done.
+- A restart during an AI merge no longer auto-pauses the task; merge-confirmed work finalizes instead of being parked failed.
+- Test-mode tasks complete again — the mock executor was marking the wrong step numbers.
+- Tasks awaiting manual plan approval are no longer planned, reviewed or started before you approve, and approval actions now sit next to the approval message. A task queued for plan review no longer waits behind cards parked on approval.
+- The board Actions menu no longer appears on bare Planning cards, and the Plan action no longer shows on cards already executing.
+- Imports land on real lanes: GitHub-issue imports are checked for near-duplicates before planning, and GitLab and Linear imports no longer write to a deleted column. Routines, scheduled tasks, refinements and duplicates land in the workflow's own intake column.
+- Move menus offer exactly the moves a workflow allows; task moves validate against the board's own workflow. Workflow edits, deletes and switches reconcile the cards sitting in the affected columns.
+- CLI fixes: `fn task list` no longer omits cards in custom columns, `fn task retry` and `fn project` work on renamed boards, and `fn dashboard` reports a real active count. Node, mesh and project commands no longer mark the host offline on exit.
+- Wedge notifications can be resolved again on PostgreSQL projects, and two lock re-entrancy hangs (self-blocking dependencies, interrupted column transitions) are fixed.
+- Compound Engineering code review parks after two unsuccessful remediation attempts instead of retrying forever, and graph-native workflows no longer deadlock at review with 0/N steps.
+- Grok usage no longer reports a false 100% or a bogus expired login.
+- Custom plan sections survive a description refresh from Fusion.
+- Upstream pull requests can be created from task branches pushed to a contributor fork.
+- UI polish: task-card size badges align with neighboring badges, cost badges hide when unavailable, Task Detail stays centered while scrolling, excess space below progress controls is gone, Command Center concurrency controls are aligned with the Max worktrees slider restored, and the Planning "Add comment to selection" button is no longer below the fold.
+- Even Realities glasses plugin: column filters, completion notifications, review actions and the deck cap all respect renamed lanes.
+
+### Performance
+
+- Collapsing Archived or changing Done sort no longer re-renders every board column and card.
+
+### Internal
+
+- Auto-archiving of meta tasks and auto-filed recovery cards is removed; failures now stay visible on the task that failed. The classifier matched ordinary feature work and could archive live tasks.
+- The unreachable legacy board and list rendering path, the retired workflow-columns flag reads, and a lossy column-coercion helper are deleted, with ratchets preventing their return.
+
 ## 0.74.0-beta.5
 
 ### Highlights

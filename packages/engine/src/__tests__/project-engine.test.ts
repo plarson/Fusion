@@ -3864,8 +3864,8 @@ describe("U9 merge safeguards without prior coverage", () => {
       mergeRetries: 0,
       createdAt: new Date(0).toISOString(),
     });
-    const admitted = (await mergeProvider.refresh()) as Array<{ taskId: string }>;
-    expect(admitted.map((c) => c.taskId)).toEqual(["FN-paused"]);
+    const admitted = (await mergeProvider.refresh()) as Array<{ taskId: string; lane: string }>;
+    expect(admitted).toMatchObject([{ taskId: "FN-paused", lane: "review" }]);
 
     // Engine-level `paused` is the sibling half of the same filter.
     mockStore.store.getTask.mockResolvedValue({

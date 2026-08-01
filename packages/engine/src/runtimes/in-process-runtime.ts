@@ -478,7 +478,7 @@ export async function admitPlanningContinuation(input: {
   // turn; a pre-drain project snapshot can admit into its newly occupied slot.
   let admissionSnapshot: Promise<{ count: number; ids: string[] }> | undefined;
   const getAdmissionSnapshot = () => admissionSnapshot ??= loadClaimSnapshot();
-  await projectAdmissionCoordinator.admitOldest({
+  await projectAdmissionCoordinator.admitNext({
     projectId: input.projectId,
     maxConcurrent: resolveActiveTaskCapacityLimit({
       maxConcurrent: settings.maxConcurrent ?? 2,
@@ -490,6 +490,7 @@ export async function admitPlanningContinuation(input: {
     refresh: async () => [{
       taskId: input.task.id,
       projectId: input.projectId,
+      lane: "execute",
       createdAt: input.item.createdAt ?? input.task.createdAt,
       start: async () => {
         // The preflight above is only a fast path. This serialized check is the

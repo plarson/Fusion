@@ -1146,13 +1146,20 @@ describe("MissionExecutionLoop", () => {
         rootDir: "/tmp",
       });
 
-      const prompt = (loop as any).buildValidationPrompt(feature, assertions, milestone);
-      const systemPrompt = (loop as any).buildValidationSystemPrompt(feature, assertions, "Task context", milestone);
+      const prompt = (loop as any).buildValidationPrompt(feature, assertions, "feature");
+      const milestonePrompt = (loop as any).buildValidationPrompt(feature, assertions, "milestone");
+      const systemPrompt = (loop as any).buildValidationSystemPrompt(feature, assertions, "Task context", "feature");
 
       expect(prompt).not.toContain("Milestone pass bar text");
       expect(prompt).toContain("only the following linked feature contract assertions");
+      expect(milestonePrompt).toContain("only the following milestone-scoped contract assertions");
+      for (const assertion of assertions) {
+        expect(prompt).toContain(`[${assertion.id}]`);
+        expect(milestonePrompt).toContain(`[${assertion.id}]`);
+      }
       expect(systemPrompt).not.toContain("Milestone pass bar text");
       expect(systemPrompt).toContain("linked feature contract assertions");
+      expect(systemPrompt).toContain("The bracketed assertion ID shown for that assertion in the user message");
     });
 
     it("does NOT create a board task for single-feature validation", async () => {
@@ -1588,6 +1595,137 @@ describe("MissionExecutionLoop", () => {
       loop.start();
 
       await expect(loop.processTaskOutcome("FN-001")).resolves.not.toThrow();
+    });
+  });
+
+  // ── Validation assertion identity contract ─────────────────────────────────
+
+  describe("validation assertion identity contract", () => {
+    function createValidatorLoop() {
+      return new MissionExecutionLoop({
+        taskStore: taskStore as any,
+        missionStore: missionStore as any,
+        rootDir: "/tmp",
+      });
+    }
+
+    it("keeps correctly keyed and legacy passed-only results canonical", () => {
+      const validatorLoop = createValidatorLoop();
+      const assertions = makeAssertions(2);
+      const results = (validatorLoop as any).extractAssertionResults({
+        assertions: [
+          { assertionId: "CA-1", verdict: "pass", passed: true },
+          { assertionId: "CA-2", passed: true },
+        ],
+      }, assertions);
+
+      expect(results).toMatchObject([
+        { assertionId: "CA-1", verdict: "pass", passed: true },
+        { assertionId: "CA-2", verdict: "pass", passed: true },
+      ]);
+      expect((validatorLoop as any).deriveFeatureValidationStatus({ status: "fail", assertions: results }, false).status).toBe("pass");
+    });
+
+    it("recovers the reported single-assertion pass when the validator did not echo its ID", () => {
+      const validatorLoop = createValidatorLoop();
+      const assertions = makeAssertions(1);
+      const results = (validatorLoop as any).extractAssertionResults({
+        status: "pass",
+        assertions: [{ assertionId: "CA-NOT-ECHOED", verdict: "pass", passed: true, message: "ok" }],
+      }, assertions);
+
+      expect(results).toMatchObject([{
+        assertionId: "CA-1",
+        verdict: "pass",
+        passed: true,
+        message: expect.stringContaining("matched positionally"),
+      }]);
+      expect((validatorLoop as any).deriveFeatureValidationStatus({ status: "fail", assertions: results }, false).status).toBe("pass");
+    });
+
+    it("maps an exact-count zero-ID multi-assertion response positionally", () => {
+      const validatorLoop = createValidatorLoop();
+      const assertions = makeAssertions(2);
+      const results = (validatorLoop as any).extractAssertionResults({
+        assertions: [
+          { assertionId: "unrecognized-first", verdict: "pass", passed: true },
+          { passed: true },
+        ],
+      }, assertions);
+
+      expect(results).toMatchObject([
+        { assertionId: "CA-1", verdict: "pass", passed: true, message: expect.stringContaining("matched positionally") },
+        { assertionId: "CA-2", verdict: "pass", passed: true, message: expect.stringContaining("matched positionally") },
+      ]);
+      expect((validatorLoop as any).deriveFeatureValidationStatus({ status: "fail", assertions: results }, false).status).toBe("pass");
+    });
+
+    it("fails closed for an unrecognized mismatched count or partially recognized IDs", () => {
+      const validatorLoop = createValidatorLoop();
+      const assertions = makeAssertions(2);
+      const wrongCount = (validatorLoop as any).extractAssertionResults({
+        assertions: [{ assertionId: "CA-NOT-ECHOED", passed: true }],
+      }, assertions);
+      const partialMatch = (validatorLoop as any).extractAssertionResults({
+        assertions: [
+          { assertionId: "CA-1", passed: true },
+          { assertionId: "CA-NOT-ECHOED", passed: true },
+        ],
+      }, assertions);
+
+      expect(wrongCount).toMatchObject([
+        { assertionId: "CA-1", passed: false, message: "Validator result IDs did not match any linked assertion ID." },
+        { assertionId: "CA-2", passed: false, message: "Validator result IDs did not match any linked assertion ID." },
+      ]);
+      expect(partialMatch).toMatchObject([
+        { assertionId: "CA-1", passed: true },
+        { assertionId: "CA-2", passed: false, message: "Validator omitted linked assertion result." },
+      ]);
+    });
+
+    it("fails closed when positional fallback receives duplicate unknown or empty IDs", () => {
+      const validatorLoop = createValidatorLoop();
+      const assertions = makeAssertions(2);
+      const duplicateUnknown = (validatorLoop as any).extractAssertionResults({
+        assertions: [
+          { assertionId: "CA-NOT-ECHOED", passed: true },
+          { assertionId: "CA-NOT-ECHOED", passed: true },
+        ],
+      }, assertions);
+      const duplicateEmpty = (validatorLoop as any).extractAssertionResults({
+        assertions: [
+          { assertionId: "", passed: true },
+          { assertionId: "", passed: true },
+        ],
+      }, assertions);
+
+      for (const results of [duplicateUnknown, duplicateEmpty]) {
+        expect(results).toMatchObject([
+          { assertionId: "CA-1", passed: false, message: "Validator result IDs did not match any linked assertion ID." },
+          { assertionId: "CA-2", passed: false, message: "Validator result IDs did not match any linked assertion ID." },
+        ]);
+      }
+    });
+
+    it("preserves duplicate failure, empty/non-array failure, blocked aggregation, and zero assertions", () => {
+      const validatorLoop = createValidatorLoop();
+      const assertions = makeAssertions(1);
+      const duplicate = (validatorLoop as any).extractAssertionResults({
+        assertions: [{ assertionId: "CA-1", passed: true }, { assertionId: "CA-1", passed: true }],
+      }, assertions);
+      const empty = (validatorLoop as any).extractAssertionResults({ assertions: [] }, assertions);
+      const nonArray = (validatorLoop as any).extractAssertionResults({ assertions: "not-an-array" }, assertions);
+      const blocked = (validatorLoop as any).extractAssertionResults({
+        assertions: [{ assertionId: "CA-1", verdict: "blocked", passed: false }],
+      }, assertions);
+      const zeroAssertions = (validatorLoop as any).extractAssertionResults({ assertions: [] }, []);
+
+      expect(duplicate[0]).toMatchObject({ passed: false, message: "Duplicate validator result for linked assertion." });
+      expect(empty[0]).toMatchObject({ passed: false, message: "Validator result IDs did not match any linked assertion ID." });
+      expect(nonArray[0]).toMatchObject({ passed: false, message: "Validator result IDs did not match any linked assertion ID." });
+      expect((validatorLoop as any).deriveFeatureValidationStatus({ status: "fail", assertions: blocked }, false).status).toBe("blocked");
+      expect(zeroAssertions).toEqual([]);
+      expect((validatorLoop as any).deriveFeatureValidationStatus({ status: "pass", assertions: zeroAssertions }, false).status).toBe("fail");
     });
   });
 

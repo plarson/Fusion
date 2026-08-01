@@ -1136,31 +1136,32 @@ describe("ProjectAdmissionCoordinator", () => {
     for (const [lane, taskId, createdAt] of [
       ["planning", "FN-PLANNING", "2026-01-01T00:00:00.000Z"],
       ["execute", "FN-EXECUTE", "2026-01-02T00:00:00.000Z"],
-      ["merge", "FN-MERGE", "2026-01-03T00:00:00.000Z"],
+      ["review", "FN-MERGE", "2026-01-03T00:00:00.000Z"],
     ] as const) {
       coordinator.registerProvider(lane, {
         projectId: "project-a",
         refresh: async () => [{
           taskId,
           projectId: "project-a",
+          lane,
           createdAt,
           start: async () => { started.push(taskId); },
         }],
       });
     }
 
-    expect(await coordinator.admitOldest({
+    expect(await coordinator.admitNext({
       projectId: "project-a",
       maxConcurrent: activeTaskLimit,
       claimed: () => 8,
-    })).toBe("FN-PLANNING");
+    })).toBe("FN-MERGE");
     expect(await coordinator.reserveIfAvailable({
       projectId: "project-a",
       taskId: "FN-DIRECT-SCHEDULER",
       maxConcurrent: activeTaskLimit,
       claimed: () => 8,
     })).toBe(false);
-    expect(started).toEqual(["FN-PLANNING"]);
+    expect(started).toEqual(["FN-MERGE"]);
 
     // Once the selected task is durably live, its matching reservation is the
     // same slot—not a second occupant—so the next real slot remains usable.
@@ -1169,11 +1170,11 @@ describe("ProjectAdmissionCoordinator", () => {
       taskId: "FN-DIRECT-SCHEDULER",
       maxConcurrent: 10,
       claimed: () => 9,
-      claimedTaskIds: () => ["FN-PLANNING"],
+      claimedTaskIds: () => ["FN-MERGE"],
     })).toBe(true);
 
     coordinator.releaseReservation("FN-DIRECT-SCHEDULER");
-    coordinator.releaseReservation("FN-PLANNING");
+    coordinator.releaseReservation("FN-MERGE");
   });
 
   it("does not lose a holder that transfers from reservation to durable state during a claim read", async () => {
@@ -1249,25 +1250,25 @@ describe("ProjectAdmissionCoordinator", () => {
     const coordinator = new ProjectAdmissionCoordinator();
     const started: string[] = [];
     const candidates = [
-      { taskId: "FN-20", projectId: "a", createdAt: "2026-01-02T00:00:00.000Z", start: async () => { started.push("new"); } },
-      { taskId: "FN-10", projectId: "a", createdAt: "2026-01-01T00:00:00.000Z", start: async () => { started.push("old"); } },
-      { taskId: "FN-1", projectId: "b", createdAt: "2026-01-03T00:00:00.000Z", start: async () => { started.push("other-project"); } },
+      { taskId: "FN-20", projectId: "a", lane: "execute" as const, createdAt: "2026-01-02T00:00:00.000Z", start: async () => { started.push("new"); } },
+      { taskId: "FN-10", projectId: "a", lane: "execute" as const, createdAt: "2026-01-01T00:00:00.000Z", start: async () => { started.push("old"); } },
+      { taskId: "FN-1", projectId: "b", lane: "execute" as const, createdAt: "2026-01-03T00:00:00.000Z", start: async () => { started.push("other-project"); } },
     ];
     const sem = new AgentSemaphore(2);
     await Promise.all([
-      coordinator.admitOldest({ projectId: "a", maxConcurrent: 1, claimed: () => 0, refresh: async () => candidates, semaphore: sem }),
-      coordinator.admitOldest({ projectId: "a", maxConcurrent: 1, claimed: () => started.length, refresh: async () => candidates, semaphore: sem }),
+      coordinator.admitNext({ projectId: "a", maxConcurrent: 1, claimed: () => 0, refresh: async () => candidates, semaphore: sem }),
+      coordinator.admitNext({ projectId: "a", maxConcurrent: 1, claimed: () => started.length, refresh: async () => candidates, semaphore: sem }),
     ]);
     expect(started).toEqual(["old"]);
     sem.release();
-    await coordinator.admitOldest({ projectId: "b", maxConcurrent: 1, claimed: () => 0, refresh: async () => candidates, semaphore: sem });
+    await coordinator.admitNext({ projectId: "b", maxConcurrent: 1, claimed: () => 0, refresh: async () => candidates, semaphore: sem });
     expect(started).toEqual(["old", "other-project"]);
   });
 
   /*
   FNXC:ConcurrencyAdmission 2026-07-26-09:45:
   Regression for the planning-starvation half of the FN-8600 incident: a card sat "Queued to plan"
-  while capacity was free, because admitOldest only ever evaluated candidates[0]. When the oldest
+  while capacity was free, because admitNext only ever evaluated candidates[0]. When the oldest
   candidate's lane declines the handoff, younger work in another lane must still be admitted.
 
   Invariant under test (not just the reported repro): a declining candidate is SKIPPED, not
@@ -1280,7 +1281,7 @@ describe("ProjectAdmissionCoordinator", () => {
     const semaphore = new AgentSemaphore(4);
     const started: string[] = [];
 
-    const admitted = await coordinator.admitOldest({
+    const admitted = await coordinator.admitNext({
       projectId: "project-a",
       maxConcurrent: 4,
       claimed: () => 0,
@@ -1288,22 +1289,22 @@ describe("ProjectAdmissionCoordinator", () => {
       refresh: async () => [
         // Oldest, but its lane cannot start it (e.g. a merge id no longer queued).
         {
-          taskId: "FN-OLDEST", projectId: "project-a", createdAt: "2026-01-01T00:00:00.000Z",
+          taskId: "FN-OLDEST", projectId: "project-a", lane: "review", createdAt: "2026-01-01T00:00:00.000Z",
           start: async () => { started.push("FN-OLDEST"); return false; },
         },
         // Also declines — proves the walk continues past more than one.
         {
-          taskId: "FN-MIDDLE", projectId: "project-a", createdAt: "2026-01-02T00:00:00.000Z",
+          taskId: "FN-MIDDLE", projectId: "project-a", lane: "review", createdAt: "2026-01-02T00:00:00.000Z",
           start: async () => { started.push("FN-MIDDLE"); return false; },
         },
         // The planning candidate that was starving behind them.
         {
-          taskId: "FN-PLANNING", projectId: "project-a", createdAt: "2026-01-03T00:00:00.000Z",
+          taskId: "FN-PLANNING", projectId: "project-a", lane: "planning", createdAt: "2026-01-03T00:00:00.000Z",
           start: async () => { started.push("FN-PLANNING"); },
         },
         // Younger still: must NOT be admitted, so skipping never becomes overtaking.
         {
-          taskId: "FN-YOUNGEST", projectId: "project-a", createdAt: "2026-01-04T00:00:00.000Z",
+          taskId: "FN-YOUNGEST", projectId: "project-a", lane: "planning", createdAt: "2026-01-04T00:00:00.000Z",
           start: async () => { started.push("FN-YOUNGEST"); },
         },
       ],
@@ -1332,11 +1333,11 @@ describe("ProjectAdmissionCoordinator", () => {
     // A pre-tryAcquire shim: release only, no tryAcquire.
     const shim = { release: () => { releases.push(1); } };
 
-    const admitted = await coordinator.admitOldest({
+    const admitted = await coordinator.admitNext({
       projectId: "project-shim",
       maxConcurrent: 4,
       claimed: () => 0,
-      semaphore: shim as unknown as Parameters<ProjectAdmissionCoordinator["admitOldest"]>[0]["semaphore"],
+      semaphore: shim as unknown as Parameters<ProjectAdmissionCoordinator["admitNext"]>[0]["semaphore"],
       refresh: async () => [
         { taskId: "FN-A", projectId: "project-shim", createdAt: "2026-01-01T00:00:00.000Z", start: async () => false },
         { taskId: "FN-B", projectId: "project-shim", createdAt: "2026-01-02T00:00:00.000Z", start: async () => false },
@@ -1362,7 +1363,7 @@ describe("ProjectAdmissionCoordinator", () => {
     const coordinator = new ProjectAdmissionCoordinator();
     const semaphore = new AgentSemaphore(4);
 
-    const admitted = await coordinator.admitOldest({
+    const admitted = await coordinator.admitNext({
       projectId: "project-prehold",
       maxConcurrent: 4,
       claimed: () => 0,
@@ -1399,7 +1400,7 @@ describe("ProjectAdmissionCoordinator", () => {
     const coordinator = new ProjectAdmissionCoordinator();
     const semaphore = new AgentSemaphore(2);
 
-    await expect(coordinator.admitOldest({
+    await expect(coordinator.admitNext({
       projectId: "project-throw",
       maxConcurrent: 4,
       claimed: () => 0,
@@ -1421,7 +1422,7 @@ describe("ProjectAdmissionCoordinator", () => {
     expect(semaphore.tryAcquire()).toBe(true);
     const started: string[] = [];
 
-    const admitted = await coordinator.admitOldest({
+    const admitted = await coordinator.admitNext({
       projectId: "project-a",
       maxConcurrent: 4,
       claimed: () => 0,
@@ -1441,7 +1442,7 @@ describe("ProjectAdmissionCoordinator", () => {
   it("releases a rejected handoff and retains an accepted reservation until lane transfer", async () => {
     const coordinator = new ProjectAdmissionCoordinator();
     const semaphore = new AgentSemaphore(1);
-    const rejected = await coordinator.admitOldest({
+    const rejected = await coordinator.admitNext({
       projectId: "project-a",
       maxConcurrent: 1,
       claimed: () => 0,
@@ -1456,7 +1457,7 @@ describe("ProjectAdmissionCoordinator", () => {
 
     let releaseStart!: () => void;
     const startBlocked = new Promise<void>((resolve) => { releaseStart = resolve; });
-    const first = coordinator.admitOldest({
+    const first = coordinator.admitNext({
       projectId: "project-a",
       maxConcurrent: 1,
       claimed: () => 0,
@@ -1467,7 +1468,7 @@ describe("ProjectAdmissionCoordinator", () => {
       }],
     });
     await Promise.resolve();
-    const second = coordinator.admitOldest({
+    const second = coordinator.admitNext({
       projectId: "project-a",
       maxConcurrent: 1,
       claimed: () => 0,
@@ -1484,35 +1485,31 @@ describe("ProjectAdmissionCoordinator", () => {
     semaphore.release();
   });
 
-  it("refreshes every registered lane before selecting the cross-lane oldest task", async () => {
+  it("refreshes every lane and admits review before older execution and planning", async () => {
     const coordinator = new ProjectAdmissionCoordinator();
     const started: string[] = [];
-    coordinator.registerProvider("planning", {
-      projectId: "project-a",
-      refresh: async () => [{
-        taskId: "FN-20", projectId: "project-a", createdAt: "2026-01-02T00:00:00.000Z",
-        start: async () => { started.push("planner"); },
-      }],
-    });
-    coordinator.registerProvider("execute", {
-      projectId: "project-a",
-      refresh: async () => [{
-        taskId: "FN-10", projectId: "project-a", createdAt: "2026-01-01T00:00:00.000Z",
-        start: async () => { started.push("executor"); },
-      }],
-    });
+    const register = (lane: "review" | "execute" | "planning", taskId: string, createdAt: string, name: string) => {
+      coordinator.registerProvider(name, {
+        projectId: "project-a",
+        refresh: async () => [{ taskId, projectId: "project-a", lane, createdAt, start: async () => { started.push(name); } }],
+      });
+    };
+    register("planning", "FN-1", "2026-01-01T00:00:00.000Z", "planner");
+    register("execute", "FN-2", "2026-01-02T00:00:00.000Z", "executor");
+    register("review", "FN-3", "2026-01-03T00:00:00.000Z", "merge");
 
-    await coordinator.admitOldest({ projectId: "project-a", maxConcurrent: 1, claimed: () => 0 });
-    expect(started).toEqual(["executor"]);
+    await coordinator.admitNext({ projectId: "project-a", maxConcurrent: 1, claimed: () => 0 });
+    expect(started).toEqual(["merge"]);
   });
 
-  it("uses a stable total order for invalid timestamps and malformed ids", () => {
+  it("uses oldest valid age then task ID only within one lifecycle lane", () => {
     const ordered = [
-      { taskId: "bad", createdAt: "not-a-date" },
-      { taskId: "FN-12", createdAt: "2026-01-01T00:00:00.000Z" },
-      { taskId: "FN-2", createdAt: "2026-01-01T00:00:00.000Z" },
-      { taskId: "also-bad" },
+      { taskId: "bad", lane: "execute" as const, createdAt: "not-a-date" },
+      { taskId: "FN-12", lane: "execute" as const, createdAt: "2026-01-01T00:00:00.000Z" },
+      { taskId: "FN-2", lane: "execute" as const, createdAt: "2026-01-01T00:00:00.000Z" },
+      { taskId: "also-bad", lane: "execute" as const },
+      { taskId: "FN-older-planning", lane: "planning" as const, createdAt: "2020-01-01T00:00:00.000Z" },
     ].sort(compareAdmissionCandidates);
-    expect(ordered.map((item) => item.taskId)).toEqual(["FN-2", "FN-12", "also-bad", "bad"]);
+    expect(ordered.map((item) => item.taskId)).toEqual(["FN-2", "FN-12", "also-bad", "bad", "FN-older-planning"]);
   });
 });

@@ -1276,8 +1276,11 @@ export class MissionExecutionLoop extends EventEmitter {
     assertions: MissionContractAssertion[],
   ): ValidationResult["assertions"] {
     const byId = new Map<string, ValidationResult["assertions"][number]>();
+    const returnedResults: ValidationResult["assertions"] = [];
+    const returnedIds = new Set<string>();
     const authoritativeIds = new Set(assertions.map((assertion) => assertion.id));
     const duplicateIds = new Set<string>();
+    let hasDuplicateReturnedId = false;
 
     // FNXC:MissionValidation 2026-07-23-14:00:
     // FN-8542 makes a contradictory aggregate structurally impossible. Only one
@@ -1311,25 +1314,42 @@ export class MissionExecutionLoop extends EventEmitter {
               return kind || text ? [{ ...(kind ? { kind } : {}), ...(text ? { text } : {}) }] : [];
             })
             : undefined;
-          if (!assertionId || !authoritativeIds.has(assertionId)) continue;
-          if (byId.has(assertionId)) {
-            duplicateIds.add(assertionId);
-            continue;
-          }
-          byId.set(assertionId, {
-            assertionId,
+          const normalizedResult: ValidationResult["assertions"][number] = {
+            assertionId: assertionId ?? "",
             verdict,
             passed,
             message: typeof assertionItem.message === "string" ? assertionItem.message : undefined,
             expected: typeof assertionItem.expected === "string" ? assertionItem.expected : undefined,
             actual: typeof assertionItem.actual === "string" ? assertionItem.actual : undefined,
             ...(evidence ? { evidence } : {}),
-          });
+          };
+          returnedResults.push(normalizedResult);
+          if (returnedIds.has(normalizedResult.assertionId)) {
+            hasDuplicateReturnedId = true;
+          }
+          returnedIds.add(normalizedResult.assertionId);
+
+          if (!assertionId || !authoritativeIds.has(assertionId)) continue;
+          if (byId.has(assertionId)) {
+            duplicateIds.add(assertionId);
+            continue;
+          }
+          byId.set(assertionId, normalizedResult);
         }
       }
     }
 
-    return assertions.map((assertion) => {
+    /*
+    FNXC:MissionValidation 2026-08-01-16:15:
+    Recover only an exact-count response with no recognized or duplicate IDs.
+    A broader fallback could assign a genuinely failing, partial, or duplicate
+    response to the wrong assertion and let a feature pass without authoritative evidence.
+    */
+    const usePositionalFallback = byId.size === 0
+      && !hasDuplicateReturnedId
+      && returnedResults.length === assertions.length;
+
+    return assertions.map((assertion, index) => {
       if (duplicateIds.has(assertion.id)) {
         return {
           assertionId: assertion.id,
@@ -1338,11 +1358,25 @@ export class MissionExecutionLoop extends EventEmitter {
           message: "Duplicate validator result for linked assertion.",
         };
       }
-      return byId.get(assertion.id) ?? {
+      const recognizedResult = byId.get(assertion.id);
+      if (recognizedResult) return recognizedResult;
+      if (usePositionalFallback) {
+        const positionalResult = returnedResults[index];
+        return {
+          ...positionalResult,
+          assertionId: assertion.id,
+          message: positionalResult.message
+            ? `Validator result matched positionally; assertion IDs were not echoed. ${positionalResult.message}`
+            : "Validator result matched positionally; assertion IDs were not echoed.",
+        };
+      }
+      return {
         assertionId: assertion.id,
         verdict: "fail" as const,
         passed: false,
-        message: "Validator omitted linked assertion result.",
+        message: byId.size === 0
+          ? "Validator result IDs did not match any linked assertion ID."
+          : "Validator omitted linked assertion result.",
       };
     });
   }
@@ -1394,8 +1428,14 @@ export class MissionExecutionLoop extends EventEmitter {
     assertions: MissionContractAssertion[],
     scope: "feature" | "milestone" = "feature",
   ): string {
+    /*
+    FNXC:MissionValidation 2026-08-01-15:38:
+    The prompt must carry the authoritative IDs that the parser keys on. Omitting
+    them made every validator response deterministically fail closed because the
+    model could not echo an ID it was never given.
+    */
     const assertionTexts = assertions
-      .map((a, i) => `${i + 1}. **${a.title}**: ${a.assertion}`)
+      .map((a, i) => `${i + 1}. [${a.id}] **${a.title}**: ${a.assertion}`)
       .join("\n");
 
     const subject = scope === "milestone" ? "milestone rollup" : `feature "${feature.title}"`;
@@ -1404,6 +1444,8 @@ export class MissionExecutionLoop extends EventEmitter {
 
 ${assertionTexts}
 For each assertion:
+- Return exactly one result for every listed assertion
+- Set each result's assertionId to that assertion's bracketed ID exactly
 - Determine if the implementation satisfies the assertion (pass/fail/blocked)
 - If failed, explain what was expected vs what was actually observed
 - If blocked, explain what external factor prevented validation
@@ -1413,7 +1455,7 @@ Respond with a JSON object in this format:
   "status": "pass|fail|blocked",
   "assertions": [
     {
-      "assertionId": "CA-...",
+      "assertionId": "One bracketed assertion ID listed above",
       "verdict": "pass|fail|blocked",
       "passed": true|false,
       "message": "Explanation for this verdict",
@@ -1466,7 +1508,7 @@ Response format: Return ONLY a JSON object (no additional text) with this struct
   "status": "pass|fail|blocked",
   "assertions": [
     {
-      "assertionId": "The assertion ID",
+      "assertionId": "The bracketed assertion ID shown for that assertion in the user message",
       "passed": true|false,
       "message": "Explanation of your evaluation",
       "expected": "What the assertion required",

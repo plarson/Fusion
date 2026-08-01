@@ -121,7 +121,7 @@ describe("workflow continuation active-slot admission", () => {
     const dispatch = vi.fn(async () => {});
     let releaseBlocker!: () => void;
     const blockerStarted = new Promise<void>((resolveStarted) => {
-      void projectAdmissionCoordinator.admitOldest({
+      void projectAdmissionCoordinator.admitNext({
         projectId: PROJECT_ID,
         maxConcurrent: 9,
         claimed: () => 8,
@@ -129,6 +129,7 @@ describe("workflow continuation active-slot admission", () => {
         refresh: async () => [{
           taskId: "FN-BLOCKER",
           projectId: PROJECT_ID,
+          lane: "execute",
           createdAt: "2026-07-31T23:59:59.000Z",
           start: async () => {
             resolveStarted();

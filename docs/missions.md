@@ -494,7 +494,7 @@ interface MilestoneValidationRollup {
 
 #### Completion Gate Contract
 
-Canonical authored feature criteria live on `MissionFeature.acceptanceCriteria`, and each feature validator derives its verdict only from its **linked feature-scoped assertions**. Model summary prose, milestone prose, and behavioral results that are not mapped to a linked behavioral assertion cannot override that verdict.
+Canonical authored feature criteria live on `MissionFeature.acceptanceCriteria`, and each feature validator derives its verdict only from its **linked feature-scoped assertions**. Validator prompts list each authoritative assertion ID in brackets; responses must return exactly one result keyed by each listed ID. To recover older model output safely, only an exact-count response with zero recognized IDs is matched positionally and recorded in diagnostics. Partial matches, duplicate IDs, and count mismatches remain fail-closed. Model summary prose, milestone prose, and behavioral results that are not mapped to a linked behavioral assertion cannot override that verdict.
 
 Milestone prose is synchronized to one canonical milestone-scoped assertion with `origin: "derived_milestone_acceptance"`. PostgreSQL restricts uniqueness to that derived origin per project/milestone; authored, imported, and migrated legacy milestone assertions stay independent, are never inferred from title/text, and require no feature links. The rollup evaluates all milestone-scoped assertions after feature coverage and feature assertion passes are ready; unmet parent criteria therefore block milestone completion without failing an already-passing feature. See [Mission Completion Gate Contract](./missions-completion-contract.md).
 

@@ -18,7 +18,6 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   dropPreHeldExecutorSlot,
-  hasPreHeldExecutorSlot,
   projectAdmissionCoordinator,
   persistedTopLevelAgentTaskIdsFromStore,
   recoverIdleSemaphoreLeakCandidate,
@@ -984,6 +983,7 @@ export class Scheduler {
         .map((task) => ({
           taskId: task.id,
           projectId,
+          lane: "execute",
           createdAt: task.createdAt,
           reserve: () => registerPreHeldExecutorSlot(task.id, this.options.semaphore !== undefined),
           start: async () => {
@@ -2835,12 +2835,24 @@ export class Scheduler {
             const ids = await persistedTopLevelAgentTaskIdsFromStore(this.store, liveTasks);
             return { count: ids.length, ids };
           })();
-          const projectSlotReserved = await projectAdmissionCoordinator.reserveIfAvailable({
+          let projectSlotReserved = false;
+          await projectAdmissionCoordinator.admitNext({
             projectId: this.store.getRootDir(),
-            taskId: task.id,
             maxConcurrent: activeTaskLimit,
             claimed: async () => (await getFinalClaimSnapshot()).count,
             claimedTaskIds: async () => (await getFinalClaimSnapshot()).ids,
+            semaphore: this.options.semaphore,
+            refresh: async () => [{
+              taskId: task.id,
+              projectId: this.store.getRootDir(),
+              lane: "execute",
+              createdAt: task.createdAt,
+              reserve: () => registerPreHeldExecutorSlot(task.id, this.options.semaphore !== undefined),
+              start: async () => {
+                projectSlotReserved = true;
+                return true;
+              },
+            }],
           });
           if (!projectSlotReserved) {
             if (reservedScope) {
@@ -2860,27 +2872,9 @@ export class Scheduler {
             return null;
           }
 
+          // admitNext acquired and registered the host slot atomically with the
+          // project reservation, so this handoff cannot bypass review candidates.
           const sem = this.options.semaphore;
-          const hostSlotReserved = hasPreHeldExecutorSlot(task.id);
-          registerPreHeldExecutorSlot(task.id, hostSlotReserved);
-          if (sem && !hostSlotReserved && !sem.tryAcquire()) {
-            dropPreHeldExecutorSlot(task.id);
-            if (reservedScope) {
-              activeScopes.delete(task.id);
-              activeScopeColumns.delete(task.id);
-            }
-            const reason = formatConcurrencyLimitReason({
-              ...concurrencyDiagnostic,
-              available: 0,
-              bindingGates: [...new Set([...concurrencyDiagnostic.bindingGates, "semaphore" as const])],
-            });
-            await this.store.updateTask(task.id, { status: "queued" });
-            await this.logDispatchQueuedReason(task.id, reason, formatConcurrencyLimitMemoKey(concurrencyDiagnostic));
-            return null;
-          }
-          if (sem && !hostSlotReserved) {
-            registerPreHeldExecutorSlot(task.id);
-          }
 
           let acquiredSymbols: string[] | undefined;
           try {

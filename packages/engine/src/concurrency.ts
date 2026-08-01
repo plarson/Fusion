@@ -36,10 +36,21 @@ export function resolveActiveTaskCapacityLimit(params: {
     : Math.min(params.maxConcurrent, maxWorktrees);
 }
 
+/** Lifecycle lanes ordered by the project admission coordinator. */
+export type AdmissionLane = "review" | "execute" | "planning";
+
+const admissionLanePriority: Record<AdmissionLane, number> = {
+  review: 0,
+  execute: 1,
+  planning: 2,
+};
+
 /** A task waiting to enter one of the top-level agent lanes. */
 export interface AdmissionCandidate {
   taskId: string;
   projectId: string;
+  /** Explicit lifecycle ownership; priority never depends on provider or column names. */
+  lane: AdmissionLane;
   createdAt?: string;
   /** Records ownership of the host reservation before the lane starts. */
   reserve?: () => void;
@@ -57,13 +68,21 @@ export interface AdmissionProvider {
   refresh: () => Promise<AdmissionCandidate[]>;
 }
 
+/*
+FNXC:ConcurrencyAdmission 2026-08-01-15:42:
+FN-8705 requires every newly available project slot to finish review/merge work
+before ready execution and planning. The lane is explicit on each candidate so
+custom workflow column names and provider IDs cannot change lifecycle priority;
+age and task ID only preserve fairness within the same lane.
+*/
 /**
- * Deterministic oldest-first ordering used for all task-lane admission.
- * Invalid/missing timestamps deliberately sort after valid timestamps; numeric
- * task ids break normal ties before lexical ids so a malformed fixture cannot
- * make Array.sort's NaN handling decide capacity admission.
+ * Deterministic lifecycle-lane ordering for project admission. Invalid/missing
+ * timestamps sort after valid timestamps only within one lane; numeric task ids
+ * then lexical ids make malformed data deterministic.
  */
-export function compareAdmissionCandidates(a: Pick<AdmissionCandidate, "taskId" | "createdAt">, b: Pick<AdmissionCandidate, "taskId" | "createdAt">): number {
+export function compareAdmissionCandidates(a: Pick<AdmissionCandidate, "taskId" | "createdAt" | "lane">, b: Pick<AdmissionCandidate, "taskId" | "createdAt" | "lane">): number {
+  const laneOrder = admissionLanePriority[a.lane] - admissionLanePriority[b.lane];
+  if (laneOrder !== 0) return laneOrder;
   const aTime = a.createdAt ? Date.parse(a.createdAt) : Number.NaN;
   const bTime = b.createdAt ? Date.parse(b.createdAt) : Number.NaN;
   const aValid = Number.isFinite(aTime);
@@ -160,7 +179,11 @@ export class ProjectAdmissionCoordinator {
     return claimed + pendingReservations;
   }
 
-  /** Atomically reserve one live-task slot for a lane that performs its own dispatch sweep. */
+  /**
+   * Reserve only for compatibility callers that cannot supply a lifecycle candidate.
+   * Top-level production lanes must use admitNext so refreshed higher-priority work
+   * is considered before this project capacity is claimed.
+   */
   async reserveIfAvailable(params: {
     projectId: string;
     taskId: string;
@@ -202,7 +225,7 @@ export class ProjectAdmissionCoordinator {
     };
   }
 
-  async admitOldest(params: {
+  async admitNext(params: {
     projectId: string;
     maxConcurrent: number;
     claimed: () => Promise<number> | number;

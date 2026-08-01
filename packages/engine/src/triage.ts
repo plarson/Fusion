@@ -595,7 +595,7 @@ export class TriageProcessor {
           now,
         );
         return tasks.filter((task) => !this.coordinatorAdmittedTaskIds.has(task.id)).map((task) => ({
-          taskId: task.id, projectId: this.rootDir, createdAt: task.createdAt,
+          taskId: task.id, projectId: this.rootDir, lane: "planning", createdAt: task.createdAt,
           reserve: () => registerPreHeldExecutorSlot(task.id, this.options.semaphore !== undefined),
           start: async () => {
             this.coordinatorAdmittedTaskIds.add(task.id);
@@ -1231,7 +1231,7 @@ export class TriageProcessor {
       duplicate-claim guard), so a promise that never settles — exactly the case this eviction
       exists for — left the id in the set permanently. Planning discovery does not consult that
       set, so the card stayed in `triageTasks` and `maxToStart` stayed positive, which means the
-      throttle branch (the only thing that logs or emits) never fired; but `admitOldest`'s
+      throttle branch (the only thing that logs or emits) never fired; but `admitNext`'s
       `refresh()` filters on the set, so the coordinator saw no candidate. Silent stall until
       engine restart, and the badge (a pure client-side "unplanned + idle in Todo" inference) kept
       claiming the card was queued.
@@ -2237,7 +2237,7 @@ export class TriageProcessor {
           const ids = await persistedTopLevelAgentTaskIdsFromStore(this.store, fresh);
           return { count: ids.length + pending, ids: [...new Set([...ids, ...this.processing])] };
         })();
-        await projectAdmissionCoordinator.admitOldest({
+        await projectAdmissionCoordinator.admitNext({
           // rootDir is the stable per-project identity held by this processor.
           projectId: this.rootDir,
           maxConcurrent: activeTaskLimit,
@@ -2249,6 +2249,7 @@ export class TriageProcessor {
             .map((task) => ({
               taskId: task.id,
               projectId: this.rootDir,
+              lane: "planning",
               createdAt: task.createdAt,
               // FNXC:ConcurrencyAdmission 2026-08-05-10:00: the planner must
               // own the coordinator's real host reservation before it starts;

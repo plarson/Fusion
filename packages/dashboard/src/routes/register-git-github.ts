@@ -53,6 +53,7 @@ import { GitLabIssueCommentService } from "../gitlab-issue-comment.js";
 import { GitLabTrackingCommentService } from "../gitlab-tracking-comments.js";
 import { GitLabTrackingStateService } from "../gitlab-tracking-state.js";
 import { GitLabSourceIssueCloseService } from "../gitlab-source-issue-close.js";
+import { GitLabSplitCloseService } from "../gitlab-split-close.js";
 import { KnowledgeIndexRefreshService } from "../knowledge-index-refresh.js";
 import { githubRateLimiter } from "../github-poll.js";
 import * as projectStoreResolver from "../project-store-resolver.js";
@@ -2670,6 +2671,10 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
     gitlabSourceIssueCloseService.start();
     ctx.registerDispose(() => gitlabSourceIssueCloseService.stop());
 
+    const gitlabSplitCloseService = new GitLabSplitCloseService(store);
+    gitlabSplitCloseService.start();
+    ctx.registerDispose(() => gitlabSplitCloseService.stop());
+
     // U14 — incremental knowledge-index refresh on task completion. Listens for
     // task:moved → done and re-indexes just that task as a knowledge page.
     const knowledgeIndexRefreshService = new KnowledgeIndexRefreshService(store);
@@ -2730,6 +2735,7 @@ export function registerGitGitHubRoutes(ctx: ApiRoutesContext): void {
       githubSourceIssueCloseService.attach(projectStore);
       gitlabTrackingStateService.attach(projectStore);
       gitlabSourceIssueCloseService.attach(projectStore);
+      gitlabSplitCloseService.attach(projectStore);
       // FNXC:Knowledge 2026-06-16-14:32:
       // Knowledge index refresh on task:moved→done must run for every registered project store, not just the primary.
       // Mirror the GitHubTrackingStateService/GitHubSourceIssueCloseService attach/detach lifecycle so non-primary

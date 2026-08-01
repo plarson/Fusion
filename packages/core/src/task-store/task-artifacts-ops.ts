@@ -612,10 +612,6 @@ export function stopWatchingImpl(store: TaskStore): void {
       store.watcher.close();
       store.watcher = null;
     }
-    if (store.pollInterval) {
-      clearInterval(store.pollInterval);
-      store.pollInterval = null;
-    }
     for (const timer of store.debounceTimers.values()) {
       clearTimeout(timer);
     }

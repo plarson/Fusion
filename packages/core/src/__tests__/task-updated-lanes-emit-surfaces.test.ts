@@ -22,7 +22,6 @@ const PRODUCERS = {
   "packages/core/src/task-store/audit-ops.ts": ["emit", "safe"],
   "packages/core/src/task-store/branch-group-ops.ts": ["emit"],
   "packages/core/src/task-store/comments-ops.ts": ["emit"],
-  "packages/core/src/task-store/lifecycle-ops.ts": ["emit"],
   "packages/core/src/task-store/merge-queue-ops.ts": ["emit"],
   "packages/core/src/task-store/moves.ts": ["emit"],
   "packages/core/src/task-store/project-store-ops.ts": ["emit"],
@@ -196,31 +195,6 @@ pgDescribe("task:updated producer integration", () => {
     } finally {
       await harness.teardown();
     }
-  });
-
-  it("executes lifecycle polling's real update producer", async () => {
-    const store = new TaskStore(process.cwd());
-    const polledTask = { ...task };
-    const received: Array<{ lanes?: { wip?: string } } | undefined> = [];
-    store.on("task:updated", (_task, meta) => received.push(meta));
-    Object.defineProperty(store, "db", {
-      value: {
-        getLastModified: vi.fn().mockReturnValueOnce(1).mockReturnValueOnce(2),
-        prepare: vi.fn((query: string) => query.includes("SELECT id FROM tasks")
-          ? { all: () => [{ id: task.id }] }
-          : { all: () => [{}] }),
-      },
-    });
-    vi.spyOn(store, "rowToTask").mockReturnValue(polledTask);
-    store.taskCache.set(task.id, { ...task });
-
-    store.laneCache.set(task.id, { wip: "building" });
-    await store.checkForChanges();
-    store.laneCache.invalidate(task.id);
-    store.taskCache.set(task.id, { ...task });
-    await store.checkForChanges();
-
-    expect(received).toEqual([{ lanes: { wip: "building" } }, undefined]);
   });
 
   it("executes workflow-integrity's real safe update producer", async () => {

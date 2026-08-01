@@ -118,7 +118,7 @@ import { clearWorkflowRunBranchesImpl, projectMergeRequestToWorkflowWorkItemImpl
 import { flushAgentLogBufferImpl, appendAgentLogBatchImpl } from "./task-store/agent-logs.js";
 import { refineTaskImpl, updateTaskDependenciesImpl } from "./task-store/update-task-deps.js";
 import { createWorkflowStepImpl, updateWorkflowStepImpl, updateWorkflowDefinitionImpl, deleteWorkflowDefinitionImpl, setDefaultWorkflowIdImpl, selectTaskWorkflowImpl } from "./task-store/workflow-ops.js";
-import { initImpl, setupActivityLogListenersImpl, reconcileOrphanedTaskDirsImpl, watchImpl, checkForChangesImpl, migrateAgentLogEntriesImpl, migrateMovedSettingsImpl, recoverStaleTransitionPendingImpl, migrateLegacyWorkflowStepsImpl, emitTaskLifecycleEventSafelyImpl } from "./task-store/lifecycle-ops.js";
+import { initImpl, setupActivityLogListenersImpl, reconcileOrphanedTaskDirsImpl, watchImpl, migrateAgentLogEntriesImpl, migrateMovedSettingsImpl, recoverStaleTransitionPendingImpl, migrateLegacyWorkflowStepsImpl, emitTaskLifecycleEventSafelyImpl } from "./task-store/lifecycle-ops.js";
 import { updateStepImpl, startStepImpl, acquireMergeQueueLeaseImpl, mergeTaskImpl } from "./task-store/merge-queue-ops.js";
 import { addCommentImpl, publishArchivedTaskDocumentAdditionImpl, upsertTaskDocumentImpl } from "./task-store/comments-ops.js";
 import { deleteTaskImpl, archiveTaskImpl, type DeleteTaskIfResult } from "./task-store/archive-lifecycle.js";
@@ -383,8 +383,6 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public configPath: string;
   public _db: Database | null = null;
   public activityListenersWired = false;
-  /** When true, activity-log listeners skip recording (set by checkForChanges polling so re-emitted events don't double-log). In-process emit path remains sole source of truth. */
-  public suppressActivityLogForPollingEmit = false;
   public _archiveDb: ArchiveDatabase | null = null;
 
   /**
@@ -458,16 +456,12 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
   public workflowDefinitionsCache: WorkflowDefinition[] | null = null;
   public _pluginWorkflowStepTemplates: Array<{ pluginId: string; template: WorkflowStepTemplate }> = [];
   public globalSettingsStore: GlobalSettingsStore;
-  public pollInterval: ReturnType<typeof setInterval> | null = null;
-  public pollingInProgress = false;
-  public lastKnownModified: number = 0;
-  public lastPollTime: string | null = null;
   public donePauseBackfillDone = false;
   public startupSlimListMemo = new Map<string, { expiresAt: number; promise: Promise<Task[]> }>();
   public static readonly STARTUP_SLIM_LIST_MEMO_TTL_MS = 2_500;
 
   public get isWatching(): boolean {
-    return this.watcher !== null || this.pollInterval !== null;
+    return this.watcher !== null;
   }
   public missionStore: MissionStore | AsyncMissionStore | null = null;
   public ideationStore: AsyncIdeationStore | null = null;
@@ -2305,9 +2299,6 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
 
   async watch(): Promise<void> {
     return watchImpl(this);
-  }
-  public async checkForChanges(): Promise<void> {
-    return checkForChangesImpl(this);
   }
   stopWatching(): void {
     return stopWatchingImpl(this);

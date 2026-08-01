@@ -23,7 +23,11 @@ export async function resolveGitLabClient(store: TaskStore): Promise<{ ok: true;
 
 export function resolveGitLabTarget(task: Pick<Task, "gitlabTracking" | "sourceIssue" | "source">): GitLabLifecycleTarget | null {
   const item = task.gitlabTracking?.item;
-  if (item) return resolveGitLabTargetFromItem(item);
+  const trackingTarget = item ? resolveGitLabTargetFromItem(item) : null;
+  if (trackingTarget) return trackingTarget;
+
+  // FNXC:GitLabSplitClose 2026-08-01-09:58: malformed tracking metadata must not strand a valid imported source issue; the resolved tracking item remains the preferred owner.
+
 
   const meta = task.source?.sourceMetadata && typeof task.source.sourceMetadata === "object"
     ? task.source.sourceMetadata as Record<string, unknown>

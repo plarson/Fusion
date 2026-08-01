@@ -35,6 +35,8 @@ describe("gitlab parity inventory documentation contract", () => {
       "project issues",
       "group issues",
       "merge requests",
+      "Split-close deletion also posts one parent/child-task handoff note",
+      "This is not general GitLab close-on-delete parity",
     ]) {
       expect(inventory).toContain(required);
     }

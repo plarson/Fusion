@@ -75,7 +75,11 @@ import type { RoutineRunner } from "./routine-runner.js";
 import { sweepStaleAutostashes, VerificationError } from "./merger.js";
 import { runAiMerge, landWorkspaceTask, WorkspacePartialLandError, WorkspaceRepoLandBusyError } from "./merger-ai.js";
 import { promoteBranchGroup, type BranchGroupPromotionResult, type CreateGroupPrFn, type SyncGroupPrFn } from "./group-merge-coordinator.js";
-import { computeTopLevelConcurrencyClaimedFromStore, projectAdmissionCoordinator } from "./concurrency.js";
+import {
+  computeTopLevelConcurrencyClaimedFromStore,
+  projectAdmissionCoordinator,
+  resolveActiveTaskCapacityLimit,
+} from "./concurrency.js";
 import { canStartNextMergeBody } from "./merge-reclaim-policy.js";
 import {
   registerProjectVerificationLimit,
@@ -3888,6 +3892,7 @@ export class ProjectEngine {
               }
             }
             let selected = false;
+            const admissionSettings = await store.getSettings();
             /*
             FNXC:ConcurrencyAdmission 2026-08-01-01:50 (ROOT CAUSE — triage admission died during every merge):
             This lane previously ran `value = await start()` INSIDE its admission `start()` callback —
@@ -3908,7 +3913,11 @@ export class ProjectEngine {
             */
             await projectAdmissionCoordinator.admitOldest({
               projectId: cwd,
-              maxConcurrent: (await store.getSettings()).maxConcurrent ?? 2,
+              maxConcurrent: resolveActiveTaskCapacityLimit({
+                maxConcurrent: admissionSettings.maxConcurrent ?? 2,
+                maxWorktrees: admissionSettings.maxWorktrees ?? 4,
+                worktreeLimitEnabled: admissionSettings.worktreeLimitEnabled,
+              }),
               claimed: async () => computeTopLevelConcurrencyClaimedFromStore({
                 store,
                 tasks: await store.listTasks({ slim: true, includeArchived: false }),

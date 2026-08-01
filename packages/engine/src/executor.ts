@@ -3520,7 +3520,10 @@ export class TaskExecutor {
   */
   private async runWithExecutorSemaphore<T>(taskId: string, work: () => Promise<T>): Promise<T> {
     const sem = this.options.semaphore;
-    if (!sem) return work();
+    if (!sem) {
+      takePreHeldExecutorSlot(taskId);
+      return work();
+    }
     if (this.outerConcurrencyClaims.has(taskId)) {
       return work();
     }

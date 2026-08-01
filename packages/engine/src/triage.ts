@@ -37,6 +37,7 @@ import {
   resolveLifecycleColumns,
   resolveWorkflowIrForTaskWithProvenance,
   resolveProjectColumnsForRoles,
+  resolveWorktreeCapacityLimit,
   workflowHasColumn,
   getStepParser,
   computePlanApprovalFingerprint,
@@ -137,8 +138,11 @@ import {
   PRIORITY_SPECIFY,
   computeTopLevelConcurrencyClaimedFromStore,
   dropPreHeldExecutorSlot,
+  persistedTopLevelAgentTaskIdsFromStore,
   projectAdmissionCoordinator,
   registerPreHeldExecutorSlot,
+  releasePreHeldAdmissionReservation,
+  resolveActiveTaskCapacityLimit,
   takePreHeldExecutorSlot,
   recoverIdleSemaphoreLeakCandidate,
   type AgentSemaphore,
@@ -581,7 +585,7 @@ export class TriageProcessor {
         );
         return tasks.filter((task) => !this.coordinatorAdmittedTaskIds.has(task.id)).map((task) => ({
           taskId: task.id, projectId: this.rootDir, createdAt: task.createdAt,
-          reserve: () => { if (this.options.semaphore) registerPreHeldExecutorSlot(task.id); },
+          reserve: () => registerPreHeldExecutorSlot(task.id, this.options.semaphore !== undefined),
           start: async () => {
             this.coordinatorAdmittedTaskIds.add(task.id);
             void this.specifyTask(task);
@@ -2128,43 +2132,24 @@ export class TriageProcessor {
       */
       const projectRoom = Math.max(0, maxConcurrent - claimed);
       /*
-      FNXC:CapacityModel 2026-08-01-02:15 (live breach — 8 planners on a maxWorktrees=4 board):
-      Planning admission gated ONLY on the agent count. Every planner acquires a REAL worktree
-      (plan-in-place), so admission must also respect the worktree budget — the same two-number
-      model the scheduler's dispatch gate enforces. This gap was invisible for days because the
-      merge-inside-admission-drain bug (00769fad7c) froze admission during every merge and
-      accidentally throttled planners; unfreezing it exposed 8 concurrent planning sessions and 11
-      worktrees on a 4-slot board within one restart.
-
-      The ledger mirrors the scheduler's: every non-terminal task HOLDING a worktree occupies a
-      slot, and a candidate that already holds one (replan re-entry) transfers rather than adds —
-      only worktree-less candidates consume remaining slots, so a held tree never blocks its own
-      resume. maxWorktrees is absent/null when worktrees are off; admission then falls back to the
-      agent gate alone.
+      FNXC:WorktreeCapacity 2026-08-01-04:38:
+      Worktree slots follow the canonical LIVE-TASK count (`claimed`), not retained directory
+      metadata. A queued, paused, dependency-blocked, or terminal card may keep a worktree path for
+      reuse/cleanup without consuming admission capacity. Every newly admitted planner becomes live
+      and spends one slot below, even when it reuses an existing directory.
       */
-      const maxWorktrees = (settings as { maxWorktrees?: number | null }).maxWorktrees ?? 4;
-      let worktreeRoom = Number.POSITIVE_INFINITY;
-      if (typeof maxWorktrees === "number" && Number.isFinite(maxWorktrees)) {
-        /*
-        FNXC:WorkflowResolvedColumns 2026-08-01-03:05:
-        TERMINAL IS A ROLE HERE, NOT A NAME. The ledger above excludes terminal lanes because their
-        retained worktrees are cleanup-owned rather than capacity; against the literals `done` and
-        `archived` a RENAMED board matched neither, so every finished card still counted as a live
-        worktree holder. The gate then reads worktreeRoom=0 on a board with free slots and planning
-        admission stalls permanently — the mirror of the breach this commit set out to fix, and
-        strictly worse, because a stall is silent where a breach is at least visible as 8 planners.
-
-        PROJECT-level, matching this file's existing use at `sweepStalePlanningStatuses`: the ledger
-        spans every card on the board, so there is no single task to resolve against.
-        `resolveProjectColumnsForRoles` is legacy-seeded, so a default board still excludes exactly
-        `done` and `archived` and this conversion is byte-identical there.
-        */
-        const terminalColumns = await resolveProjectColumnsForRoles(this.store, ["complete", "archived"]);
-        const heldWorktrees = allTasks.filter((t) =>
-          !terminalColumns.has(t.column)
-          && typeof t.worktree === "string" && t.worktree.length > 0).length;
-        worktreeRoom = Math.max(0, maxWorktrees - heldWorktrees);
-      }
+      const maxWorktrees = resolveWorktreeCapacityLimit({
+        maxWorktrees: settings.maxWorktrees ?? 4,
+        worktreeLimitEnabled: settings.worktreeLimitEnabled,
+      });
+      const activeTaskLimit = resolveActiveTaskCapacityLimit({
+        maxConcurrent,
+        maxWorktrees: settings.maxWorktrees ?? 4,
+        worktreeLimitEnabled: settings.worktreeLimitEnabled,
+      });
+      const worktreeRoom = maxWorktrees === null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, maxWorktrees - claimed);
       const maxToStart = Math.min(projectRoom, worktreeRoom);
 
       if (maxToStart <= 0 && triageTasks.length > 0) {
@@ -2276,36 +2261,33 @@ export class TriageProcessor {
       // the planner's synchronous processing claim until after this poll returns.
       const admittedThisPoll = new Set<string>();
       /*
-      FNXC:CapacityModel 2026-08-01-02:20: the transfer rule from the scheduler ledger, applied at
-      admission — a candidate that already HOLDS a worktree (replan re-entry) reuses it, so it
-      spends only agent room, never a fresh worktree slot. Budgets decrement per admission below.
+      FNXC:WorktreeCapacity 2026-08-01-04:38:
+      Each admitted planner becomes an active task and therefore spends one worktree-capacity slot.
+      Whether its directory is newly created or retained is deliberately irrelevant.
       */
       let agentBudget = projectRoom;
       let worktreeBudget = worktreeRoom;
       for (let i = 0; i < triageTasks.length; i++) {
-        if (agentBudget <= 0) break;
-        const candidate = triageTasks[i];
-        const candidateHoldsWorktree = typeof candidate.worktree === "string" && candidate.worktree.length > 0;
-        if (!candidateHoldsWorktree && worktreeBudget <= 0) continue;
+        if (agentBudget <= 0 || worktreeBudget <= 0) break;
         agentBudget -= 1;
-        if (!candidateHoldsWorktree) worktreeBudget -= 1;
+        worktreeBudget -= 1;
+        let freshClaimSnapshot: Promise<{ count: number; ids: string[] }> | undefined;
+        const getFreshClaimSnapshot = () => freshClaimSnapshot ??= (async () => {
+          const fresh = await this.store.listTasks({ slim: true, includeArchived: false });
+          let pending = 0;
+          for (const id of this.processing) {
+            const row = fresh.find((task) => task.id === id);
+            if (!row || row.status !== "planning") pending++;
+          }
+          const ids = await persistedTopLevelAgentTaskIdsFromStore(this.store, fresh);
+          return { count: ids.length + pending, ids: [...new Set([...ids, ...this.processing])] };
+        })();
         await projectAdmissionCoordinator.admitOldest({
           // rootDir is the stable per-project identity held by this processor.
           projectId: this.rootDir,
-          maxConcurrent,
-          claimed: async () => {
-            const fresh = await this.store.listTasks({ slim: true, includeArchived: false });
-            let pending = 0;
-            for (const id of this.processing) {
-              const row = fresh.find((task) => task.id === id);
-              if (!row || row.status !== "planning") pending++;
-            }
-            return computeTopLevelConcurrencyClaimedFromStore({
-              store: this.store,
-              tasks: fresh,
-              pendingSpecifyCount: pending,
-            });
-          },
+          maxConcurrent: activeTaskLimit,
+          claimed: async () => (await getFreshClaimSnapshot()).count,
+          claimedTaskIds: async () => (await getFreshClaimSnapshot()).ids,
           semaphore: this.options.semaphore,
           refresh: async () => triageTasks
             .filter((task) => !admittedThisPoll.has(task.id) && !this.coordinatorAdmittedTaskIds.has(task.id) && !this.processing.has(task.id) && !this.hasLivePlanningWork(task.id))
@@ -2316,7 +2298,7 @@ export class TriageProcessor {
               // FNXC:ConcurrencyAdmission 2026-08-05-10:00: the planner must
               // own the coordinator's real host reservation before it starts;
               // deferring to semaphore.run would reintroduce priority overtaking.
-              reserve: () => { if (this.options.semaphore) registerPreHeldExecutorSlot(task.id); },
+              reserve: () => registerPreHeldExecutorSlot(task.id, this.options.semaphore !== undefined),
               start: async () => {
                 admittedThisPoll.add(task.id);
                 this.coordinatorAdmittedTaskIds.add(task.id);
@@ -2521,7 +2503,13 @@ export class TriageProcessor {
         updatePlanningStateIfStillCurrent); this one must be visible — the FN-7977 steps>0
         wedge stalled the whole planner for hours precisely because it logged nothing.
         */
-        if (!await this.updatePlanningStateIfStillCurrent(task, { status: "planning" })) {
+        let planningClaimed = false;
+        try {
+          planningClaimed = await this.updatePlanningStateIfStillCurrent(task, { status: "planning" });
+        } finally {
+          releasePreHeldAdmissionReservation(task.id);
+        }
+        if (!planningClaimed) {
           planLog.warn(
             `${task.id}: planning claim skipped — live row is no longer in the planning stage; `
             + "it will be re-claimed on the next poll",
@@ -3256,7 +3244,8 @@ export class TriageProcessor {
         },
       });
 
-      if (this.options.semaphore && takePreHeldExecutorSlot(task.id)) {
+      const heldHostSlot = takePreHeldExecutorSlot(task.id, true);
+      if (this.options.semaphore && heldHostSlot) {
         // Coordinator already owns this top-level slot; run directly so it
         // cannot join the priority queue after age-based admission.
         try {

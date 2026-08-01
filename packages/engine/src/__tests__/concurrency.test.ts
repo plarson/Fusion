@@ -15,6 +15,7 @@ import {
   persistedTopLevelAgentSlots,
   recoverIdleSemaphoreLeakCandidate,
   registerPreHeldExecutorSlot,
+  resolveActiveTaskCapacityLimit,
   takePreHeldExecutorSlot,
 } from "../concurrency.js";
 
@@ -1067,6 +1068,47 @@ describe("AgentSemaphore resilience (FN-978)", () => {
 
 
 describe("ProjectAdmissionCoordinator", () => {
+  it("shares the final active-task slot across planning, execution, and merge lanes", async () => {
+    const coordinator = new ProjectAdmissionCoordinator();
+    const started: string[] = [];
+    const activeTaskLimit = resolveActiveTaskCapacityLimit({
+      maxConcurrent: 12,
+      maxWorktrees: 9,
+      worktreeLimitEnabled: true,
+    });
+
+    for (const [lane, taskId, createdAt] of [
+      ["planning", "FN-PLANNING", "2026-01-01T00:00:00.000Z"],
+      ["execute", "FN-EXECUTE", "2026-01-02T00:00:00.000Z"],
+      ["merge", "FN-MERGE", "2026-01-03T00:00:00.000Z"],
+    ] as const) {
+      coordinator.registerProvider(lane, {
+        projectId: "project-a",
+        refresh: async () => [{
+          taskId,
+          projectId: "project-a",
+          createdAt,
+          start: async () => { started.push(taskId); },
+        }],
+      });
+    }
+
+    expect(await coordinator.admitOldest({
+      projectId: "project-a",
+      maxConcurrent: activeTaskLimit,
+      claimed: () => 8,
+    })).toBe("FN-PLANNING");
+    expect(await coordinator.reserveIfAvailable({
+      projectId: "project-a",
+      taskId: "FN-DIRECT-SCHEDULER",
+      maxConcurrent: activeTaskLimit,
+      claimed: () => 8,
+    })).toBe(false);
+    expect(started).toEqual(["FN-PLANNING"]);
+
+    coordinator.releaseReservation("FN-PLANNING");
+  });
+
   it("admits the oldest same-project candidate atomically and partitions projects", async () => {
     const coordinator = new ProjectAdmissionCoordinator();
     const started: string[] = [];

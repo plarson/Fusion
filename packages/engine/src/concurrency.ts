@@ -2,6 +2,8 @@ import {
   compareTaskIdNumeric,
   countRunningAgentTasks,
   enrichRunningAgentTaskShape,
+  isRunningAgentTask,
+  resolveWorktreeCapacityLimit,
   resolveWorkflowIrForTask,
   type Task,
   type WorkflowIrResolverStore,
@@ -16,6 +18,23 @@ export const PRIORITY_MERGE = 2;
 export const PRIORITY_EXECUTE = 1;
 /** Priority level for specification/triage agents — served last (default). */
 export const PRIORITY_SPECIFY = 0;
+
+/*
+FNXC:WorktreeCapacity 2026-08-01-04:38:
+Agent concurrency and worktree capacity count the same canonical live-task
+population. Collapse them to one project admission ceiling so planning, execute,
+and merge cannot each observe and claim the final worktree slot independently.
+*/
+export function resolveActiveTaskCapacityLimit(params: {
+  maxConcurrent: number;
+  maxWorktrees: number;
+  worktreeLimitEnabled?: boolean;
+}): number {
+  const maxWorktrees = resolveWorktreeCapacityLimit(params);
+  return maxWorktrees === null
+    ? params.maxConcurrent
+    : Math.min(params.maxConcurrent, maxWorktrees);
+}
 
 /** A task waiting to enter one of the top-level agent lanes. */
 export interface AdmissionCandidate {
@@ -90,6 +109,51 @@ export class ProjectAdmissionCoordinator {
     return this.reservations.get(projectId)?.size ?? 0;
   }
 
+  private async occupiedCount(params: {
+    projectId: string;
+    claimed: () => Promise<number> | number;
+    claimedTaskIds?: () => Promise<Iterable<string>> | Iterable<string>;
+  }): Promise<number> {
+    const claimed = await params.claimed();
+    if (!params.claimedTaskIds) return claimed + this.reservationCount(params.projectId);
+    const claimedIds = new Set(await params.claimedTaskIds());
+    let pendingReservations = 0;
+    for (const taskId of this.reservations.get(params.projectId) ?? []) {
+      if (!claimedIds.has(taskId)) pendingReservations += 1;
+    }
+    return claimed + pendingReservations;
+  }
+
+  /** Atomically reserve one live-task slot for a lane that performs its own dispatch sweep. */
+  async reserveIfAvailable(params: {
+    projectId: string;
+    taskId: string;
+    maxConcurrent: number;
+    claimed: () => Promise<number> | number;
+    claimedTaskIds?: () => Promise<Iterable<string>> | Iterable<string>;
+  }): Promise<boolean> {
+    const existing = this.draining.get(params.projectId);
+    if (existing) await existing;
+    let reserved = false;
+    const drain = (async () => {
+      const current = this.reservations.get(params.projectId);
+      if (current?.has(params.taskId)) {
+        reserved = true;
+        return;
+      }
+      if (await this.occupiedCount(params) >= params.maxConcurrent) return;
+      this.reserve(params.projectId, params.taskId);
+      reserved = true;
+    })();
+    this.draining.set(params.projectId, drain);
+    try {
+      await drain;
+      return reserved;
+    } finally {
+      if (this.draining.get(params.projectId) === drain) this.draining.delete(params.projectId);
+    }
+  }
+
   /** Register a lane's refresh source. Re-registering replaces its prior source. */
   registerProvider(providerId: string, provider: AdmissionProvider): () => void {
     const projectProviders = this.providers.get(provider.projectId) ?? new Map<string, AdmissionProvider>();
@@ -106,6 +170,8 @@ export class ProjectAdmissionCoordinator {
     projectId: string;
     maxConcurrent: number;
     claimed: () => Promise<number> | number;
+    /** Canonically live task ids, used to de-duplicate reservations after persistence catches up. */
+    claimedTaskIds?: () => Promise<Iterable<string>> | Iterable<string>;
     /** One-shot source for callers that do not hold a durable lane registration. */
     refresh?: () => Promise<AdmissionCandidate[]>;
     semaphore?: Pick<AgentSemaphore, "tryAcquire" | "release">;
@@ -124,7 +190,7 @@ export class ProjectAdmissionCoordinator {
       // in-memory handoffs to count until they either become live or are dropped.
       // Persisted task rows lag a fire-and-forget lane start, so omitting these
       // reservations lets a second coordinator pass over-admit one project.
-      if (candidates.length === 0 || (await params.claimed()) + this.reservationCount(params.projectId) >= params.maxConcurrent) return;
+      if (candidates.length === 0 || await this.occupiedCount(params) >= params.maxConcurrent) return;
       // Older test/runtime semaphore wrappers predate tryAcquire. They still
       // exercise project admission, while production semaphores atomically take
       // the host slot here.
@@ -153,10 +219,10 @@ export class ProjectAdmissionCoordinator {
         // The host semaphore is exhausted for everyone, not just this candidate:
         // trying younger candidates cannot succeed, so stop rather than spin.
         if (!acquiredHostSlot) return;
-        // Compatibility-only semaphore shims cannot hold a reservation. Their
-        // lane tests provide claimed() synchronously, while real host semaphores
-        // use this durable marker until take/drop below.
-        if (hasReservableHostSlot) this.reserve(params.projectId, winner.taskId);
+        // The project reservation is independent of the optional host semaphore.
+        // It bridges every lane's dispatch-to-persist gap, including runtimes
+        // where the cross-project semaphore is intentionally absent.
+        this.reserve(params.projectId, winner.taskId);
         /*
         FNXC:ConcurrencyAdmission 2026-07-26-10:35:
         Unwind EXACTLY what this attempt took. Two ways a naive `semaphore.release()` corrupts
@@ -175,20 +241,9 @@ export class ProjectAdmissionCoordinator {
         the explicit unwind.
         */
         const releaseAttempt = () => {
-          if (!hasReservableHostSlot) return;
-          /*
-          FNXC:CapacityModel 2026-07-29-13:20: the host-slot release is now
-          UNCONDITIONAL across both branches. The pre-held branch used to release the
-          caller's semaphore through dropPreHeldExecutorSlot's second parameter;
-          with that parameter deleted it would otherwise unwind the registration and
-          the reservation while LEAKING the host slot this attempt acquired.
-          */
-          if (hasPreHeldExecutorSlot(winner.taskId)) {
-            dropPreHeldExecutorSlot(winner.taskId);
-          } else {
-            this.releaseReservation(winner.taskId);
-          }
-          params.semaphore?.release();
+          dropPreHeldExecutorSlot(winner.taskId);
+          this.releaseReservation(winner.taskId);
+          if (hasReservableHostSlot) params.semaphore?.release();
         };
         try {
           winner.reserve?.();
@@ -280,26 +335,34 @@ FNXC:GlobalConcurrencyControls 2026-07-14-18:30:
 Operators reported live running-agent counts above the global concurrency cap (e.g. 5 running with cap 4). Live utilization counts every top-level slot holder (in-progress, planning triage, active in-review), but the scheduler only preflighted capacity and acquired the shared semaphore later inside the executor — so a card could sit in-progress (and count as running) while triage still saw free semaphore slots and filled the rest of the cap. Pre-held executor slots close that gap: tryAcquire before todo→in-progress, keep the slot until the executor/graph run claims and releases it, and admit triage against max(semaphore.activeCount, live running count).
 
 FNXC:GlobalConcurrencyControls 2026-07-15-03:50:
-Hard invariant: registerPreHeldExecutorSlot may only run immediately after a successful semaphore.tryAcquire() for that same task, and every registration must later be either take()d (caller releases the semaphore) or drop()d (releases the semaphore). The Set is process-local soft state decoupled from activeCount except via this discipline — acquire-without-register or register-without-acquire desyncs capacity accounting.
+The semaphore claim and project-admission handoff are tracked separately. A
+runtime without the optional host semaphore still needs the admission handoff
+to bridge selection until its task row becomes canonically live.
 */
 const preHeldExecutorSlots = new Set<string>();
+const preHeldAdmissionReservations = new Set<string>();
 
 /**
- * Register a semaphore slot that was **just** acquired via `tryAcquire` for a task about to enter in-progress.
- * Must not be called without a matching prior acquire; pair with take() or drop().
+ * Register a project-admission handoff and, when present, its host semaphore slot.
  */
-export function registerPreHeldExecutorSlot(taskId: string): void {
-  preHeldExecutorSlots.add(taskId);
+export function registerPreHeldExecutorSlot(taskId: string, semaphoreHeld = true): void {
+  preHeldAdmissionReservations.add(taskId);
+  if (semaphoreHeld) preHeldExecutorSlots.add(taskId);
 }
 
 /**
  * Transfer ownership of a pre-held executor slot to the caller.
  * Returns true when a slot was registered; the caller MUST release the underlying semaphore in its finally path.
  */
-export function takePreHeldExecutorSlot(taskId: string): boolean {
+export function takePreHeldExecutorSlot(taskId: string, retainAdmissionReservation = false): boolean {
   const taken = preHeldExecutorSlots.delete(taskId);
-  if (taken) projectAdmissionCoordinator.releaseReservation(taskId);
+  if (!retainAdmissionReservation) releasePreHeldAdmissionReservation(taskId);
   return taken;
+}
+
+/** Release only the project-admission bridge while retaining any host semaphore claim. */
+export function releasePreHeldAdmissionReservation(taskId: string): void {
+  if (preHeldAdmissionReservations.delete(taskId)) projectAdmissionCoordinator.releaseReservation(taskId);
 }
 
 /*
@@ -333,9 +396,9 @@ export function dropPreHeldExecutorSlot(taskId: string): boolean {
   slot this call never held, INFLATING capacity — the opposite of the leak the
   cleanup was guarding against.
   */
-  if (!preHeldExecutorSlots.delete(taskId)) return false;
-  projectAdmissionCoordinator.releaseReservation(taskId);
-  return true;
+  const heldSemaphore = preHeldExecutorSlots.delete(taskId);
+  if (preHeldAdmissionReservations.delete(taskId)) projectAdmissionCoordinator.releaseReservation(taskId);
+  return heldSemaphore;
 }
 
 /** Test/helper: whether a task currently has an unclaimed pre-held executor slot. */
@@ -346,6 +409,7 @@ export function hasPreHeldExecutorSlot(taskId: string): boolean {
 /** Test helper: clear all pre-held registrations without releasing semaphore slots. */
 export function clearPreHeldExecutorSlotsForTests(): void {
   preHeldExecutorSlots.clear();
+  preHeldAdmissionReservations.clear();
 }
 
 /**
@@ -361,13 +425,30 @@ export function persistedTopLevelAgentSlots(tasks: Task[]): number {
  * predicate; raw `persistedTopLevelAgentSlots` remains for pre-enriched tests
  * and callers that cannot resolve an IR.
  */
-export async function persistedTopLevelAgentSlotsFromStore(store: WorkflowIrResolverStore, tasks: Task[]): Promise<number> {
+/*
+FNXC:WorktreeCapacity 2026-08-01-04:38:
+Expose the ids behind the canonical live-task count so capacity diagnostics and arithmetic use the
+same enriched predicate as the dashboard. Retained worktree metadata is deliberately not an input.
+*/
+async function enrichedTopLevelAgentTasksFromStore(store: WorkflowIrResolverStore, tasks: Task[]) {
   const irCache = new Map();
-  const enriched = await Promise.all(tasks.map(async (task) => {
+  return Promise.all(tasks.map(async (task) => {
     const ir = await resolveWorkflowIrForTask(store, task.id, irCache);
     return enrichRunningAgentTaskShape(task, ir);
   }));
-  return countRunningAgentTasks(enriched);
+}
+
+export async function persistedTopLevelAgentTaskIdsFromStore(store: WorkflowIrResolverStore, tasks: Task[]): Promise<string[]> {
+  const enriched = await enrichedTopLevelAgentTasksFromStore(store, tasks);
+  const ids: string[] = [];
+  for (const task of enriched) {
+    if (isRunningAgentTask(task)) ids.push(task.id);
+  }
+  return ids;
+}
+
+export async function persistedTopLevelAgentSlotsFromStore(store: WorkflowIrResolverStore, tasks: Task[]): Promise<number> {
+  return countRunningAgentTasks(await enrichedTopLevelAgentTasksFromStore(store, tasks));
 }
 
 /**

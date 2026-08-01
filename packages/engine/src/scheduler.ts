@@ -485,20 +485,36 @@ Deferring them by a microtask changes nothing observable.
 
 Same fail-soft legacy default as its sync twin, so an unresolvable workflow behaves exactly as before.
 */
+const LEGACY_PARKED_COLUMNS = {
+  hold: "todo",
+  intake: "triage",
+  wip: "in-progress",
+  review: "in-review",
+  complete: "done",
+  archived: "archived",
+  terminal: new Set(["done", "archived"]),
+};
+
 async function resolveTaskParkedColumns(store: TaskStore, taskId: string): Promise<{ hold: string; intake: string; wip: string; review: string; complete: string; archived: string; terminal: ReadonlySet<string>; wake: ReadonlySet<string> }> {
-  const legacy = { hold: "todo", intake: "triage", wip: "in-progress", review: "in-review", complete: "done", archived: "archived" };
   try {
-    const l = resolveLifecycleColumns(await resolveWorkflowIrForTask(store, taskId));
-    const complete = l?.complete ?? legacy.complete;
-    const archived = l?.archived ?? legacy.archived;
+    const ir = await resolveWorkflowIrForTask(store, taskId);
+    const l = resolveLifecycleColumns(ir);
+    const complete = l?.complete ?? LEGACY_PARKED_COLUMNS.complete;
+    const archived = l?.archived ?? LEGACY_PARKED_COLUMNS.archived;
     return {
-      hold: l?.hold ?? legacy.hold,
-      intake: l?.intake ?? legacy.intake,
-      wip: l?.wip ?? legacy.wip,
-      review: l?.review ?? legacy.review,
+      hold: l?.hold ?? LEGACY_PARKED_COLUMNS.hold,
+      intake: l?.intake ?? LEGACY_PARKED_COLUMNS.intake,
+      wip: l?.wip ?? LEGACY_PARKED_COLUMNS.wip,
+      review: l?.review ?? LEGACY_PARKED_COLUMNS.review,
       complete,
       archived,
-      terminal: new Set([complete, archived]),
+      terminal: new Set([
+        ...LEGACY_PARKED_COLUMNS.terminal,
+        ...columnsWithFlag(ir, "complete"),
+        ...columnsWithFlag(ir, "archived"),
+        complete,
+        archived,
+      ]),
       /*
       FNXC:WorkflowResolvedColumns 2026-07-31-06:35 (fleet):
       The wake set UNIONS the legacy ids rather than replacing them, and that is load-bearing rather
@@ -510,34 +526,14 @@ async function resolveTaskParkedColumns(store: TaskStore, taskId: string): Promi
       A resolved conversion must be a superset of what it replaces, or it is a behaviour change wearing
       a vocabulary change's clothes.
       */
-      wake: new Set([l?.hold ?? legacy.hold, l?.intake ?? legacy.intake, legacy.hold, legacy.intake]),
+      wake: new Set([l?.hold ?? LEGACY_PARKED_COLUMNS.hold, l?.intake ?? LEGACY_PARKED_COLUMNS.intake, LEGACY_PARKED_COLUMNS.hold, LEGACY_PARKED_COLUMNS.intake]),
     };
   } catch {
     return {
-      ...legacy,
-      terminal: new Set([legacy.complete, legacy.archived]),
-      wake: new Set([legacy.hold, legacy.intake]),
+      ...LEGACY_PARKED_COLUMNS,
+      terminal: new Set(LEGACY_PARKED_COLUMNS.terminal),
+      wake: new Set([LEGACY_PARKED_COLUMNS.hold, LEGACY_PARKED_COLUMNS.intake]),
     };
-  }
-}
-
-function resolveTaskParkedColumnsSync(store: TaskStore, taskId: string): { hold: string; intake: string; wip: string; review: string; complete: string; archived: string; terminal: ReadonlySet<string> } {
-  const legacy = { hold: "todo", intake: "triage", wip: "in-progress", review: "in-review", complete: "done", archived: "archived" };
-  const legacyTerminal: ReadonlySet<string> = new Set([legacy.complete, legacy.archived]);
-  try {
-    const ir = store.resolveTaskWorkflowIrSync(taskId);
-    const l = resolveLifecycleColumns(ir);
-    return {
-      hold: l?.hold ?? legacy.hold,
-      intake: l?.intake ?? legacy.intake,
-      wip: l?.wip ?? legacy.wip,
-      review: l?.review ?? legacy.review,
-      complete: l?.complete ?? legacy.complete,
-      archived: l?.archived ?? legacy.archived,
-      terminal: new Set([...legacyTerminal, ...columnsWithFlag(ir, "complete"), ...columnsWithFlag(ir, "archived")]),
-    };
-  } catch {
-    return { ...legacy, terminal: legacyTerminal };
   }
 }
 
@@ -1043,43 +1039,22 @@ export class Scheduler {
      * Also handles mission auto-advance: when a linked task completes,
      * update feature status and potentially activate next pending slice.
      */
-    /*
-    FNXC:WorkflowLifecycleColumns 2026-07-30-20:10 (fleet — why the arms below are still literals):
-
-    The ten `from`/`to` comparisons here are real backlog, deliberately left counted. The blocker is
-    ordering, not effort: this handler is `async` but its PROLOGUE is not — there is no `await`
-    between this line and the terminal-blocker branch (~55 lines down), so the snapshot invalidation,
-    PR-monitor start/stop, mission hand-off and failed-task tracking all run in the SAME TICK as the
-    emitter. Hoisting a resolution to convert those arms turns the prologue into a microtask and
-    reorders this listener against every other synchronous `task:moved` subscriber. That is the
-    hazard `resolveTaskParkedColumnsSync` exists to avoid — verified, not assumed.
-
-    Lazy resolution inside a branch does not help (the CONDITION needs the lanes). A sync superset
-    prefilter does not either: it needs a predicate that cannot wrongly EXCLUDE on an unknown
-    vocabulary, and a renamed board's terminal id is unknown by construction.
-
-    Unblocking it means either auditing every `task:moved` emitter/subscriber for prologue-ordering
-    dependence and then converting all ten together, or — preferred, since it removes the class
-    rather than one instance — having the emitter carry the resolved lanes on the event payload so
-    no listener resolves at all.
-    */
     this.store.on("task:moved", async ({ task, from, to, source, lanes }) => {
       this.lastAutoClaimFingerprint.set(task.id, computeAutoClaimFingerprint(task));
       /*
-      FNXC:WorkflowResolvedColumns 2026-07-31-21:00 (fleet):
-      PREFER the lanes the emitter resolved. The sync resolver below is inert in production — it
-      answers with the DEFAULT workflow under PostgreSQL — so before this it made every lane guard in
-      this listener behave exactly as the literal it replaced.
+      FNXC:WorkflowResolvedColumns 2026-08-01-05:01:
+      The synchronous prologue must remain in the emitter tick: snapshot invalidation, PR monitor
+      transitions, mission hand-off, and failure tracking are ordered by
+      `scheduler-auto-claim-invalidation.test.ts`. It therefore reads emitter-carried lanes over
+      legacy defaults without awaiting. The two SQLite polling-replica emitters that carry no lanes
+      retain that legacy behavior; PostgreSQL emitters carry lanes.
 
-      Resolving here instead was not an option: this listener's synchronous prologue is load-bearing
-      (`snapshotManager.invalidate` is asserted to run before the emit returns), and an await ahead of
-      it fails `scheduler-auto-claim-invalidation.test.ts`. Reading the answer off the payload keeps
-      the prologue synchronous AND makes the guard correct.
-
-      The sync path stays as the fallback for emit sites that cannot resolve. It is no better than it
-      was, but it is no worse, and it is now the exception rather than the rule.
+      Every later arm is already behind an await, so it resolves the task's workflow asynchronously
+      instead of consulting the production-inert sync resolver. This covers forwarded or lane-less
+      payloads without changing synchronous ordering. Terminal remains a membership union so a second
+      complete-trait column reconciles dependents too.
       */
-      const parked = mergeParkedColumns(resolveTaskParkedColumnsSync(this.store, task.id), lanes);
+      const parked = mergeParkedColumns(LEGACY_PARKED_COLUMNS, lanes);
       if (from === parked.hold || to === parked.hold) {
         this.options.snapshotManager?.invalidate(`task:moved:${from}->${to}`);
       }
@@ -1129,14 +1104,16 @@ export class Scheduler {
         }
       }
 
+      const resolvedParked = mergeParkedColumns(await resolveTaskParkedColumns(this.store, task.id), lanes);
+
       // FN-3895/FN-3924: complement periodic stale-blockedBy self-healing with immediate
       // blocker reconciliation when a potential blocker reaches a terminal completion column.
       // Invariant: blockedBy must reference a *current* unresolved blocker, else be null.
-      if (parked.terminal.has(to)) {
+      if (resolvedParked.terminal.has(to)) {
         try {
           const settings = await this.store.getSettings();
           if (!settings.globalPause && !settings.enginePaused) {
-            const todoTasks = await this.store.listTasks({ column: parked.hold, slim: true });
+            const todoTasks = await this.store.listTasks({ column: resolvedParked.hold, slim: true });
             /* One IR cache for the whole reconciliation, per the caller-owned-cache contract. */
             const dependencySatisfactionIrCache = new Map<string, WorkflowIr>();
             for (const dependent of todoTasks) {
@@ -1205,13 +1182,13 @@ export class Scheduler {
         }
       }
 
-      if (from === parked.wip && to === parked.hold) {
+      if (from === resolvedParked.wip && to === resolvedParked.hold) {
         if (source === "engine") {
           this.recentEngineTodoRequeues.set(task.id, task.columnMovedAt ?? new Date().toISOString());
         } else {
           this.recentEngineTodoRequeues.delete(task.id);
         }
-      } else if (to === parked.review || parked.terminal.has(to)) {
+      } else if (to === resolvedParked.review || resolvedParked.terminal.has(to)) {
         this.recentEngineTodoRequeues.delete(task.id);
         if (task.dispatchStormCount != null || task.lastDispatchAt != null || task.executeRequeueLoopCount != null || task.executeRequeueLoopSignature != null) {
           void this.store.updateTask(task.id, {
@@ -1228,7 +1205,7 @@ export class Scheduler {
       // Event-driven scheduling: when a task moves to "done" (completion) or "todo" (retry/manual move),
       // trigger scheduling immediately so waiting tasks can start without waiting
       // for the next poll interval (up to 15 seconds).
-      if (parked.terminal.has(to) || to === parked.hold) {
+      if (resolvedParked.terminal.has(to) || to === resolvedParked.hold) {
         schedulerLog.log(`Task moved to ${to} — triggering scheduling`);
         this.schedule();
       }
@@ -1812,7 +1789,7 @@ export class Scheduler {
       which reads as unparked and clears a live agent's link. That invariant, not
       the conversion, is what the agent-link tests pin.
       */
-      const rollbackParked = resolveTaskParkedColumnsSync(this.store, taskId);
+      const rollbackParked = await resolveTaskParkedColumns(this.store, taskId);
       const proof = evaluateParkedAgentTaskLink({
         agent,
         linkedTask: { column: rollbackParked.hold } as Pick<Task, "column">,

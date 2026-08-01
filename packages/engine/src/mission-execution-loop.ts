@@ -802,6 +802,7 @@ export class MissionExecutionLoop extends EventEmitter {
         tools: "readonly",
         defaultProvider: validationSessionModel.provider,
         defaultModelId: validationSessionModel.modelId,
+        ...(validationSessionModel.credentialInstanceId ? { credentialInstanceId: validationSessionModel.credentialInstanceId } : {}),
         fallbackProvider: settings?.fallbackProvider,
         fallbackModelId: settings?.fallbackModelId,
         defaultThinkingLevel: "medium",
@@ -1077,12 +1078,13 @@ export class MissionExecutionLoop extends EventEmitter {
     task: Awaited<ReturnType<TaskStore["getTask"]>> | null,
     settings: Partial<Settings> | undefined,
     assignedAgentRuntimeConfig?: Record<string, unknown>,
-  ): { provider: string | undefined; modelId: string | undefined } {
+  ): { provider?: string; modelId?: string; credentialInstanceId?: string } {
     return resolveValidatorSessionModel(
       task?.validatorModelProvider,
       task?.validatorModelId,
       settings,
       assignedAgentRuntimeConfig,
+      task?.validatorCredentialInstanceId,
     );
   }
 

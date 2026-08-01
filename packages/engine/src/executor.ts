@@ -8735,6 +8735,7 @@ export class TaskExecutor {
               ),
               taskValidatorProvider: detail.validatorModelProvider,
               taskValidatorModelId: detail.validatorModelId,
+              taskValidatorCredentialInstanceId: detail.validatorCredentialInstanceId,
               projectValidatorProvider: settings.validatorProvider,
               projectValidatorModelId: settings.validatorModelId,
               projectValidatorFallbackProvider: settings.validatorFallbackProvider,
@@ -14162,12 +14163,14 @@ export class TaskExecutor {
         Override column agents own initial session model selection as well as mid-flight re-resolution. Ignore task-level modelProvider/modelId before resolveExecutorSessionModel so pre-existing task model pairs cannot run the column-agent identity on the task model.
         */
         const overrideColumnGovernsInitialSession = columnAgentSeam?.mode === "override";
-        const { provider: executorProvider, modelId: executorModelId } = resolveExecutorSessionModel(
+        const executorSessionModel = resolveExecutorSessionModel(
           overrideColumnGovernsInitialSession ? undefined : detail.modelProvider,
           overrideColumnGovernsInitialSession ? undefined : detail.modelId,
           settings,
           (identityAgent?.runtimeConfig ?? undefined) as Record<string, unknown> | undefined,
+          overrideColumnGovernsInitialSession ? undefined : detail.credentialInstanceId,
         );
+        const { provider: executorProvider, modelId: executorModelId } = executorSessionModel;
         const { provider: executorFallbackProvider, modelId: executorFallbackModelId } = resolveExecutorFallbackModel(settings);
         const executorSessionThinkingSource = this.graphSeamThinkingLevel.get(task.id) ?? detail.thinkingLevel;
         const executorThinkingLevel = resolveExecutorThinkingLevel(executorSessionThinkingSource, settings);
@@ -14268,6 +14271,7 @@ export class TaskExecutor {
             onToolEnd: agentLogger.onToolEnd,
             defaultProvider: executorProvider,
             defaultModelId: executorModelId,
+            ...(executorSessionModel.credentialInstanceId ? { credentialInstanceId: executorSessionModel.credentialInstanceId } : {}),
             fallbackProvider: executorFallbackProvider,
             fallbackModelId: executorFallbackModelId,
             fallbackThinkingLevel: executorFallbackThinkingLevel,
@@ -14712,6 +14716,7 @@ export class TaskExecutor {
                   onToolEnd: agentLogger.onToolEnd,
                   defaultProvider: executorProvider,
                   defaultModelId: executorModelId,
+                  ...(executorSessionModel.credentialInstanceId ? { credentialInstanceId: executorSessionModel.credentialInstanceId } : {}),
                   fallbackProvider: executorFallbackProvider,
                   fallbackModelId: executorFallbackModelId,
                   fallbackThinkingLevel: executorFallbackThinkingLevel,
@@ -17688,12 +17693,14 @@ export class TaskExecutor {
 
       // Resolve model using the executor's model hierarchy
       const assignedRuntimeConfig = await this.getAssignedAgentRuntimeConfig(task.assignedAgentId);
-      const { provider: executorProvider, modelId: executorModelId } = resolveExecutorSessionModel(
+      const executorSessionModel = resolveExecutorSessionModel(
         task.modelProvider,
         task.modelId,
         settings,
         assignedRuntimeConfig,
+        task.credentialInstanceId,
       );
+      const { provider: executorProvider, modelId: executorModelId } = executorSessionModel;
 
       const executorFallback = resolveExecutorFallbackModel(settings);
 
@@ -17725,6 +17732,7 @@ Do not refactor, rename broadly, or make opportunistic improvements.
         onToolEnd: logger.onToolEnd,
         defaultProvider: executorProvider,
         defaultModelId: executorModelId,
+        ...(executorSessionModel.credentialInstanceId ? { credentialInstanceId: executorSessionModel.credentialInstanceId } : {}),
         fallbackProvider: executorFallback.provider,
         fallbackModelId: executorFallback.modelId,
         fallbackThinkingLevel: resolveExecutorFallbackThinkingLevel(task.thinkingLevel, settings),
@@ -18718,16 +18726,20 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
           task.validatorModelId,
           settings,
           assignedRuntimeConfig,
+          task.validatorCredentialInstanceId,
         )
       : resolveExecutorSessionModel(
           task.modelProvider,
           task.modelId,
           settings,
           assignedRuntimeConfig,
+          task.credentialInstanceId,
         );
     const useOverride = !!(workflowStep.modelProvider && workflowStep.modelId);
     const primaryProvider = useOverride ? workflowStep.modelProvider : laneModel.provider;
     const primaryModelId = useOverride ? workflowStep.modelId : laneModel.modelId;
+    // FNXC:ProviderAuth 2026-08-01-08:39: A workflow-step model override has no paired instance selection, so only the resolved primary task lane may carry its requested credential instance. Fallback attempts must retain their provider-default behavior rather than inheriting a primary-provider identity.
+    const primaryCredentialInstanceId = useOverride ? undefined : laneModel.credentialInstanceId;
 
     const workflowFallback = isReviewTypeWorkflowStep
       ? resolveValidatorFallbackModel(settings)
@@ -18907,6 +18919,9 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
         tools: toolMode,
         defaultProvider: provider,
         defaultModelId: modelId,
+        ...(attemptLabel !== "fallback" && primaryCredentialInstanceId
+          ? { credentialInstanceId: primaryCredentialInstanceId }
+          : {}),
         fallbackProvider: workflowFallback.provider,
         fallbackModelId: workflowFallback.modelId,
         fallbackThinkingLevel: workflowStepFallbackThinkingLevel,
@@ -22019,8 +22034,13 @@ Child agent: ${agent.id} (${name})`;
           // Resolve executor model via canonical lane hierarchy so child agents
           // honor project executionProvider/executionModelId overrides (parity
           // with main executor at the top of agentWork()).
-          const { provider: childExecutorProvider, modelId: childExecutorModelId } =
-            resolveExecutorSessionModel(undefined, undefined, settings, agent.runtimeConfig as Record<string, unknown> | undefined);
+          const childExecutorSessionModel = resolveExecutorSessionModel(
+            undefined,
+            undefined,
+            settings,
+            agent.runtimeConfig as Record<string, unknown> | undefined,
+          );
+          const { provider: childExecutorProvider, modelId: childExecutorModelId } = childExecutorSessionModel;
 
           const childExecutorFallback = resolveExecutorFallbackModel(settings);
 
@@ -22034,6 +22054,7 @@ Child agent: ${agent.id} (${name})`;
             tools: "coding",
             defaultProvider: childExecutorProvider,
             defaultModelId: childExecutorModelId,
+            ...(childExecutorSessionModel.credentialInstanceId ? { credentialInstanceId: childExecutorSessionModel.credentialInstanceId } : {}),
             fallbackProvider: childExecutorFallback.provider,
             fallbackModelId: childExecutorFallback.modelId,
             fallbackThinkingLevel: resolveExecutorFallbackThinkingLevel(undefined, settings),

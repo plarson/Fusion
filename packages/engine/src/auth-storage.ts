@@ -17,6 +17,7 @@ import {
   isReservedAuthStorageKey,
   isStoredAuthCredential,
   isValidProviderId,
+  isValidProviderInstanceId,
   parseProviderInstanceKey,
 } from "@fusion/core";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -40,7 +41,7 @@ export interface FusionAuthStorage {
   set(provider: string, credential: StoredCredential): Promise<void>;
   remove(provider: string): Promise<void>;
   logout(provider: string): Promise<void>;
-  getApiKey(provider: string): Promise<string | undefined>;
+  getApiKey(provider: string, instance?: ProviderInstanceRef): Promise<string | undefined>;
   getOAuthProviders(): Array<{ id: string; name: string }>;
   login(provider: string, callbacks: unknown): Promise<void>;
   modify(provider: string, fn: (current: StoredCredential | undefined) => Promise<StoredCredential | undefined>): Promise<StoredCredential | undefined>;
@@ -213,7 +214,9 @@ class FusionFileAuthStorage implements FusionAuthStorage {
   async removeInstance(ref: ProviderInstanceRef): Promise<void> { this.assertRef(ref); await this.removeRef(ref); }
   async logout(provider: string): Promise<void> { await this.remove(provider); }
   async setDefaultInstance(ref: ProviderInstanceRef): Promise<void> { this.assertRef(ref); await this.withLock(async current => { if (!this.credential(ref, current)) throw new Error("Cannot set default for a missing credential instance"); const defaults = { ...readDefaultInstanceMap(current), [ref.providerId]: ref.instanceId }; current.__fusionDefaultInstances = defaults; return { result: undefined, changed: true }; }); }
-  async getApiKey(provider: string): Promise<string | undefined> { return resolveStoredCredentialApiKey(provider, this.get(provider)); }
+  async getApiKey(provider: string, instance?: ProviderInstanceRef): Promise<string | undefined> {
+    return resolveStoredCredentialApiKey(provider, instance ? this.getInstance(instance) : this.get(provider));
+  }
   async modify(provider: string, fn: (current: StoredCredential | undefined) => Promise<StoredCredential | undefined>): Promise<StoredCredential | undefined> {
     this.assertRefFromKey(provider);
     return this.withLock(async current => {
@@ -237,27 +240,79 @@ class FusionFileAuthStorage implements FusionAuthStorage {
   }
 }
 
-export function createFusionCredentialStore(authStorage: FusionAuthStorage): CredentialStore {
+export class CredentialInstanceResolutionError extends Error {
+  constructor(providerId: string, instanceId: string) {
+    super(`Credential instance "${instanceId}" for provider "${providerId}" was not found and the provider has no default instance`);
+    this.name = "CredentialInstanceResolutionError";
+  }
+}
+
+export type CredentialInstanceResolution = {
+  ref: ProviderInstanceRef;
+  requestedInstanceId: string;
+  missing: boolean;
+};
+
+/*
+FNXC:ProviderAuth 2026-08-01-08:10:
+A selected instance is resolved once before runtime dispatch and its concrete ref is passed forward. Re-resolving downstream could select a different default after audit, silently running work on an account the operator did not choose.
+*/
+export function resolveCredentialInstanceRef(
+  authStorage: FusionAuthStorage,
+  providerId: string,
+  requestedInstanceId: string,
+): CredentialInstanceResolution {
+  const requested = { providerId, instanceId: requestedInstanceId };
+  if (isValidProviderInstanceId(requestedInstanceId) && authStorage.getInstance(requested)) {
+    return { ref: requested, requestedInstanceId, missing: false };
+  }
+  const ref = authStorage.getDefaultInstance(providerId);
+  if (!ref) throw new CredentialInstanceResolutionError(providerId, requestedInstanceId);
+  return { ref, requestedInstanceId, missing: true };
+}
+
+/*
+FNXC:ProviderAuth 2026-08-01-08:10:
+The resolved ref applies only to its provider. Applying provider A's selection to a fallback provider B would silently spend B credentials under the wrong operator intent; missing named instances instead retain the audited provider default.
+*/
+export function createFusionCredentialStore(authStorage: FusionAuthStorage, resolvedCredentialInstance?: ProviderInstanceRef): CredentialStore {
+  const scopedRefFor = (providerId: string): ProviderInstanceRef | undefined => {
+    const normalizedProviderId = providerId === ANTHROPIC_PROVIDER_ID
+      ? ANTHROPIC_PROVIDER_ID
+      : providerId;
+    return resolvedCredentialInstance?.providerId === normalizedProviderId
+      ? resolvedCredentialInstance
+      : undefined;
+  };
   return {
     /*
     FNXC:ProviderAuth 2026-07-17-06:30:
     pi >=0.80.8 moved session request auth from `ModelRegistry.getApiKeyAndHeaders` (which called fusion's `getApiKey(provider)`) to `ModelRuntime.getAuth` -> pi-ai `resolveProviderAuth`, which reads the credential store directly (`credentials.read(provider.id)`) and, for an OAuth credential, refreshes it ITSELF via `credentials.modify(provider.id, ...)`. That refresh path is broken for Anthropic: fusion persists the subscription login under `anthropic-subscription` (there is NO raw `anthropic` row), so `modify("anthropic")` reads `current === undefined`, the refresh callback bails, and `resolveStoredOAuth` returns undefined -> the task fails with `Provider is not configured: anthropic` (then falls back). The status card still shows "connected" because status uses a different path (hasVisibleAnthropicCredential). Fix: resolve Anthropic auth through fusion's `getApiKey("anthropic")`, the battle-tested path that already handles token refresh + the raw-key/legacy-oauth/subscription/fallback precedence (see resolveAnthropicRuntimeApiKey), and hand pi-ai a ready-to-use api_key credential. pi-ai's anthropic-messages layer routes by token prefix — `sk-ant-oat*` -> OAuth Bearer + Claude Code identity headers, otherwise x-api-key — so a subscription OAuth token still runs as OAuth, and returning it as `api_key` deliberately bypasses pi-ai's own (broken-for-us) OAuth refresh-via-modify. Other OAuth providers (openai-codex, github-copilot) are stored under their own provider id, so read/modify share an id and pi-ai's refresh works — only Anthropic needs this indirection.
     */
     read: async (providerId) => {
+      const scopedRef = scopedRefFor(providerId);
       if (providerId === ANTHROPIC_PROVIDER_ID) {
-        const token = await authStorage.getApiKey(ANTHROPIC_PROVIDER_ID);
+        // Preserve Anthropic's refresh-aware getApiKey indirection for scoped instances too.
+        const token = await authStorage.getApiKey(ANTHROPIC_PROVIDER_ID, scopedRef);
         return token ? ({ type: "api_key", key: token } as Credential) : undefined;
       }
-      return authStorage.get(providerId) as Credential | undefined;
+      return (scopedRef ? authStorage.getInstance(scopedRef) : authStorage.get(providerId)) as Credential | undefined;
     },
     list: async () => authStorage.list().flatMap((providerId): CredentialInfo[] => {
-      const credential = authStorage.get(providerId);
-      return credential?.type === "api_key" || credential?.type === "oauth"
-        ? [{ providerId, type: credential.type }]
-        : [];
+      const credential = scopedRefFor(providerId) ? authStorage.getInstance(scopedRefFor(providerId)!) : authStorage.get(providerId);
+      return credential?.type === "api_key" || credential?.type === "oauth" ? [{ providerId, type: credential.type }] : [];
     }),
-    modify: async (providerId, fn) => authStorage.modify(providerId, async (current) => fn(current as Credential | undefined) as Promise<StoredCredential | undefined>) as Promise<Credential | undefined>,
-    delete: async (providerId) => { await authStorage.remove(providerId); },
+    modify: async (providerId, fn) => {
+      const scopedRef = scopedRefFor(providerId);
+      if (!scopedRef) return authStorage.modify(providerId, async current => fn(current as Credential | undefined) as Promise<StoredCredential | undefined>) as Promise<Credential | undefined>;
+      const next = await fn(authStorage.getInstance(scopedRef) as Credential | undefined);
+      if (next) await authStorage.setInstance(scopedRef, next as StoredCredential);
+      return next;
+    },
+    delete: async (providerId) => {
+      const scopedRef = scopedRefFor(providerId);
+      if (scopedRef) await authStorage.removeInstance(scopedRef); else await authStorage.remove(providerId);
+    },
   };
 }
 
@@ -557,9 +612,9 @@ export type FusionModelRegistry = ModelRegistry & { readonly modelRuntime: Model
  * ModelRuntime. Keep Fusion's file-backed, locked credential adapter as the runtime
  * CredentialStore so FN-7646's per-provider read-modify-merge guarantee survives.
  */
-export async function createFusionModelRegistry(authStorage: FusionAuthStorage, home?: string): Promise<FusionModelRegistry> {
+export async function createFusionModelRegistry(authStorage: FusionAuthStorage, home?: string, resolvedCredentialInstance?: ProviderInstanceRef): Promise<FusionModelRegistry> {
   const modelRuntime = await ModelRuntime.create({
-    credentials: createFusionCredentialStore(authStorage),
+    credentials: createFusionCredentialStore(authStorage, resolvedCredentialInstance),
     modelsPath: getModelRegistryModelsPath(home),
   });
   authStorage.setModelRuntime(modelRuntime);
@@ -1110,9 +1165,16 @@ export function createFusionAuthStorage(): FusionAuthStorage {
       }
 
       if (prop === "getApiKey") {
-        return async (provider: string) => {
+        return async (provider: string, instance?: ProviderInstanceRef) => {
           if (!parseProviderInstanceKey(provider)) return undefined;
           await supplementalHydration;
+          if (instance) {
+            const credential = target.getInstance(instance);
+            if (!credential) return undefined;
+            const refreshed = await refreshOAuthCredential(instance.providerId, credential);
+            if (refreshed && refreshed !== credential) await target.setInstance(instance, refreshed);
+            return resolveStoredCredentialApiKey(provider, refreshed ?? credential);
+          }
           if (provider === ANTHROPIC_PROVIDER_ID) {
             return resolveAnthropicRuntimeApiKey();
           }

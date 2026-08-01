@@ -2684,12 +2684,14 @@ export class TriageProcessor {
           task.planningModelId,
           settings,
           assignedAgent?.runtimeConfig,
+          task.planningCredentialInstanceId,
         );
         activePlanningProvider = planningModel.provider;
 
         const planningSessionModelOptions = {
           defaultProvider: planningModel.provider,
           defaultModelId: planningModel.modelId,
+          ...(planningModel.credentialInstanceId ? { credentialInstanceId: planningModel.credentialInstanceId } : {}),
         };
 
         /*

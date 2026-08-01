@@ -394,6 +394,86 @@ describe("GET /models", () => {
     expect(res.body.models).toEqual([]);
   });
 
+  it("returns instance availability for all configured providers without duplicating catalog models", async () => {
+    const modelRegistry = createMockModelRegistry();
+    const authStorage = createMockAuthStorage({
+      getOAuthProviders: vi.fn().mockReturnValue([{ id: "openai", name: "OpenAI" }]),
+      hasAuth: vi.fn((provider: string) => provider === "openai"),
+      listInstances: vi.fn((provider: string) => provider === "openai"
+        ? [{ providerId: "openai", instanceId: "work" }, { providerId: "openai", instanceId: "personal" }]
+        : []),
+      getDefaultInstance: vi.fn((provider: string) => provider === "openai"
+        ? { providerId: "openai", instanceId: "work" }
+        : undefined),
+      getInstance: vi.fn(() => ({ type: "api_key" })),
+    });
+
+    const res = await GET(buildApp(modelRegistry, authStorage), "/api/models");
+
+    expect(res.body.providerInstances).toEqual({
+      openai: { instances: [{ id: "work", isDefault: true }, { id: "personal", isDefault: false }] },
+    });
+    expect(res.body.models.filter((model: { provider: string }) => model.provider === "openai")).toHaveLength(1);
+  });
+
+  it("derives per-instance unavailable models from the existing credential-kind provider gate", async () => {
+    const modelRegistry = createMockModelRegistry();
+    const authStorage = createMockAuthStorage({
+      getOAuthProviders: vi.fn().mockReturnValue([]),
+      getApiKeyProviders: vi.fn().mockReturnValue([{ id: "openai", name: "OpenAI" }]),
+      hasApiKey: vi.fn((provider: string) => provider === "openai"),
+      listInstances: vi.fn((provider: string) => provider === "openai"
+        ? [{ providerId: "openai", instanceId: "work" }, { providerId: "openai", instanceId: "oauth" }]
+        : []),
+      getDefaultInstance: vi.fn(() => ({ providerId: "openai", instanceId: "work" })),
+      getInstance: vi.fn((ref: { instanceId: string }) => ({ type: ref.instanceId === "work" ? "api_key" : "oauth" })),
+    });
+
+    const res = await GET(buildApp(modelRegistry, authStorage), "/api/models");
+
+    expect(res.body.providerInstances.openai.instances).toEqual([
+      { id: "work", isDefault: true },
+      { id: "oauth", isDefault: false, unavailableModelIds: ["gpt-4o"] },
+    ]);
+  });
+
+  it("omits instance availability when auth storage is unavailable or lacks the optional capability", async () => {
+    const withoutStorage = await GET(buildApp(createMockModelRegistry()), "/api/models");
+    expect(withoutStorage.body).not.toHaveProperty("providerInstances");
+
+    const withoutCapability = await GET(buildApp(createMockModelRegistry(), createMockAuthStorage()), "/api/models");
+    expect(withoutCapability.body).not.toHaveProperty("providerInstances");
+  });
+
+  it("skips a provider whose instance enumeration throws without failing the catalog", async () => {
+    const authStorage = createMockAuthStorage({
+      getOAuthProviders: vi.fn(() => [{ id: "openai", name: "OpenAI" }]),
+      hasAuth: vi.fn(() => true),
+      listInstances: vi.fn(() => { throw new Error("corrupt instance metadata"); }),
+    });
+
+    const res = await GET(buildApp(createMockModelRegistry(), authStorage), "/api/models");
+
+    expect(res.status).toBe(200);
+    expect(res.body.models).toEqual(expect.any(Array));
+    expect(res.body).not.toHaveProperty("providerInstances");
+  });
+
+  it("omits unavailable model ids when instance credentials have no existing distinguishable signal", async () => {
+    const modelRegistry = createMockModelRegistry();
+    const authStorage = createMockAuthStorage({
+      listInstances: vi.fn(() => [{ providerId: "custom", instanceId: "one" }]),
+      getDefaultInstance: vi.fn(() => ({ providerId: "custom", instanceId: "one" })),
+      getInstance: vi.fn(() => ({ type: "api_key" })),
+      getOAuthProviders: vi.fn(() => [{ id: "custom", name: "Custom" }]),
+      hasAuth: vi.fn(() => true),
+    });
+
+    const res = await GET(buildApp(modelRegistry, authStorage), "/api/models");
+
+    expect(res.body.providerInstances.custom.instances).toEqual([{ id: "one", isDefault: true }]);
+  });
+
   it("returns empty array when registry has no available models", async () => {
     const modelRegistry = createMockModelRegistry({
       getAvailable: vi.fn().mockReturnValue([]),

@@ -3032,6 +3032,7 @@ export class HeartbeatMonitor {
           customTools: heartbeatTools,
           defaultProvider: heartbeatSessionModels.defaultProvider,
           defaultModelId: heartbeatSessionModels.defaultModelId,
+          ...(heartbeatSessionModels.credentialInstanceId ? { credentialInstanceId: heartbeatSessionModels.credentialInstanceId } : {}),
           fallbackProvider: heartbeatSessionModels.fallbackProvider,
           fallbackModelId: heartbeatSessionModels.fallbackModelId,
           fallbackThinkingLevel: resolveExecutorFallbackThinkingLevel(undefined, heartbeatModelSettings),

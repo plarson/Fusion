@@ -21873,6 +21873,7 @@ You have access to the file system to review changes.${inlineFixBlock}${verdictB
             details: { agentId: "", state: "error" },
           };
         }
+
         /*
         FNXC:CapacityModel 2026-07-29-19:20 (PR #2579 review — greptile P1, TOCTOU):
         RESERVE THE SLOT SYNCHRONOUSLY, before the first await.

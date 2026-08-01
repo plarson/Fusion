@@ -199,12 +199,16 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
   const [activeModelSubmenu, setActiveModelSubmenu] = useState<"plan" | "executor" | "validator" | "merger" | null>(null);
   const [executorProvider, setExecutorProvider] = useState<string | undefined>(undefined);
   const [executorModelId, setExecutorModelId] = useState<string | undefined>(undefined);
+  const [credentialInstanceId, setCredentialInstanceId] = useState<string | undefined>(undefined);
   const [validatorProvider, setValidatorProvider] = useState<string | undefined>(undefined);
   const [validatorModelId, setValidatorModelId] = useState<string | undefined>(undefined);
+  const [validatorCredentialInstanceId, setValidatorCredentialInstanceId] = useState<string | undefined>(undefined);
   const [planningProvider, setPlanningProvider] = useState<string | undefined>(undefined);
   const [planningModelId, setPlanningModelId] = useState<string | undefined>(undefined);
+  const [planningCredentialInstanceId, setPlanningCredentialInstanceId] = useState<string | undefined>(undefined);
   const [mergerProvider, setMergerProvider] = useState<string | undefined>(undefined);
   const [mergerModelId, setMergerModelId] = useState<string | undefined>(undefined);
+  const [mergerCredentialInstanceId, setMergerCredentialInstanceId] = useState<string | undefined>(undefined);
   /* FNXC:Settings-ThinkingLevel 2026-07-09-00:00: inline quick-entry bar carries the same per-task thinking-level override as the full New Task modal; "" means "use default". */
   const [thinkingLevel, setThinkingLevel] = useState<string>("");
   const [validatorThinkingLevel, setValidatorThinkingLevel] = useState<string>("");
@@ -681,12 +685,16 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
     setPriorityPickerPosition(null);
     setExecutorProvider(undefined);
     setExecutorModelId(undefined);
+    setCredentialInstanceId(undefined);
     setValidatorProvider(undefined);
     setValidatorModelId(undefined);
+    setValidatorCredentialInstanceId(undefined);
     setPlanningProvider(undefined);
     setPlanningModelId(undefined);
+    setPlanningCredentialInstanceId(undefined);
     setMergerProvider(undefined);
     setMergerModelId(undefined);
+    setMergerCredentialInstanceId(undefined);
     setThinkingLevel("");
     setValidatorThinkingLevel("");
     setPlanningThinkingLevel("");
@@ -817,12 +825,16 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
         modelPresetId: selectedPresetId,
         modelProvider: hasExecutorOverride ? executorProvider : undefined,
         modelId: hasExecutorOverride ? executorModelId : undefined,
+        ...(hasExecutorOverride && credentialInstanceId ? { credentialInstanceId } : {}),
         validatorModelProvider: hasValidatorOverride ? validatorProvider : undefined,
         validatorModelId: hasValidatorOverride ? validatorModelId : undefined,
+        ...(hasValidatorOverride && validatorCredentialInstanceId ? { validatorCredentialInstanceId } : {}),
         planningModelProvider: hasPlanningOverride ? planningProvider : undefined,
         planningModelId: hasPlanningOverride ? planningModelId : undefined,
+        ...(hasPlanningOverride && planningCredentialInstanceId ? { planningCredentialInstanceId } : {}),
         mergerModelProvider: hasMergerOverride ? mergerProvider : undefined,
         mergerModelId: hasMergerOverride ? mergerModelId : undefined,
+        ...(hasMergerOverride && mergerCredentialInstanceId ? { mergerCredentialInstanceId } : {}),
         validatorThinkingLevel: validatorThinkingLevel !== "" ? (validatorThinkingLevel as ThinkingLevel) : undefined,
         planningThinkingLevel: planningThinkingLevel !== "" ? (planningThinkingLevel as ThinkingLevel) : undefined,
         mergerThinkingLevel: mergerThinkingLevel !== "" ? (mergerThinkingLevel as ThinkingLevel) : undefined,
@@ -901,12 +913,16 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
     hasExecutorOverride,
     executorProvider,
     executorModelId,
+    credentialInstanceId,
     hasValidatorOverride,
     validatorProvider,
     validatorModelId,
+    validatorCredentialInstanceId,
     hasPlanningOverride,
     planningProvider,
     planningModelId,
+    planningCredentialInstanceId,
+    mergerCredentialInstanceId,
     thinkingLevel,
     enabledOptionalStepIds,
     isFastMode,
@@ -1462,18 +1478,21 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
 
   const handlePlanningModelChange = useCallback((value: string) => {
     const next = parseModelSelection(value);
+    setPlanningCredentialInstanceId(undefined);
     setPlanningProvider(next.provider);
     setPlanningModelId(next.modelId);
   }, []);
 
   const handleExecutorChange = useCallback((value: string) => {
     const next = parseModelSelection(value);
+    setCredentialInstanceId(undefined);
     setExecutorProvider(next.provider);
     setExecutorModelId(next.modelId);
   }, []);
 
   const handleValidatorChange = useCallback((value: string) => {
     const next = parseModelSelection(value);
+    setValidatorCredentialInstanceId(undefined);
     setValidatorProvider(next.provider);
     setValidatorModelId(next.modelId);
   }, []);
@@ -1481,6 +1500,7 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
   const handleThinkingLevelChange = useCallback((value: string) => setThinkingLevel(value), []);
   const handleMergerModelChange = useCallback((value: string) => {
     const next = parseModelSelection(value);
+    setMergerCredentialInstanceId(undefined);
     setMergerProvider(next.provider);
     setMergerModelId(next.modelId);
   }, []);
@@ -2498,6 +2518,14 @@ export function QuickEntryBox({ onCreate, onMoveTask, addToast, tasks = [], avai
                     thinkingLevel={activeModelSubmenu === "executor" ? thinkingLevel : activeModelSubmenu === "plan" ? planningThinkingLevel : activeModelSubmenu === "validator" ? validatorThinkingLevel : mergerThinkingLevel}
                     onThinkingLevelChange={activeModelSubmenu === "executor" ? handleThinkingLevelChange : activeModelSubmenu === "plan" ? setPlanningThinkingLevel : activeModelSubmenu === "validator" ? setValidatorThinkingLevel : setMergerThinkingLevel}
                     defaultThinkingLevel={settings?.defaultThinkingLevel ?? "off"}
+                    credentialInstanceId={activeModelSubmenu === "plan" ? planningCredentialInstanceId : activeModelSubmenu === "executor" ? credentialInstanceId : activeModelSubmenu === "validator" ? validatorCredentialInstanceId : mergerCredentialInstanceId}
+                    onCredentialInstanceChange={(instanceId) => {
+                      const next = instanceId || undefined;
+                      if (activeModelSubmenu === "plan") setPlanningCredentialInstanceId(next);
+                      else if (activeModelSubmenu === "executor") setCredentialInstanceId(next);
+                      else if (activeModelSubmenu === "validator") setValidatorCredentialInstanceId(next);
+                      else setMergerCredentialInstanceId(next);
+                    }}
                   />
                   {modelsError && (
                     <div className="model-submenu-error">

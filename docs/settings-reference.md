@@ -124,6 +124,7 @@ Fusion automatically falls back to ntfy's JSON publish format when a notificatio
 | `gitlabApiBaseUrl` | `string` | `undefined` (effective `https://gitlab.com/api/v4`) | Global fallback GitLab REST API base URL. Blank/unset derives `<instance>/api/v4`, preserving self-managed path prefixes such as `https://example.com/gitlab` → `https://example.com/gitlab/api/v4`. Values are trimmed and must be absolute `http://` or `https://` URLs without userinfo. |
 | `gitlabAuthToken` | `string` | `undefined` | Global fallback GitLab access token used by later HTTP API integrations when the project does not set its own token. The dashboard renders this as a password input and never displays saved token values in helper text. The resolver trims whitespace and falls back to process `GITLAB_TOKEN` only when both project and global tokens are blank. |
 | `gitlabAuthTokenType` | `"personal" \| "project" \| "group"` | `undefined` (effective `"personal"` when a token exists) | Global fallback GitLab token family label for operator clarity. Project tokens and group tokens remain limited to their associated project/group and role membership; this label does not expand authorization. Unsupported values are rejected by the GitLab auth resolver. |
+| `gitlabCloseSourceIssueOnDone` | `boolean` | `false` | Controls only the `task:moved` done-close/reopen lifecycle for imported GitLab issues. It does not gate ordinary task deletion: linked GitLab issues close by default unless `githubIssueAction: "leave"` is supplied; merge requests are never auto-closed. |
 | `autoReloadOnVersionChange` | `boolean` | `true` | When enabled (default), the dashboard automatically reloads when a new build version is detected via `/version.json` polling or service worker activation. Set to `false` to suppress automatic reloads — the user must manually refresh to pick up updates. |
 | `localNetworkDiscoveryEnabled` | `boolean` | `true` | Enables automatic `_fusion._tcp` LAN broadcast and listening when `fn dashboard` or `fn serve` starts. Set `false` to opt out of automatic mDNS/DNS-SD discovery; an explicit operator `POST /api/discovery/start` request remains available. |
 | `modelOnboardingComplete` | `boolean` | `undefined` | Whether AI onboarding has been completed or dismissed. |
@@ -1807,6 +1808,8 @@ All three lanes (planning / executor / reviewer) follow the same precedence:
 4. Selected-workflow lane (`planningProvider`/`Id`, `executionProvider`/`Id`, `validatorProvider`/`Id`)
 5. Project `defaultProviderOverride` / `defaultModelIdOverride`
 6. Global `defaultProvider` / `defaultModelId` → automatic resolution
+
+A selected credential instance is part of the winning provider/model selection. The model picker shows a **Credential instance** control only when `/api/models` advertises two or more configured instances for that provider. Selecting **Default** removes the instance override entirely; providers with zero or one instance keep the unchanged picker UI.
 
 ## Mock provider (test mode)
 

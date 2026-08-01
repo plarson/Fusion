@@ -103,6 +103,18 @@ describe("GitLab split-close", () => {
     expect(mocks.updateState).not.toHaveBeenCalled();
   });
 
+  it("keeps malformed tracking inert by using the default resolver call", async () => {
+    mocks.resolveTarget.mockReturnValueOnce(null);
+    const s = store();
+    const malformedTask = { ...task, sourceIssue: { provider: "gitlab", repository: "g/p", issueNumber: 2 }, gitlabTracking: { item: { kind: "project_issue", iid: 2 } } };
+    new GitLabSplitCloseService(s as any).start();
+    s.emit("task:deleted", malformedTask, split);
+    await flush();
+    expect(mocks.resolveTarget).toHaveBeenCalledWith(malformedTask);
+    expect(mocks.client.commentOnProjectIssue).not.toHaveBeenCalled();
+    expect(mocks.updateState).not.toHaveBeenCalled();
+  });
+
   it("uses the resolved tracking owner once, including when source metadata is also present", async () => {
     const s = store();
     new GitLabSplitCloseService(s as any).start();

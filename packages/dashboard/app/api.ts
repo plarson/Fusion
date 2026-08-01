@@ -6,6 +6,7 @@
  */
 export * from "./api/legacy";
 export * from "./api/provider-status";
+export * from "./api/models-usage";
 export * from "./api/chat";
 export * from "./api-node";
 export * from "./api/report";

@@ -3877,8 +3877,10 @@ export function SettingsModal({
       name: nextName,
       executorProvider: presetDraft.executorProvider,
       executorModelId: presetDraft.executorModelId,
+      ...(presetDraft.executorCredentialInstanceId ? { executorCredentialInstanceId: presetDraft.executorCredentialInstanceId } : {}),
       validatorProvider: presetDraft.validatorProvider,
       validatorModelId: presetDraft.validatorModelId,
+      ...(presetDraft.validatorCredentialInstanceId ? { validatorCredentialInstanceId: presetDraft.validatorCredentialInstanceId } : {}),
     };
 
     setForm((current) => {

@@ -11,7 +11,7 @@ export type GitLabSplitNoteResult =
 
 /*
 FNXC:GitLabSplitClose 2026-08-01-09:58:
-Split-close gives the source issue a durable handoff: one note names the parent and normalized child task IDs immediately before one close. resolveGitLabTarget() makes tracking the owner when it resolves and otherwise falls back to sourceIssue, so identity is by construction and one item cannot receive duplicate notes.
+Split-close gives the source issue a durable handoff: one note names the parent and normalized child task IDs immediately before one close. resolveGitLabTarget() makes a valid tracking item the owner; malformed tracking stays inert here so split-close cannot newly mutate a source item. Identity is by construction and one item cannot receive duplicate notes.
 
 Empty or blank child IDs leave no self-explanatory handoff and are a no-op; duplicate IDs retain their first occurrence only. The typed posted | no-op | failed result deliberately gates the caller: only posted may close the returned target, so a note failure or benign non-owner state can never close an issue without its explanatory note.
 */

@@ -102,6 +102,8 @@ The executor logs `[skill-load]` only when the **named** skill has no viable dis
 
 Use the dashboard [Workflow Editor](./workflow-editor.md) to inspect built-ins, tune built-in prompts, duplicate workflows, or author custom workflows. Custom workflows can declare graph nodes and edges, columns/traits, task fields, typed workflow settings, model lanes, optional workflow-step templates, and author-time validation. Use this page for runtime semantics; use the editor guide for the visual authoring surface.
 
+Customized planning prompts may add their own `##` sections to generated task specifications. Fusion preserves those sections when it refreshes the verbatim **Original Description** block after planning, so custom prompt structure can appear alongside the built-in specification sections.
+
 <!--
 FNXC:Workflows 2026-06-28-09:50:
 Pure-v1 custom graphs remain rollback-compatible by upgrading to trait-less default columns. Capacity dispatch after the workflow-columns cutover is therefore an explicit v2 authoring requirement, not an implicit v1 upgrade side effect.

@@ -353,6 +353,14 @@ const quarantinedDashboardTests: string[] = [
   */
   "app/hooks/__tests__/useTasks-hydration-freshness.test.ts",
   /*
+  FNXC:DashboardTestQuarantine 2026-08-01-05:17:
+  FN-8647 observed the real Pi ModelRuntime Kimi K3 catalog test timing out in 2/6
+  loaded CI samples. Quarantine it with the ledger row rather than widen its 15s
+  budget; the reusable beforeAll seam is landed, while FN-8669 owns the budget
+  decision and CI re-measurement before the deletion deadline.
+  */
+  "src/__tests__/register-model-routes-kimi-k3-supplemental.test.ts",
+  /*
   FNXC:DashboardTestQuarantine 2026-07-17-16:50:
   FN-8245 re-admits all three UI files with their ledger rows removed in lockstep.
   QuickEntryBox restores focus from its resolved submit path while isolated jsdom

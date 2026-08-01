@@ -631,6 +631,7 @@ When a test owns a process-wide singleton that has asynchronous owners (timers, 
 - Prefer fake timers over real polling/time waits (FN-2707 pattern: advance timers inside `act(...)`, restore with `afterEach(() => vi.useRealTimers())`).
 - Do **not** mask slowness by raising worker/concurrency knobs (`FUSION_TEST_TOTAL_WORKERS`, `FUSION_TEST_CONCURRENCY`, `VITEST_MAX_WORKERS`, workspace concurrency settings).
 - Do **not** add net-new real-network calls, real-`setTimeout` polling loops, or mock-the-world component shells when a narrower seam exists.
+- Real Pi SDK catalog tests in the engine package must use `src/__tests__/_model-runtime-fixture.ts`: warm its shared runtime in `beforeAll` and request a fresh registry rather than constructing `ModelRuntime` inside timed test bodies.
 - Use the canonical taxonomy in **What NOT to write** and **What TO keep unconditionally** when deciding trim vs keep.
 - See `docs/test-speed-audit-FN-5048.md` for the measured baseline offender list and optimization priorities.
 

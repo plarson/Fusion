@@ -125,13 +125,12 @@ The size chip is a direct header child immediately after the task id, before thi
   min-height: var(--card-chip-height);
 }
 
+/*
+FNXC:TaskCardLayout 2026-08-01-05:38:
+The fast-mode badge must share the header line with status, priority, and oversight badges whenever space remains. Keep this nested semantic wrapper layout-transparent so its meta badges join `.card-header-badges` directly instead of wrapping as one atomic group.
+*/
 .card-meta-badges {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-xs);
-  row-gap: var(--space-xs);
-  min-width: 0;
+  display: contents;
 }
 
 /*
@@ -577,6 +576,7 @@ The size chip must derive its box from the shared header-chip padding, line-heig
 
 .card-priority-badge {
   /* FNXC:PriorityIconOnlyBadge 2026-07-12-00:00: FN-7867 removes visible priority text from board cards, so these shared spacing declarations no longer add card text width; keep them to preserve the Task Detail priority chip/select geometry that reuses the same badge class. */
+  flex-shrink: 0;
   gap: var(--space-xs);
   letter-spacing: 0.4px;
 }
@@ -604,6 +604,7 @@ Zap at the badge text size so it remains centered without making the header row 
 .card-execution-mode-badge {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   justify-content: center;
   box-sizing: border-box;
   font-size: 0.625rem;
@@ -2026,8 +2027,7 @@ The three-dot menu is the sole card move/action entry point. Keep this shared bu
   }
 
 
-  .card-header-badges,
-  .card-meta-badges {
+  .card-header-badges {
     gap: calc(var(--space-xs) / 2);
     row-gap: var(--space-xs);
   }

@@ -282,6 +282,52 @@ describe("TaskCard badge wrapping (FN-5162)", () => {
     expect(container.querySelector(".card-header-actions")).toBeNull();
   });
 
+  it.each([
+    ["fast alone", { priority: "normal", plannerOversightLevel: "off" }],
+    ["fast with priority", { priority: "urgent", plannerOversightLevel: "off" }],
+    ["fast with oversight", { priority: "normal", plannerOversightLevel: "steer" }],
+    ["fast with priority and oversight", { priority: "urgent", plannerOversightLevel: "steer" }],
+  ] as const)("keeps %s beside a queued-to-plan status chip in the shared wrap context", (_name, meta) => {
+    const { container: queuedContainer } = render(
+      <TaskCard
+        task={makeTask({
+          column: "todo",
+          status: undefined,
+          steps: [],
+          executionMode: "fast",
+          ...meta,
+        })}
+        onOpenDetail={noop}
+        addToast={noop}
+      />,
+    );
+
+    const headerBadges = queuedContainer.querySelector(".card-header-badges") as HTMLElement;
+    const statusBadge = queuedContainer.querySelector(".card-status-badge") as HTMLElement;
+    const metaBadges = queuedContainer.querySelector('[data-testid="card-meta-badges"]') as HTMLElement;
+    const fastBadge = queuedContainer.querySelector(".card-execution-mode-badge") as HTMLElement;
+
+    expect(headerBadges).toBeTruthy();
+    expect(statusBadge).toHaveTextContent("Queued to plan");
+    expect(metaBadges).toBeTruthy();
+    expect(fastBadge).toBeTruthy();
+    expect(metaBadges.parentElement).toBe(headerBadges);
+    expect(headerBadges.contains(statusBadge)).toBe(true);
+    expect(headerBadges.contains(fastBadge)).toBe(true);
+    expect(getComputedStyle(metaBadges).display).toBe("contents");
+    expect(getComputedStyle(fastBadge).flexShrink).toBe("0");
+    const priorityBadge = queuedContainer.querySelector(".card-priority-badge") as HTMLElement | null;
+    if (priorityBadge) expect(getComputedStyle(priorityBadge).flexShrink).toBe("0");
+  });
+
+  it("keeps the layout-transparent meta wrapper contract in the mobile badge context", () => {
+    const mobileSection = getCssBlocks(loadedCss, "max-width: 768px").join("\n");
+
+    expectCssRuleToContain(loadedCss, ".card-meta-badges", "display: contents;");
+    expectCssRuleToContain(mobileSection, ".card-header-badges", "gap: calc(var(--space-xs) / 2);");
+    expect(mobileSection).not.toMatch(/\.card-meta-badges\s*\{/);
+  });
+
   it("places a fast-mode size badge after the task id before wrapping header badges", () => {
     const { container: sizedContainer } = render(
       <TaskCard

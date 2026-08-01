@@ -3873,11 +3873,11 @@ describe("TaskCard", () => {
     expect(container.querySelector(".card-footer-row-right")).toBeNull();
   });
 
-  it("defines responsive flex-wrap styling for grouped card meta badges", () => {
+  it("keeps grouped card meta badges layout-transparent in the shared header wrap context", () => {
     const fullCss = loadAllAppCss();
 
-    expect(fullCss).toMatch(/\.card-meta-badges\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap;[^}]*gap:\s*var\(--space-xs\);[^}]*\}/);
-    expect(fullCss).toMatch(/@media[^{]*\(max-width:\s*768px\)[^{]*\{[\s\S]*?\.card-meta-badges\s*\{[^}]*gap:\s*calc\(var\(--space-xs\) \/ 2\);[^}]*\}/);
+    expect(fullCss).toMatch(/\.card-meta-badges\s*\{[^}]*display:\s*contents;[^}]*\}/);
+    expect(fullCss).toMatch(/@media[^{]*\(max-width:\s*768px\)[^{]*\{[\s\S]*?\.card-header-badges\s*\{[^}]*gap:\s*calc\(var\(--space-xs\) \/ 2\);[^}]*\}/);
   });
 
   describe("retry button on failed tasks", () => {

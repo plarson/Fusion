@@ -1676,8 +1676,12 @@ async function readGrokUserSettingsApiKey(): Promise<string | null> {
 }
 
 /*
-FNXC:UsageProviders 2026-08-01-11:04:
-FN-8688 disproved the assumption that Fusion's credits-format billing request is the installed Grok CLI's `/usage` source. A harness replay returned 200 without `config.creditUsagePercent`, while the available `@vibe-kit/grok-cli@0.0.34` and `grok-dev@1.1.7` source trees cannot be mapped to the installed `grok-0.2.118` binary or its slash-command handler. Keep field absence authenticated-but-unmeterable until source provenance and a harness-backed meter formula are confirmed; see `docs/solutions/integration-issues/grok-cli-usage-data-source.md`.
+FNXC:GrokUsage 2026-08-01-11:30:
+FN-8689 recovered no provenance chain from the installed Grok 0.2.118 asset to
+inspectable source, so this legacy billing request must not be described as the
+CLI's verified `/usage` behavior. Keep its credential handling local and emit a
+usage window only when this endpoint itself supplies a finite percentage; absent
+or unclassified fields remain authenticated but unmeterable.
 */
 async function readGrokCliOidcToken(): Promise<string | null> {
   try {

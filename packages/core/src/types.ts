@@ -544,6 +544,7 @@ import {
   CheckoutConflictError,
   WorkspaceTaskMergeError,
   DUPLICATE_OF_METADATA_KEY,
+  WEDGE_RENOTIFY_COOLDOWN_MS,
 } from "./types/task-core.js";
 export {
   assertNotWorkspaceTaskMerge,
@@ -551,6 +552,7 @@ export {
   CheckoutConflictError,
   WorkspaceTaskMergeError,
   DUPLICATE_OF_METADATA_KEY,
+  WEDGE_RENOTIFY_COOLDOWN_MS,
 };
 
 import type {

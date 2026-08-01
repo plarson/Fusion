@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import type { TaskMoveLanes } from "./workflow-lifecycle-traits.js";
 import { TaskLaneCache } from "./task-lane-cache.js";
 import { randomUUID } from "node:crypto";
+import { WEDGE_RENOTIFY_COOLDOWN_MS } from "./types/task-core.js";
 import { join } from "node:path";
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import * as schema from "./postgres/schema/index.js";
@@ -1394,9 +1395,25 @@ export class TaskStore extends EventEmitter<TaskStoreEvents> {
         return { wedgeNotification: { ...prior, status: "resolved", transitionedAt: new Date().toISOString() } };
       }
       if (prior?.status === "active" && prior.reasonKey === reasonKey) return null;
+
+      const now = Date.now();
+      const lastNotifiedAtByReason = Object.fromEntries(Object.entries(prior?.lastNotifiedAtByReason ?? {}).filter(([, timestamp]) => {
+        const notifiedAt = Date.parse(timestamp);
+        return Number.isFinite(notifiedAt) && notifiedAt <= now && now - notifiedAt < WEDGE_RENOTIFY_COOLDOWN_MS;
+      }));
       const episodeId = randomUUID();
-      result = { episodeId, claimed: true };
-      return { wedgeNotification: { reasonKey, episodeId, status: "active", transitionedAt: new Date().toISOString() } };
+      const suppressed = reasonKey in lastNotifiedAtByReason;
+      if (!suppressed) lastNotifiedAtByReason[reasonKey] = new Date(now).toISOString();
+      result = suppressed ? { claimed: false } : { episodeId, claimed: true };
+      return {
+        wedgeNotification: {
+          reasonKey,
+          episodeId,
+          status: "active",
+          transitionedAt: new Date(now).toISOString(),
+          ...(Object.keys(lastNotifiedAtByReason).length > 0 ? { lastNotifiedAtByReason } : {}),
+        },
+      };
     });
     return result;
   }

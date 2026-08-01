@@ -103,3 +103,67 @@ source archive. Once that chain is supplied, read the mapped handler and replay
 only its exact request through the redacted in-process harness. Until then,
 FN-8668 may implement nothing: there is no confirmed formatter operand or
 formula.
+
+## Source provenance (FN-8690)
+
+FN-8690 re-attempted the provenance recovery avenues FN-8689 did not exhaust.
+Filtered, non-executing `strings` inspection of the installed Mach-O found
+first-party debug/locus strings for
+`crates/codegen/xai-grok-shell/src/extensions/usage.rs` and
+`crates/codegen/xai-grok-shell/src/extensions/billing.rs`, including billing
+handler diagnostic loci at lines 230, 242, 262, 321, and 328. It also found
+compiled endpoint and response-identifier fragments. This is evidence that the
+installed binary contains those compiled strings, not a readable handler
+implementation: no extracted source region establishes the request construction,
+formatter operands, arithmetic, rounding, or clamping.
+
+The local bundled manifest was searched for the installed version, candidate
+build identifier, asset filename, source/commit mapping, and digest mapping. It
+contained bundled-content digests only. Filtered embedded URLs led to the
+official installer, which again maps the version to the asset download but does
+not map an asset digest to a source tag or commit; the embedded changelog route
+returned HTTP 404. No updater/release manifest mapping the installed digest to
+source was found.
+
+The source status is therefore `unavailable`: neither a published
+`version → asset filename → published digest → source tag/commit` chain nor
+readable `embedded-source` exists. The installed SHA-256 remains the FN-8689
+recorded value; it is not linked to inspectable source.
+
+## Source-identified handler, request, and arithmetic (FN-8690)
+
+Unavailable. Debug file paths and compiled string fragments are not readable
+source under the provenance policy, so FN-8690 did not read a `/usage` or
+`/cost` handler as the installed CLI's handler. It asserts no source-identified
+method, URL, query, headers, response fields, operand paths, display arithmetic,
+rounding, or clamping. Fusion's existing billing request remains historical
+context only and is not asserted to be the CLI request.
+
+## Redacted replay (FN-8690)
+
+Not performed. The local credential was present and parseable, but the harness
+is permitted to issue live traffic only after provenance-chained or readable
+embedded source identifies the exact request. No harness script or output was
+created, and no live request was issued.
+
+### Source-named operand classification
+
+| Source-named operand path | Classification |
+| --- | --- |
+| None — no source handler was readable, so no operand paths could be enumerated. | Not applicable |
+
+No absence claim is made about any response field or numeric leaf. In
+particular, this is not a `NO-FIELDS` conclusion.
+
+## FN-8668 hand-off (FN-8690)
+
+**Branch:** `BLOCKED-NO-SOURCE`.
+
+FN-8668 must not derive usage from this evidence. The narrow next action is for
+xAI to provide an official release checksum/updater manifest that maps
+`grok-0.2.118-macos-aarch64` and the already recorded installed digest to a
+source commit/archive, or a readable source bundle embedded in the installed
+artifact. A follow-up can then read the pinned handler, enumerate its operands,
+and run precisely its request through the redacted harness.
+
+VERDICT FN-8690: BLOCKED-NO-SOURCE — source could not be pinned. Blocker recorded; no source-identified request or formula asserted.

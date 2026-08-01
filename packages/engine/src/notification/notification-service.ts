@@ -11,7 +11,7 @@ import type {
   Task,
 } from "@fusion/core";
 import type { LifecycleColumns, TaskMoveLanes, WorkflowIrResolverStore } from "@fusion/core";
-import { DASHBOARD_USER_ID, NotificationDispatcher, resolveProjectColumnsForRoles, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask } from "@fusion/core";
+import { DASHBOARD_USER_ID, NotificationDispatcher, resolveProjectColumnsForRoles, resolveReviewColumns, resolveTaskLifecycleColumns, resolveWorkflowIrForTask, WEDGE_RENOTIFY_COOLDOWN_MS } from "@fusion/core";
 import { DEFAULT_NTFY_EVENTS, buildNtfyClickUrl, formatTaskIdentifier } from "../notifier.js";
 import { schedulerLog } from "../logger.js";
 import { classifyTransientMergeError } from "../transient-merge-error-classifier.js";
@@ -126,6 +126,13 @@ export class NotificationService {
   private failureNotificationMode: "sticky-only" | "all" | "terminal-only" = "sticky-only";
   /** Compatibility fallback for lightweight test stores without the durable TaskStore CAS. */
   private readonly activeWedgeReasons = new Map<string, string>();
+  /*
+  FNXC:TaskWedgeNotifications 2026-08-01-15:35:
+  Lightweight stores lack the durable compare-and-set, but must retain the same
+  per-task, per-reason cooldown. Clearing an active episode deliberately does not
+  clear these timestamps: X -> Y -> X must not re-notify X inside its window.
+  */
+  private readonly fallbackWedgeNotificationTimestamps = new Map<string, Map<string, number>>();
   /*
   FNXC:TaskWedgeNotifications 2026-07-31-21:10:
   PER-TASK SERIALISATION OF WEDGE HANDLING — the blocker two earlier fleet passes recorded and
@@ -591,9 +598,8 @@ export class NotificationService {
       if (!claim.claimed || !claim.episodeId) return;
       episode = claim.episodeId;
     } else {
-      if (this.activeWedgeReasons.get(task.id) === descriptor.reasonKey) return;
-      this.activeWedgeReasons.set(task.id, descriptor.reasonKey);
-      episode = `${task.id}:${descriptor.reasonKey}:${task.updatedAt}`;
+      episode = this.claimFallbackWedgeNotificationEpisode(task.id, descriptor.reasonKey, task.updatedAt);
+      if (!episode) return;
     }
     const link = buildNtfyClickUrl({ dashboardHost: this.dashboardHost, projectId: this.options.projectId, taskId: task.id });
     const content = [
@@ -617,6 +623,22 @@ export class NotificationService {
     } catch (error) {
       schedulerLog.log(`[notify] ${task.id} wedge mailbox message failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  private claimFallbackWedgeNotificationEpisode(taskId: string, reasonKey: string, updatedAt: string): string | undefined {
+    if (this.activeWedgeReasons.get(taskId) === reasonKey) return undefined;
+
+    const now = Date.now();
+    const timestamps = this.fallbackWedgeNotificationTimestamps.get(taskId) ?? new Map<string, number>();
+    for (const [key, notifiedAt] of timestamps) {
+      if (!Number.isFinite(notifiedAt) || notifiedAt > now || now - notifiedAt >= WEDGE_RENOTIFY_COOLDOWN_MS) timestamps.delete(key);
+    }
+    this.activeWedgeReasons.set(taskId, reasonKey);
+    this.fallbackWedgeNotificationTimestamps.set(taskId, timestamps);
+    if (timestamps.has(reasonKey)) return undefined;
+
+    timestamps.set(reasonKey, now);
+    return `${taskId}:${reasonKey}:${updatedAt}`;
   }
 
   private isTriageDuplicateDecision(task: Task): boolean {

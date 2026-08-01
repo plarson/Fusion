@@ -566,11 +566,26 @@ export interface ExecutorOverseerSignalMemory {
   observedAt: number;
 }
 
+/*
+FNXC:TaskWedgeNotifications 2026-08-01-15:35:
+A task that resolves and re-wedges with the same actionable reason must notify once
+per six-hour window. A durable shared constant keeps the PostgreSQL claim and the
+engine's no-store fallback aligned across restarts.
+*/
+export const WEDGE_RENOTIFY_COOLDOWN_MS = 6 * 60 * 60 * 1_000;
+
 export interface TaskWedgeNotificationState {
   reasonKey: string;
   episodeId: string;
   status: "active" | "resolved";
   transitionedAt: string;
+  /*
+  FNXC:TaskWedgeNotifications 2026-08-01-15:35:
+  A resolve/re-wedge flap used to mint an episode id that defeated mailbox dedupe.
+  Keep notification times independently per reason: one global last-reason pair
+  would let X -> Y -> X re-notify X while its own cooldown is still active.
+  */
+  lastNotifiedAtByReason?: Record<string, string>;
 }
 
 export interface Task {

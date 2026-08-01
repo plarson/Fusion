@@ -1735,6 +1735,9 @@ async function fetchGrokCliBillingUsage(
     /*
     FNXC:UsageProviders 2026-07-31-20:31:
     A real account reported zero Grok credit usage while its billing response omitted `creditUsagePercent`, disproving the former omitted-field-to-100% inference. Emit a credits window only for a finite API-supplied percentage; field absence must remain an authenticated but unmeterable state rather than fabricate consumption or infer expired CLI auth.
+
+    FNXC:GrokUsageProvenance 2026-08-01-15:21:
+    FN-8690 could not map the installed Grok CLI asset to readable source, so its compiled strings cannot justify a replacement request or formula. Keep this existing API-supplied percentage gate until provenance and a redacted source-identified capture establish formatter inputs.
     */
     const pctUsed = config.creditUsagePercent;
     if (typeof pctUsed !== "number" || !Number.isFinite(pctUsed)) return { outcome: "no-data" };

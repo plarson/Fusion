@@ -9,6 +9,15 @@ import {
   readStoredCredentialsFromAuthFile,
   shouldHydrateStoredCredential,
   type StoredAuthCredential,
+  type ProviderInstanceRef,
+  ANTHROPIC_SUBSCRIPTION_PROVIDER_ID,
+  DEFAULT_PROVIDER_INSTANCE_ID,
+  formatProviderInstanceKey,
+  isDefaultProviderInstance,
+  isReservedAuthStorageKey,
+  isStoredAuthCredential,
+  isValidProviderId,
+  parseProviderInstanceKey,
 } from "@fusion/core";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { AuthInteraction, Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
@@ -22,6 +31,12 @@ export interface FusionAuthStorage {
   list(): string[];
   has(provider: string): boolean;
   hasAuth(provider: string): boolean;
+  listInstances(providerId: string): ProviderInstanceRef[];
+  getInstance(ref: ProviderInstanceRef): StoredCredential | undefined;
+  setInstance(ref: ProviderInstanceRef, credential: StoredCredential): Promise<void>;
+  removeInstance(ref: ProviderInstanceRef): Promise<void>;
+  getDefaultInstance(providerId: string): ProviderInstanceRef | undefined;
+  setDefaultInstance(ref: ProviderInstanceRef): Promise<void>;
   set(provider: string, credential: StoredCredential): Promise<void>;
   remove(provider: string): Promise<void>;
   logout(provider: string): Promise<void>;
@@ -85,109 +100,140 @@ async function withOAuthRefreshLock<T>(
   }
 }
 
+type AuthFileData = Record<string, unknown>;
+type DefaultInstanceMap = Record<string, string>;
+
+function readDefaultInstanceMap(data: AuthFileData): DefaultInstanceMap {
+  const candidate = data.__fusionDefaultInstances;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return {};
+  return candidate as DefaultInstanceMap;
+}
+
+/*
+FNXC:ProviderAuth 2026-08-01-04:36:
+FN-8651 treats auth.json as an untrusted metadata-capable record, not a credential map.
+The resolver is the sole default precedence authority: valid pointer, bare legacy key,
+sorted named key, then undefined. A pointer deliberately wins over a bare key so changing
+the default is observable through every legacy string API; absence returns no fabricated ref.
+*/
 class FusionFileAuthStorage implements FusionAuthStorage {
-  private data: Record<string, StoredCredential> = {};
+  private data: AuthFileData = {};
   private modelRuntime: ModelRuntime | undefined;
 
-  constructor(private readonly authPath: string) {
-    this.reload();
-  }
-
+  constructor(private readonly authPath: string) { this.reload(); }
   private ensureFile(): void {
     const parent = dirname(this.authPath);
     if (!existsSync(parent)) mkdirSync(parent, { recursive: true, mode: 0o700 });
-    if (!existsSync(this.authPath)) {
-      writeFileSync(this.authPath, "{}", { encoding: "utf-8", mode: 0o600 });
-      chmodSync(this.authPath, 0o600);
-    }
+    if (!existsSync(this.authPath)) { writeFileSync(this.authPath, "{}", { encoding: "utf-8", mode: 0o600 }); chmodSync(this.authPath, 0o600); }
   }
-
-  private readCurrent(): Record<string, StoredCredential> {
+  private readCurrent(): AuthFileData {
     try {
-      return JSON.parse(readFileSync(this.authPath, "utf-8")) as Record<string, StoredCredential>;
-    } catch {
-      return {};
-    }
+      const parsed: unknown = JSON.parse(readFileSync(this.authPath, "utf-8"));
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as AuthFileData : {};
+    } catch { return {}; }
   }
-
-  private async withLock<T>(fn: (current: Record<string, StoredCredential>) => Promise<T>): Promise<T> {
+  private async withLock<T>(fn: (current: AuthFileData) => Promise<{ result: T; changed: boolean }>): Promise<T> {
     return enqueueAuthWrite(this.authPath, async () => {
-      this.ensureFile();
-      const release = await lockfile.lock(this.authPath, AUTH_LOCK_OPTIONS);
+      this.ensureFile(); const release = await lockfile.lock(this.authPath, AUTH_LOCK_OPTIONS);
       try {
-        // Always merge the on-disk state observed after acquiring the lock, never this.data.
-        const current = this.readCurrent();
-        const result = await fn(current);
-        writeFileSync(this.authPath, JSON.stringify(current, null, 2), { encoding: "utf-8", mode: 0o600 });
-        chmodSync(this.authPath, 0o600);
-        this.data = current;
+        const current = this.readCurrent(); const { result, changed } = await fn(current);
+        if (changed) { writeFileSync(this.authPath, JSON.stringify(current, null, 2), { encoding: "utf-8", mode: 0o600 }); chmodSync(this.authPath, 0o600); this.data = current; }
         return result;
-      } finally {
-        await release();
-      }
+      } finally { await release(); }
     });
   }
-
-  reload(): void {
-    this.ensureFile();
-    this.data = this.readCurrent();
+  reload(): void { this.ensureFile(); this.data = this.readCurrent(); }
+  private parseReadKey(key: string): ProviderInstanceRef | undefined { return parseProviderInstanceKey(key); }
+  private assertRef(ref: ProviderInstanceRef): ProviderInstanceRef {
+    // format validates both ids and rejects reserved provider names before any mutator locks.
+    formatProviderInstanceKey(ref); return ref;
   }
-
-  get(provider: string): StoredCredential | undefined { return this.data[provider]; }
-  getAll(): Record<string, StoredCredential> { return { ...this.data }; }
-  list(): string[] { return Object.keys(this.data); }
-  has(provider: string): boolean { return Boolean(this.data[provider]); }
+  private resolveDefaultInstance(providerId: string, data: AuthFileData): ProviderInstanceRef | undefined {
+    if (!isValidProviderId(providerId) || isReservedAuthStorageKey(providerId)) return undefined;
+    const pointer = readDefaultInstanceMap(data)[providerId];
+    if (typeof pointer === "string") {
+      const ref = { providerId, instanceId: pointer };
+      try { if (isStoredAuthCredential(data[formatProviderInstanceKey(ref)])) return ref; } catch { /* invalid untrusted pointer falls through */ }
+    }
+    const bare = { providerId, instanceId: DEFAULT_PROVIDER_INSTANCE_ID };
+    if (isStoredAuthCredential(data[providerId])) return bare;
+    const named = Object.keys(data).map(parseProviderInstanceKey).filter((ref): ref is ProviderInstanceRef => Boolean(ref) && ref!.providerId === providerId && !isDefaultProviderInstance(ref!.instanceId) && isStoredAuthCredential(data[formatProviderInstanceKey(ref!)]));
+    return named.sort((a, b) => a.instanceId.localeCompare(b.instanceId))[0];
+  }
+  private resolveReadTarget(providerKey: string, data: AuthFileData): ProviderInstanceRef | undefined {
+    const ref = this.parseReadKey(providerKey); if (!ref) return undefined;
+    return isDefaultProviderInstance(ref.instanceId) ? this.resolveDefaultInstance(ref.providerId, data) : ref;
+  }
+  private resolveWriteTarget(providerKey: string, data: AuthFileData, creating: boolean): ProviderInstanceRef | undefined {
+    const ref = this.assertRefFromKey(providerKey);
+    if (!isDefaultProviderInstance(ref.instanceId)) return ref;
+    return this.resolveDefaultInstance(ref.providerId, data) ?? (creating ? ref : undefined);
+  }
+  private assertRefFromKey(key: string): ProviderInstanceRef {
+    const ref = parseProviderInstanceKey(key); if (!ref) throw new Error(`Invalid provider key: ${key}`); return this.assertRef(ref);
+  }
+  private credential(ref: ProviderInstanceRef | undefined, data = this.data): StoredCredential | undefined {
+    if (!ref) return undefined;
+    const candidate = data[formatProviderInstanceKey(ref)];
+    return isStoredAuthCredential(candidate) ? candidate : undefined;
+  }
+  get(provider: string): StoredCredential | undefined { return this.credential(this.resolveReadTarget(provider, this.data)); }
+  getInstance(ref: ProviderInstanceRef): StoredCredential | undefined { try { return this.credential(this.assertRef(ref)); } catch { return undefined; } }
+  getDefaultInstance(providerId: string): ProviderInstanceRef | undefined { return this.resolveDefaultInstance(providerId, this.data); }
+  listInstances(providerId: string): ProviderInstanceRef[] {
+    if (!isValidProviderId(providerId) || isReservedAuthStorageKey(providerId)) return [];
+    const refs = Object.keys(this.data).map(parseProviderInstanceKey).filter((ref): ref is ProviderInstanceRef => Boolean(ref) && ref!.providerId === providerId && Boolean(this.credential(ref!, this.data)));
+    const defaultRef = this.resolveDefaultInstance(providerId, this.data);
+    const defaultKey = defaultRef && formatProviderInstanceKey(defaultRef);
+    return refs.sort((a, b) => {
+      const aIsDefault = formatProviderInstanceKey(a) === defaultKey;
+      const bIsDefault = formatProviderInstanceKey(b) === defaultKey;
+      if (aIsDefault !== bIsDefault) return aIsDefault ? -1 : 1;
+      return a.instanceId.localeCompare(b.instanceId);
+    });
+  }
+  getAll(): Record<string, StoredCredential> { const result: Record<string, StoredCredential> = {}; for (const provider of this.list()) { const credential = this.get(provider); if (credential) result[provider] = credential; } return result; }
+  list(): string[] { return [...new Set(Object.keys(this.data).map(parseProviderInstanceKey).filter((ref): ref is ProviderInstanceRef => Boolean(ref) && Boolean(this.credential(ref!, this.data))).map((ref) => ref.providerId))].sort(); }
+  has(provider: string): boolean { return Boolean(this.get(provider)); }
   hasAuth(provider: string): boolean { return this.has(provider); }
   async set(provider: string, credential: StoredCredential): Promise<void> {
-    await this.withLock(async (current) => { current[provider] = credential; });
+    this.assertRefFromKey(provider);
+    await this.withLock(async current => {
+      const target = this.resolveWriteTarget(provider, current, true)!;
+      current[formatProviderInstanceKey(target)] = credential;
+      return { result: undefined, changed: true };
+    });
   }
+  async setInstance(ref: ProviderInstanceRef, credential: StoredCredential): Promise<void> { this.assertRef(ref); await this.withLock(async current => { current[formatProviderInstanceKey(ref)] = credential; return { result: undefined, changed: true }; }); }
+  private async removeRef(ref: ProviderInstanceRef): Promise<void> { await this.withLock(async current => { const key = formatProviderInstanceKey(ref); if (!isStoredAuthCredential(current[key])) return { result: undefined, changed: false }; delete current[key]; const defaults = readDefaultInstanceMap(current); if (defaults[ref.providerId] === ref.instanceId) { const next = { ...defaults }; delete next[ref.providerId]; current.__fusionDefaultInstances = next; } return { result: undefined, changed: true }; }); }
   async remove(provider: string): Promise<void> {
-    await this.withLock(async (current) => { delete current[provider]; });
+    this.assertRefFromKey(provider);
+    await this.withLock(async current => { const target = this.resolveWriteTarget(provider, current, false); if (!target || !isStoredAuthCredential(current[formatProviderInstanceKey(target)])) return { result: undefined, changed: false }; const key = formatProviderInstanceKey(target); delete current[key]; const defaults = readDefaultInstanceMap(current); if (defaults[target.providerId] === target.instanceId) { const next = { ...defaults }; delete next[target.providerId]; current.__fusionDefaultInstances = next; } return { result: undefined, changed: true }; });
   }
+  async removeInstance(ref: ProviderInstanceRef): Promise<void> { this.assertRef(ref); await this.removeRef(ref); }
   async logout(provider: string): Promise<void> { await this.remove(provider); }
-  async getApiKey(provider: string): Promise<string | undefined> {
-    return resolveStoredCredentialApiKey(provider, this.get(provider));
+  async setDefaultInstance(ref: ProviderInstanceRef): Promise<void> { this.assertRef(ref); await this.withLock(async current => { if (!this.credential(ref, current)) throw new Error("Cannot set default for a missing credential instance"); const defaults = { ...readDefaultInstanceMap(current), [ref.providerId]: ref.instanceId }; current.__fusionDefaultInstances = defaults; return { result: undefined, changed: true }; }); }
+  async getApiKey(provider: string): Promise<string | undefined> { return resolveStoredCredentialApiKey(provider, this.get(provider)); }
+  async modify(provider: string, fn: (current: StoredCredential | undefined) => Promise<StoredCredential | undefined>): Promise<StoredCredential | undefined> {
+    this.assertRefFromKey(provider);
+    return this.withLock(async current => {
+      const target = this.resolveWriteTarget(provider, current, false);
+      if (!target || !this.credential(target, current)) return { result: undefined, changed: false };
+      const next = await fn(this.credential(target, current));
+      if (next !== undefined) {
+        current[formatProviderInstanceKey(target)] = next;
+        return { result: next, changed: true };
+      }
+      return { result: this.credential(target, current), changed: false };
+    });
   }
-  getOAuthProviders(): Array<{ id: string; name: string }> {
-    return [
-      { id: "anthropic", name: "Anthropic" },
-      { id: "openai-codex", name: "OpenAI Codex" },
-      { id: "github-copilot", name: "GitHub Copilot" },
-    ];
-  }
-  setModelRuntime(modelRuntime: ModelRuntime): void {
-    this.modelRuntime = modelRuntime;
-  }
+  getOAuthProviders(): Array<{ id: string; name: string }> { return [{ id: "anthropic", name: "Anthropic" }, { id: "openai-codex", name: "OpenAI Codex" }, { id: "github-copilot", name: "GitHub Copilot" }]; }
+  setModelRuntime(modelRuntime: ModelRuntime): void { this.modelRuntime = modelRuntime; }
   async login(provider: string, callbacks: unknown): Promise<void> {
     if (!this.modelRuntime) throw new Error("OAuth login requires a ModelRuntime-backed Fusion auth storage");
-    const legacy = callbacks as {
-      onAuth?: (info: { url: string; instructions?: string }) => void;
-      onDeviceCode?: (info: { userCode: string; verificationUri: string; intervalSeconds?: number; expiresInSeconds?: number }) => void;
-      onPrompt?: (prompt: { message: string; placeholder?: string; allowEmpty?: boolean }) => Promise<string>;
-      onProgress?: (message: string) => void;
-      signal?: AbortSignal;
-    };
-    const interaction: AuthInteraction = {
-      signal: legacy.signal,
-      prompt: async (prompt) => legacy.onPrompt?.({
-        message: prompt.message,
-        placeholder: "placeholder" in prompt ? prompt.placeholder : undefined,
-      }) ?? "",
-      notify: (event) => {
-        if (event.type === "auth_url") legacy.onAuth?.({ url: event.url, instructions: event.instructions });
-        else if (event.type === "device_code") legacy.onDeviceCode?.(event);
-        else if (event.type === "progress") legacy.onProgress?.(event.message);
-      },
-    };
-    await this.modelRuntime.login(provider, "oauth", interaction);
-    this.reload();
-  }
-  async modify(provider: string, fn: (current: StoredCredential | undefined) => Promise<StoredCredential | undefined>): Promise<StoredCredential | undefined> {
-    return this.withLock(async (current) => {
-      const next = await fn(current[provider]);
-      if (next !== undefined) current[provider] = next;
-      return current[provider];
-    });
+    const legacy = callbacks as { onAuth?: (info: { url: string; instructions?: string }) => void; onDeviceCode?: (info: { userCode: string; verificationUri: string; intervalSeconds?: number; expiresInSeconds?: number }) => void; onPrompt?: (prompt: { message: string; placeholder?: string; allowEmpty?: boolean }) => Promise<string>; onProgress?: (message: string) => void; signal?: AbortSignal; };
+    const interaction: AuthInteraction = { signal: legacy.signal, prompt: async prompt => legacy.onPrompt?.({ message: prompt.message, placeholder: "placeholder" in prompt ? prompt.placeholder : undefined }) ?? "", notify: event => { if (event.type === "auth_url") legacy.onAuth?.({ url: event.url, instructions: event.instructions }); else if (event.type === "device_code") legacy.onDeviceCode?.(event); else if (event.type === "progress") legacy.onProgress?.(event.message); } };
+    await this.modelRuntime.login(provider, "oauth", interaction); this.reload();
   }
 }
 
@@ -249,7 +295,6 @@ apply so a single stuck token doesn't get hammered).
 */
 const OAUTH_REFRESH_BUFFER_MS = 5 * 60_000;
 const ANTHROPIC_PROVIDER_ID = "anthropic";
-const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID = "anthropic-subscription";
 const OAUTH_REFRESH_FAILURE_COOLDOWN_MS = 30_000;
 
 export function getHomeDir(): string {
@@ -976,11 +1021,14 @@ export function createFusionAuthStorage(): FusionAuthStorage {
       }
 
       if (prop === "get") {
-        return (provider: string) => selectVisibleStoredCredential(provider);
+        return (provider: string) => parseProviderInstanceKey(provider)
+          ? selectVisibleStoredCredential(provider)
+          : undefined;
       }
 
       if (prop === "has") {
         return (provider: string) => {
+          if (!parseProviderInstanceKey(provider)) return false;
           if (provider === ANTHROPIC_PROVIDER_ID) {
             return hasVisibleAnthropicCredential();
           }
@@ -996,6 +1044,7 @@ export function createFusionAuthStorage(): FusionAuthStorage {
 
       if (prop === "hasAuth") {
         return (provider: string) => {
+          if (!parseProviderInstanceKey(provider)) return false;
           if (provider === ANTHROPIC_PROVIDER_ID) {
             return hasVisibleAnthropicCredential();
           }
@@ -1056,12 +1105,13 @@ export function createFusionAuthStorage(): FusionAuthStorage {
               return false;
             }
             return true;
-          });
+          }).sort();
         };
       }
 
       if (prop === "getApiKey") {
         return async (provider: string) => {
+          if (!parseProviderInstanceKey(provider)) return undefined;
           await supplementalHydration;
           if (provider === ANTHROPIC_PROVIDER_ID) {
             return resolveAnthropicRuntimeApiKey();

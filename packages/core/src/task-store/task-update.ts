@@ -224,6 +224,25 @@ export async function updateTaskUnlockedImpl(store: TaskStore, id: string, updat
       } else if (updates.status !== undefined) {
         task.status = updates.status;
       }
+      /*
+      FNXC:PlanApproval 2026-08-01-04:39:
+      `awaitingApprovalReason` was persisted (persistence.ts) and serialized (serialization.ts)
+      but never applied by this field-by-field merge, so EVERY writer silently lost it — the
+      executor's Plan Review replan-cap park (`plan-review-replan-cap`) and the triage manual
+      gate's explicit null-clear both no-oped, and FN-8647's non-converging Plan Review loop
+      surfaced on the board as a generic "needs approval" with no explanation. Merge it like the
+      other nullable fields (null clears), and auto-clear the stored reason whenever a status
+      write moves the task OFF `awaiting-approval` without the caller addressing the reason, so
+      an approved/replanned card can never carry a stale escalation reason into its next park.
+      */
+      const reasonUpdate = (updates as Record<string, unknown>).awaitingApprovalReason;
+      if (reasonUpdate === null) {
+        task.awaitingApprovalReason = undefined;
+      } else if (reasonUpdate !== undefined) {
+        task.awaitingApprovalReason = reasonUpdate as Task["awaitingApprovalReason"];
+      } else if (updates.status !== undefined && updates.status !== "awaiting-approval") {
+        task.awaitingApprovalReason = undefined;
+      }
       if (updates.blockedBy === null) {
         task.blockedBy = undefined;
       } else if (updates.blockedBy !== undefined) {

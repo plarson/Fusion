@@ -2390,8 +2390,24 @@ export {
   getCodexCliAuthPath,
   readStoredCredentialsFromAuthFile,
   shouldHydrateStoredCredential,
+  isStoredAuthCredential,
 } from "./oauth-credential-interop.js";
 export type { StoredAuthCredential } from "./oauth-credential-interop.js";
+export {
+  ANTHROPIC_SUBSCRIPTION_PROVIDER_ID,
+  DEFAULT_PROVIDER_INSTANCE_ID,
+  PROVIDER_INSTANCE_ID_MAX_LENGTH,
+  RESERVED_AUTH_STORAGE_KEYS,
+  assertValidProviderId,
+  assertValidProviderInstanceId,
+  formatProviderInstanceKey,
+  isDefaultProviderInstance,
+  isReservedAuthStorageKey,
+  isValidProviderId,
+  isValidProviderInstanceId,
+  parseProviderInstanceKey,
+} from "./provider-instance.js";
+export type { ProviderInstanceRef } from "./provider-instance.js";
 
 // ── Error helpers ─────────────────────────────────────────
 export { getErrorMessage } from "./error-message.js";

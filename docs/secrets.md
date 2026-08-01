@@ -204,6 +204,14 @@ Track follow-up: **FN-5031** (missing `packages/core/src/__tests__/secrets-env.t
 
 **Plaintext prohibition:** audit payload metadata must never include plaintext, decrypted values, ciphertext, or nonce fields. Use `assertNoSecretPlaintext(...)` as the canonical enforcement helper before emitting secret audit events.
 
+## Provider credential instances (`auth.json`)
+
+Fusion keeps provider credentials in `~/.fusion/agent/auth.json`. A legacy bare key such as `"openrouter"` is the default instance; a named key is `"openrouter[work]"`. Provider and instance ids are non-empty, no-whitespace, no-bracket strings up to 64 characters. Existing bare entries remain readable and are not rewritten merely by reading them.
+
+`__fusionDefaultInstances` is reserved metadata, never a credential. Its per-provider pointer wins only when it names an existing valid credential; resolution otherwise falls back to the bare key, then the lexicographically first named instance, then no instance (`getDefaultInstance` returns `undefined`). The metadata is untrusted: malformed records or stale entries are ignored without a read-time repair. Deleting a pointed-to instance removes that pointer in the same locked write.
+
+Legacy string APIs parse this grammar rather than accepting raw keys. `set("provider", credential)` updates the resolved default, or creates the bare key when none exists; `remove`, `logout`, `removeInstance`, and `modify` are no-ops when no instance exists. `setDefaultInstance` never creates a credential and rejects a missing target. All mutators, including deletes, reject the reserved metadata key. `list()` and `getAll()` remain logical-provider keyed (one resolved credential per provider); use `listInstances()` for individual instances. On-disk records are untrusted and values are type-filtered as credentials, so metadata and malformed values are never returned. External Claude/Codex hydration intentionally consumes bare keys only and ignores named instance keys.
+
 ## Operational Notes
 
 - Backups: preserve PostgreSQL project/central schemas and the master-key material/provider source used by the deployment. Retain legacy SQLite backups only as controlled migration/recovery inputs; they are not runtime authority.

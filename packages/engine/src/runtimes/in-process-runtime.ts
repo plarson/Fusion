@@ -53,6 +53,8 @@ import { runtimeLog } from "../logger.js";
 import { getActiveNotificationService } from "../notifier.js";
 import { StuckTaskDetector } from "../stuck-task-detector.js";
 import { UsageLimitPauser } from "../usage-limit-detector.js";
+import { CredentialInstanceRotator } from "../credential-instance-rotation.js";
+import { createFusionAuthStorage } from "../auth-storage.js";
 import { SelfHealingManager, VALIDATOR_RUN_STALE_MAX_AGE_MS } from "../self-healing.js";
 import { RestartRecoveryCoordinator } from "../restart-recovery-coordinator.js";
 import { MeshLeaseManager } from "../mesh-lease-manager.js";
@@ -712,6 +714,8 @@ export class InProcessRuntime
    */
   private cliAgentRuntime?: BootstrappedCliAgentRuntime;
   private usageLimitPauser?: UsageLimitPauser;
+  /** One runtime-owned cooldown map keeps executor and recovery paths coherent. */
+  private credentialRotator?: CredentialInstanceRotator;
   /** FNXC:PlanReviewLease 2026-07-26-20:42: cluster node id stamped onto review-gate leases; undefined until start() resolves it, or if resolution fails. */
   private localNodeId?: string;
   private selfHealingManager?: SelfHealingManager;
@@ -846,7 +850,27 @@ export class InProcessRuntime
       FNXC:ProviderRateLimitIsolation 2026-07-19-19:10:
       Every project runtime owns one usage-limit coordinator and shares it across executor, triage, reviewer, and merger surfaces. Runtime isolation replaced the old dashboard-level construction site; constructing it here prevents a silently undefined pauser while keeping a provider outage local to the affected project/task.
       */
-      this.usageLimitPauser ??= new UsageLimitPauser(this.taskStore);
+      this.credentialRotator ??= new CredentialInstanceRotator({
+        instanceSource: createFusionAuthStorage(),
+        // FNXC:CredentialInstanceRotation 2026-08-01-11:05:
+        // Rotation evidence is emitted through the runtime-owned audit seam. Metadata
+        // is supplied by the rotator as ids/counts/outcomes only; audit failures stay
+        // non-fatal so an observability outage cannot prevent rate-limit recovery.
+        recordRunAuditEvent: async (mutationType, metadata) => {
+          await this.taskStore.recordRunAuditEvent?.({
+            taskId: typeof metadata.taskId === "string" ? metadata.taskId : undefined,
+            agentId: typeof metadata.agentId === "string" ? metadata.agentId : "runtime",
+            runId: generateSyntheticRunId("credential-instance-rotation", typeof metadata.taskId === "string" ? metadata.taskId : String(metadata.providerId ?? "unknown")),
+            domain: "database",
+            mutationType,
+            target: String(metadata.providerId ?? "unknown"),
+            metadata,
+          });
+        },
+      });
+      this.usageLimitPauser ??= new UsageLimitPauser(this.taskStore, {
+        credentialRotator: this.credentialRotator,
+      });
 
       // Initialize MessageStore early so TaskExecutor receives send_message capability.
       // FNXC:RuntimeSatelliteAsync 2026-06-24-12:45:
@@ -1258,6 +1282,7 @@ export class InProcessRuntime
         getLocalNodeId: () => this.localNodeId,
         pool: this.worktreePool,
         usageLimitPauser: this.usageLimitPauser,
+        credentialRotator: this.credentialRotator,
         stuckTaskDetector: this.stuckTaskDetector,
         cliAgentRuntime: this.cliAgentRuntime?.bundle,
         pluginRunner: this.pluginRunner,
@@ -1388,6 +1413,7 @@ export class InProcessRuntime
           reflectionStore: reflectionStoreForService,
           reflectionService,
           selfImproveService,
+          credentialRotator: this.credentialRotator,
           snapshotManager: autoClaimSnapshotManager,
           onMissed: (agentId, reason) => {
             runtimeLog.warn(`Agent ${agentId} missed heartbeat: ${reason}`);
@@ -2602,6 +2628,7 @@ export class InProcessRuntime
    */
   setUsageLimitPauser(pauser: UsageLimitPauser): void {
     this.usageLimitPauser = pauser;
+    pauser.setCredentialRotator(this.credentialRotator);
   }
 
   /**

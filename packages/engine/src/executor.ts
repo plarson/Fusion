@@ -12,7 +12,7 @@ const WORKFLOW_THINKING_LEVEL_SET: ReadonlySet<string> = new Set(THINKING_LEVELS
 import { basename, delimiter, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
-import type { TaskStore, Task, TaskDetail, TaskTokenUsage, StepStatus, Settings, WorkflowStep, MissionStore, AsyncMissionStore, Slice, AgentState, AgentCapability, RunMutationContext, AgentHeartbeatConfig, Agent, AgentMemoryInclusionMode, ProjectSettings, MergeResult, WorkflowIrNode, WorkflowIrNodeKind, WorkflowStepResult as CoreWorkflowStepResult, ThinkingLevel } from "@fusion/core";
+import { DEFAULT_PROVIDER_INSTANCE_ID, type ProviderInstanceRef, type TaskStore, type Task, type TaskDetail, type TaskTokenUsage, type StepStatus, type Settings, type WorkflowStep, type MissionStore, type AsyncMissionStore, type Slice, type AgentState, type AgentCapability, type RunMutationContext, type AgentHeartbeatConfig, type Agent, type AgentMemoryInclusionMode, type ProjectSettings, type MergeResult, type WorkflowIrNode, type WorkflowIrNodeKind, type WorkflowStepResult as CoreWorkflowStepResult, type ThinkingLevel } from "@fusion/core";
 import { getUnmetSchedulingDependencies, resolveDependencySatisfactionColumns } from "./scheduler.js";
 import type { ImplementationExit, ImplementationExitReporter } from "./executor/implementation-exit.js";
 import { emitWorkflowLifecycleEvent } from "@fusion/core";
@@ -191,6 +191,7 @@ import { TokenCapDetector } from "./token-cap-detector.js";
 import { isUsageLimitError, checkSessionError, type UsageLimitPauser } from "./usage-limit-detector.js";
 import { isNonContinuableSessionError, isNonPlanDefectPlanReviewFailure, isSessionContentionError, isTransientError, isSilentTransientError } from "./transient-error-detector.js";
 import { withRateLimitRetry } from "./rate-limit-retry.js";
+import type { CredentialInstanceRotator } from "./credential-instance-rotation.js";
 import {
   detectExternalIntegrationEvidenceGaps,
   formatExternalIntegrationEvidenceDiagnostic,
@@ -1668,6 +1669,8 @@ export interface TaskExecutorOptions {
    * Parks only tasks routed through the provider whose API limit was detected.
    */
   usageLimitPauser?: UsageLimitPauser;
+  /** Runtime-owned credential rotation inventory/cooldown coordinator. */
+  credentialRotator?: CredentialInstanceRotator;
   /** Stuck task detector — monitors agent sessions for stagnation and triggers recovery. */
   stuckTaskDetector?: StuckTaskDetector;
   /** AgentStore for tracking spawned child agents. If not provided, spawning is disabled. */
@@ -13298,6 +13301,62 @@ export class TaskExecutor {
 
         let accumulatedStepTokenUsage = detail.tokenUsage;
         const tokenUsageRecordedSteps = new Set<number>();
+        let stepRotationEvent: import("./credential-instance-rotation.js").RotationEvent | undefined;
+        let stepRotationDeclined = false;
+        let stepDispatchedRotation = false;
+        const initialStepSessionModel = resolveExecutorSessionModel(
+          detail.modelProvider,
+          detail.modelId,
+          settings,
+          (stepIdentityAgent?.runtimeConfig ?? undefined) as Record<string, unknown> | undefined,
+          detail.credentialInstanceId ?? undefined,
+        );
+        let activeStepInstanceRef: ProviderInstanceRef | undefined = initialStepSessionModel.provider
+          ? {
+              providerId: initialStepSessionModel.provider,
+              instanceId: initialStepSessionModel.credentialInstanceId ?? DEFAULT_PROVIDER_INSTANCE_ID,
+            }
+          : undefined;
+        const stepExecutorRef: { current?: StepSessionExecutor } = {};
+        const nextStepInstance = async (): Promise<ProviderInstanceRef | undefined> => {
+          /*
+          FNXC:CredentialInstanceRotation 2026-08-01-11:22:
+          Executor-step retries refresh task and project pause state at the limit
+          boundary, rather than trusting dispatch snapshots. A pause arriving while
+          a session is in flight must prevent an autonomous billed-account switch.
+          */
+          const [liveTask, liveSettings] = await Promise.all([
+            this.store.getTask(task.id).catch(() => undefined),
+            this.store.getSettings().catch(() => settings),
+          ]);
+          if (stepRotationDeclined || this.pausedAborted.has(task.id) || !liveTask
+            || liveTask.userPaused === true || liveTask.autoMerge === false
+            || liveSettings.globalPause === true || liveSettings.enginePaused === true
+            || !activeStepInstanceRef?.providerId) return undefined;
+          stepRotationEvent ??= await this.options.credentialRotator?.beginEvent({
+            providerId: activeStepInstanceRef.providerId,
+            startingInstanceId: activeStepInstanceRef.instanceId,
+            lane: "executor-step",
+            taskId: task.id,
+          });
+          if (!stepRotationEvent) { stepRotationDeclined = true; return undefined; }
+          // FNXC:CredentialInstanceRotation 2026-08-01-11:34: beginEvent awaits credential inventory, so repeat the human-control check after it resolves. A pause that races this await must prevent cooldown writes and credential dispatch.
+          const [postInventoryTask, postInventorySettings] = await Promise.all([
+            this.store.getTask(task.id).catch(() => undefined),
+            this.store.getSettings().catch(() => settings),
+          ]);
+          if (this.pausedAborted.has(task.id) || !postInventoryTask
+            || postInventoryTask.userPaused === true || postInventoryTask.autoMerge === false
+            || postInventorySettings.globalPause === true || postInventorySettings.enginePaused === true) return undefined;
+          this.options.credentialRotator?.markLimited(activeStepInstanceRef);
+          if (stepDispatchedRotation) stepRotationEvent.recordOutcome("rotation-failed-limit");
+          const next = await stepRotationEvent.next();
+          if (!next) { stepRotationEvent.finishExhausted(); return undefined; }
+          activeStepInstanceRef = next;
+          stepDispatchedRotation = true;
+          await stepExecutorRef.current?.retargetCredentialInstance(next);
+          return next;
+        };
         /*
         FNXC:WorkflowStepControl 2026-06-29-10:15:
         Graph-pinned step sessions are lifecycle-owned by the workflow graph, not by the legacy executor prompt/tools. Their callback projection must use source:"graph" so independent steps can finish out of index order and so duplicate graph runner writes do not trigger the legacy sequential fn_task_update guard.
@@ -13323,20 +13382,7 @@ export class TaskExecutor {
            * effective column-agent runtime config used to create the session.
            */
           credentialInstanceId: detail.credentialInstanceId,
-          resolveCredentialInstanceRetarget: async () => {
-            const liveDetail = await this.store.getTask(task.id);
-            if (!liveDetail) return undefined;
-            const resolvedModel = resolveExecutorSessionModel(
-              liveDetail.modelProvider,
-              liveDetail.modelId,
-              settings,
-              (stepIdentityAgent?.runtimeConfig ?? undefined) as Record<string, unknown> | undefined,
-              liveDetail.credentialInstanceId ?? undefined,
-            );
-            return resolvedModel.provider && resolvedModel.credentialInstanceId
-              ? { providerId: resolvedModel.provider, instanceId: resolvedModel.credentialInstanceId }
-              : undefined;
-          },
+          resolveCredentialInstanceRetarget: nextStepInstance,
           // Attribute the per-step run auditor to the column agent when it governs
           // (U4); absent → StepSessionExecutor falls back to assignedAgentId.
           effectiveAgentId: stepColumnAgent?.agent.id,
@@ -13421,6 +13467,7 @@ export class TaskExecutor {
             });
           },
         });
+        stepExecutorRef.current = stepExecutor;
         this.setActiveStepExecutor(task.id, stepExecutor, worktreePath, this.createSeenSteeringIds(detail));
 
         const stepWork = async () => {
@@ -13678,6 +13725,11 @@ export class TaskExecutor {
         };
 
         const retryableStepWork = () => withRateLimitRetry(stepWork, {
+          signal: this.activeWorkflowGraphAbortControllers.get(task.id)?.signal,
+          rotation: this.options.credentialRotator && activeStepInstanceRef ? {
+            providerId: activeStepInstanceRef.providerId,
+            nextInstance: nextStepInstance,
+          } : undefined,
           onRetry: (attempt, delayMs, error) => {
             const delaySec = Math.round(delayMs / 1000);
             executorLog.warn(`⏳ ${task.id} rate limited — retry ${attempt} in ${delaySec}s: ${error.message}`);
@@ -13690,6 +13742,7 @@ export class TaskExecutor {
 
         try {
           await this.runWithExecutorSemaphore(task.id, retryableStepWork);
+          if (stepDispatchedRotation) stepRotationEvent?.recordOutcome("rotation-succeeded");
         } catch (err: unknown) {
           const { message: errorMessage, detail: errorDetail, stack: errorStack } = formatError(err);
           if (this.depAborted.has(task.id)) {
@@ -14169,6 +14222,11 @@ export class TaskExecutor {
         },
       });
 
+      let agentRotationEvent: import("./credential-instance-rotation.js").RotationEvent | undefined;
+      let agentRotationDeclined = false;
+      let agentDispatchedRotation = false;
+      let activeAgentInstanceRef: ProviderInstanceRef | undefined;
+
       const agentWork = async () => {
         // Resolve model settings using canonical lane hierarchy:
         // 1. Task override pair (modelProvider + modelId)
@@ -14189,9 +14247,12 @@ export class TaskExecutor {
           overrideColumnGovernsInitialSession ? undefined : detail.modelId,
           settings,
           (identityAgent?.runtimeConfig ?? undefined) as Record<string, unknown> | undefined,
-          overrideColumnGovernsInitialSession ? undefined : detail.credentialInstanceId,
+          overrideColumnGovernsInitialSession ? undefined : activeAgentInstanceRef?.instanceId ?? detail.credentialInstanceId,
         );
         const { provider: executorProvider, modelId: executorModelId } = executorSessionModel;
+        activeAgentInstanceRef ??= executorProvider
+          ? { providerId: executorProvider, instanceId: executorSessionModel.credentialInstanceId ?? DEFAULT_PROVIDER_INSTANCE_ID }
+          : undefined;
         const { provider: executorFallbackProvider, modelId: executorFallbackModelId } = resolveExecutorFallbackModel(settings);
         const executorSessionThinkingSource = this.graphSeamThinkingLevel.get(task.id) ?? detail.thinkingLevel;
         const executorThinkingLevel = resolveExecutorThinkingLevel(executorSessionThinkingSource, settings);
@@ -14292,7 +14353,7 @@ export class TaskExecutor {
             onToolEnd: agentLogger.onToolEnd,
             defaultProvider: executorProvider,
             defaultModelId: executorModelId,
-            ...(executorSessionModel.credentialInstanceId ? { credentialInstanceId: executorSessionModel.credentialInstanceId } : {}),
+            ...(activeAgentInstanceRef ? { credentialInstanceId: activeAgentInstanceRef.instanceId } : {}),
             fallbackProvider: executorFallbackProvider,
             fallbackModelId: executorFallbackModelId,
             fallbackThinkingLevel: executorFallbackThinkingLevel,
@@ -15001,6 +15062,51 @@ export class TaskExecutor {
       };
 
       const retryableWork = () => withRateLimitRetry(agentWork, {
+        signal: this.activeWorkflowGraphAbortControllers.get(task.id)?.signal,
+        rotation: this.options.credentialRotator ? {
+          providerId: activeAgentInstanceRef?.providerId ?? detail.modelProvider ?? "",
+          nextInstance: async () => {
+            /*
+            FNXC:CredentialInstanceRotation 2026-08-01-11:05:
+            Executor agent runs rotate only after the shared retry helper classifies a
+            usage limit. Live task/settings reads and the executor pause-abort marker
+            bail before opening an event, because a pause arriving mid-run cannot
+            authorize changing the billed credential. A successful offer causes
+            agentWork to construct a fresh session; a non-limit failure intentionally
+            leaves its attempt without an outcome row.
+            */
+            const [liveTask, liveSettings] = await Promise.all([
+              this.store.getTask(task.id).catch(() => undefined),
+              this.store.getSettings().catch(() => settings),
+            ]);
+            if (agentRotationDeclined || this.pausedAborted.has(task.id) || !liveTask
+              || liveTask.userPaused === true || liveTask.autoMerge === false
+              || liveSettings.globalPause === true || liveSettings.enginePaused === true
+              || !activeAgentInstanceRef?.providerId) return undefined;
+            agentRotationEvent ??= await this.options.credentialRotator!.beginEvent({
+              providerId: activeAgentInstanceRef.providerId,
+              startingInstanceId: activeAgentInstanceRef.instanceId,
+              lane: "executor-agent",
+              taskId: task.id,
+            });
+            if (!agentRotationEvent) { agentRotationDeclined = true; return undefined; }
+            // FNXC:CredentialInstanceRotation 2026-08-01-11:34: Inventory lookup is asynchronous; re-check human control before this retry marks a credential limited or offers another billed account.
+            const [postInventoryTask, postInventorySettings] = await Promise.all([
+              this.store.getTask(task.id).catch(() => undefined),
+              this.store.getSettings().catch(() => settings),
+            ]);
+            if (this.pausedAborted.has(task.id) || !postInventoryTask
+              || postInventoryTask.userPaused === true || postInventoryTask.autoMerge === false
+              || postInventorySettings.globalPause === true || postInventorySettings.enginePaused === true) return undefined;
+            this.options.credentialRotator!.markLimited(activeAgentInstanceRef);
+            if (agentDispatchedRotation) agentRotationEvent.recordOutcome("rotation-failed-limit");
+            const next = await agentRotationEvent.next();
+            if (!next) { agentRotationEvent.finishExhausted(); return undefined; }
+            activeAgentInstanceRef = next;
+            agentDispatchedRotation = true;
+            return next;
+          },
+        } : undefined,
         onRetry: (attempt, delayMs, error) => {
           const delaySec = Math.round(delayMs / 1000);
           executorLog.warn(`⏳ ${task.id} rate limited — retry ${attempt} in ${delaySec}s: ${error.message}`);
@@ -15012,6 +15118,7 @@ export class TaskExecutor {
       });
 
       await this.runWithExecutorSemaphore(task.id, retryableWork);
+      if (agentDispatchedRotation) agentRotationEvent?.recordOutcome("rotation-succeeded");
     } catch (err: unknown) {
       const { message: errorMessage, detail: errorDetail, stack: errorStack } = formatError(err);
       if (this.depAborted.has(task.id)) {

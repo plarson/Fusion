@@ -1870,6 +1870,10 @@ Project-scoped ordered list of up to six mobile footer quick actions. The defaul
 
 Enabled plugins may declare `mcpServers` declaratively. The contribution is project-scoped: only plugins enabled in that project's plugin state participate. Resolution is global → enabled plugin declarations → project settings, by server `name`; later declarations win and a project `enabled:false` entry removes an inherited plugin server. The Global MCP card never includes plugin declarations. Project MCP UI identifies them as `plugin:<id>` and writes only project overrides or tombstones.
 
+### Credential-instance rate-limit rotation
+
+When a provider has two or more configured credential instances, executor and heartbeat retries may move to the next eligible instance after a usage-limit response before using the normal pause and backoff path. A limited instance is skipped for 15 minutes in the running engine; cooldowns are not persisted. Providers with zero or one instance have no rotation event, cooldown, or rotation audit row and preserve existing behavior. User-controlled tasks, including `autoMerge:false`, do not rotate.
+
 ### Credential instance companions
 
 Every provider/model selection can now persist an optional `*CredentialInstanceId` companion: the

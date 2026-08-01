@@ -4072,6 +4072,10 @@ export class ProjectEngine {
             const agentStore = (this.runtime as any).agentStore;
 
             const usageLimitPauser = (this.runtime as any).usageLimitPauser;
+            // FNXC:CredentialInstanceRotation 2026-08-01-11:05:
+            // Preserve the runtime-owned rotator identity in downstream option bags;
+            // merger does not opt into rotation, so this is forwarding only.
+            const credentialRotator = (this.runtime as any).credentialRotator;
 
             const rawMerge = async () => {
               const abortSignal = this.claimActiveMerge(taskId);
@@ -4083,6 +4087,7 @@ export class ProjectEngine {
                 manual: hasManualResolver,
                 pool,
                 usageLimitPauser,
+                credentialRotator,
                 agentStore,
                 pluginRunner: this.getPluginRunner(),
                 signal: abortSignal,

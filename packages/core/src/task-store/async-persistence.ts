@@ -257,6 +257,9 @@ export async function resolveActiveTaskWedgeEpisodeRow(
  * @param id The task id to soft-delete.
  * @param deletedAt The deletion timestamp (ISO-8601).
  * @param allowResurrection Whether the task may be resurrected (1/0).
+ * @param firstTransitionOnly Require `deleted_at IS NULL` and report whether this
+ *   transaction won the first-transition claim. Archive callers retain their
+ *   established unconditional soft-delete behavior.
  */
 export async function softDeleteTaskRowInTransaction(
   tx: DbTransaction,
@@ -264,12 +267,24 @@ export async function softDeleteTaskRowInTransaction(
   deletedAt: string,
   allowResurrection = false,
   projectId?: string,
-): Promise<void> {
+  firstTransitionOnly = false,
+): Promise<boolean> {
   /*
   FNXC:ArchiveProjectIsolation 2026-07-14-16:20:
   Transactional archive/delete helpers receive the owning project explicitly because task IDs repeat across projects. The composite predicate is required for atomicity to protect the intended row instead of whichever same-ID row PostgreSQL returns first.
   */
-  await tx
+  const predicates = [
+    eq(schema.project.tasks.projectId, projectId?.trim() || "__legacy_unscoped__"),
+    eq(schema.project.tasks.id, id),
+  ];
+  /*
+  FNXC:LifecycleOutbox 2026-08-01-11:01:
+  Delete alone needs a first-transition claim for its durable side effects. Keep
+  archive's existing unconditional mutation separate: applying the claim to it
+  would let an archive snapshot commit after a concurrent delete won the row.
+  */
+  if (firstTransitionOnly) predicates.push(isNull(schema.project.tasks.deletedAt));
+  const claimed = await tx
     .update(schema.project.tasks)
     .set({
       column: "archived",
@@ -277,10 +292,9 @@ export async function softDeleteTaskRowInTransaction(
       allowResurrection: allowResurrection ? 1 : 0,
       updatedAt: deletedAt,
     })
-    .where(and(
-      eq(schema.project.tasks.projectId, projectId?.trim() || "__legacy_unscoped__"),
-      eq(schema.project.tasks.id, id),
-    ));
+    .where(and(...predicates))
+    .returning({ id: schema.project.tasks.id });
+  return claimed.length === 1;
 }
 
 /**

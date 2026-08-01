@@ -564,6 +564,33 @@ export const symbolLocks = projectSchema.table("symbol_locks", {
   index("idxSymbolLocksExpiry").on(t.status, t.expiresAt),
 ]);
 
+/*
+FNXC:LifecycleOutbox 2026-08-01-10:33:
+These project-scoped rows make task:deleted observable across PostgreSQL processes after
+FN-8683 removed unreachable SQLite polling. The writer inserts them with the soft-delete;
+the counter row serializes allocation without MAX(seq)+1 races and rolls back on failure.
+*/
+export const taskLifecycleEvents = projectSchema.table("task_lifecycle_events", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  seq: bigint("seq", { mode: "bigint" }).notNull(),
+  eventId: text("event_id").notNull(),
+  eventType: text("event_type").notNull(),
+  taskId: text("task_id").notNull(),
+  occurredAt: text("occurred_at").notNull(),
+  createdAt: text("created_at").notNull(),
+  payload: jsonb("payload").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.seq] }),
+  unique("task_lifecycle_events_project_event_unique").on(t.projectId, t.eventId),
+  check("task_lifecycle_events_type_check", sql`${t.eventType} IN ('task:deleted')`),
+  index("idxTaskLifecycleEventsTask").on(t.projectId, t.taskId),
+]);
+
+export const taskLifecycleEventSeq = projectSchema.table("task_lifecycle_event_seq", {
+  projectId: text("project_id").notNull().default(sql`current_setting('fusion.project_id', true)`),
+  lastSeq: bigint("last_seq", { mode: "bigint" }).notNull().default(sql`0`),
+}, (t) => [primaryKey({ columns: [t.projectId] })]);
+
 // ── Workflow step definitions ────────────────────────────────────────
 export const workflowSteps = projectSchema.table("workflow_steps", {
   id: text("id").primaryKey(),

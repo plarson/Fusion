@@ -31,12 +31,22 @@ let lineageChildIds: string[] = [];
 
 vi.mock("../task-store/async-persistence.js", () => ({
   readTaskRow: vi.fn(async () => pgRow),
-  softDeleteTaskRowInTransaction: vi.fn(async () => undefined),
+  readTaskRowInTransaction: vi.fn(async () => pgRow),
+  softDeleteTaskRowInTransaction: vi.fn(async () => true),
 }));
 vi.mock("../task-store/async-lifecycle.js", () => ({
   findLiveLineageChildren: vi.fn(async () => lineageChildIds),
   projectPartition: vi.fn(() => undefined),
   removeLineageReferences: vi.fn(async () => undefined),
+}));
+/*
+FNXC:LifecycleOutbox 2026-08-01-11:02:
+This in-memory delete harness has no PostgreSQL transaction executor. Mock the
+transaction-scoped writer at its module boundary so deletion-gate tests remain
+focused while the real backend always persists the lifecycle event transactionally.
+*/
+vi.mock("../task-store/lifecycle-outbox.js", () => ({
+  appendTaskLifecycleEventInTransaction: vi.fn(async () => ({ seq: "1", eventId: "test-event" })),
 }));
 vi.mock("../async-mission-store-queries.js", () => ({
   getFeatureByTaskId: vi.fn(async () => null),
@@ -94,6 +104,7 @@ function makeDeleteStore(task: Task, children: string[] = []) {
       auditEvents.push(event);
     }),
     makeSyntheticDeleteRunId: vi.fn((id: string) => `synthetic-delete-${id}`),
+    laneCache: { invalidate: vi.fn() },
     withTaskLock: vi.fn(async (_id: string, fn: () => Promise<unknown>) => fn()),
     cleanupBranchForTask: vi.fn(async () => [] as string[]),
     clearNearDuplicateReferencesToFailSoft: vi.fn(async () => undefined),

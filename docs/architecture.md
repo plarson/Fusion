@@ -2329,3 +2329,9 @@ The auto-recovery dispatcher at `packages/engine/src/auto-recovery.ts` (FN-4533)
 ### Concurrent soft-delete heartbeat races (FN-8004)
 
 A heartbeat `moveTask` failure with the typed `TaskDeletedError` soft-delete message is a benign board miss: the durable agent stays active, clears `lastError` and heartbeat recovery metadata, and emits `agent:heartbeat-move-skipped-soft-delete`. Its audit metadata is structured only: `agentId`, `taskId`, `deletedAt`, `moveAttemptedAt`, and `source`.
+
+## PostgreSQL task-deletion lifecycle outbox
+
+FN-8684 makes `task:deleted` observable across independently connected PostgreSQL processes. `deleteTaskBackendImpl` claims the first soft-delete transition with `deleted_at IS NULL` inside its transaction. The winner alone writes the run audit and `project.task_lifecycle_events` row; a concurrent loser re-reads the deleted row in the same project-scoped transaction and returns that truthful result without duplicate emit or mailbox effects.
+
+The outbox insert is atomic with the task mutation. A transactional per-project counter row assigns the event sequence: its lock lasts to commit, allocation order equals commit order, and rollback restores the counter rather than burning a number. Event IDs are deterministic SHA-256-derived opaque IDs, and the fixed payload is IDs/outcomes-only. This writer is currently write-only; consumer cursors, delivery, catch-up, poison handling, and retention are FN-8685.

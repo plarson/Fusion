@@ -1676,8 +1676,8 @@ async function readGrokUserSettingsApiKey(): Promise<string | null> {
 }
 
 /*
-FNXC:UsageProviders 2026-07-11-19:45:
-The grok CLI (`grok login`) stores OIDC subscription credentials in `~/.grok/auth.json` as a map keyed by `<issuer>::<client_id>` whose entries carry a Bearer `key`. Its `/usage` command fetches subscription credit usage from `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` (verified live: returns `config.creditUsagePercent`, weekly `currentPeriod`/`billingPeriodEnd`, and per-product `productUsage`). This gives the Usage dropdown a real percent-used weekly window for Grok subscription users, unlike the xAI inference API key which only supports an auth-validity card.
+FNXC:UsageProviders 2026-08-01-11:04:
+FN-8688 disproved the assumption that Fusion's credits-format billing request is the installed Grok CLI's `/usage` source. A harness replay returned 200 without `config.creditUsagePercent`, while the available `@vibe-kit/grok-cli@0.0.34` and `grok-dev@1.1.7` source trees cannot be mapped to the installed `grok-0.2.118` binary or its slash-command handler. Keep field absence authenticated-but-unmeterable until source provenance and a harness-backed meter formula are confirmed; see `docs/solutions/integration-issues/grok-cli-usage-data-source.md`.
 */
 async function readGrokCliOidcToken(): Promise<string | null> {
   try {

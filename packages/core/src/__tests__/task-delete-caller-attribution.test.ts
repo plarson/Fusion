@@ -39,12 +39,22 @@ let pgRow: TaskRowShape | null = null;
 
 vi.mock("../task-store/async-persistence.js", () => ({
   readTaskRow: vi.fn(async () => pgRow),
-  softDeleteTaskRowInTransaction: vi.fn(async () => undefined),
+  readTaskRowInTransaction: vi.fn(async () => pgRow),
+  softDeleteTaskRowInTransaction: vi.fn(async () => true),
 }));
 vi.mock("../task-store/async-lifecycle.js", () => ({
   findLiveLineageChildren: vi.fn(async () => [] as string[]),
   projectPartition: vi.fn(() => undefined),
   removeLineageReferences: vi.fn(async () => undefined),
+}));
+/*
+FNXC:LifecycleOutbox 2026-08-01-11:02:
+This in-memory delete harness has no PostgreSQL transaction executor. Mock the
+transaction-scoped writer at its module boundary so attribution tests retain their
+narrow audit focus while production deletes always use the durable outbox writer.
+*/
+vi.mock("../task-store/lifecycle-outbox.js", () => ({
+  appendTaskLifecycleEventInTransaction: vi.fn(async () => ({ seq: "1", eventId: "test-event" })),
 }));
 vi.mock("../async-mission-store-queries.js", () => ({
   getFeatureByTaskId: vi.fn(async () => null),

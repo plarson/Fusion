@@ -3965,7 +3965,8 @@
     "verification": "Verificação:",
     "verificationCriteria": "Critérios de verificação",
     "viewMissionFailures": "Ver falhas da missão",
-    "whatToBuild": "O que você quer construir?"
+    "whatToBuild": "O que você quer construir?",
+    "autoMergeOverrideDescription": ""
   },
   "modalManager": {
     "createdFromPlanning": "{{id}} criado a partir do modo de planejamento",
@@ -5853,7 +5854,11 @@
       "gitRemoteThatMergedResultsArePushedTo": "Remoto do Git para onde os resultados do merge recebem push. Padrão: \"origin\".",
       "pushTargetBranch": "Branch de destino do push",
       "sameAsIntegrationBranchDefault": "(mesma da branch de integração — padrão)",
-      "pushTargetBranchHelp": "Branch no remoto para onde os resultados do merge recebem push. Deixe no padrão para enviar a branch de integração para a branch remota de mesmo nome; escolha uma branch remota listada ou selecione Personalizado… para digitar uma que ainda não existe no remoto (o push a cria)."
+      "pushTargetBranchHelp": "Branch no remoto para onde os resultados do merge recebem push. Deixe no padrão para enviar a branch de integração para a branch remota de mesmo nome; escolha uma branch remota listada ou selecione Personalizado… para digitar uma que ainda não existe no remoto (o push a cria).",
+      "requiredChecks": "",
+      "requiredChecksHelp": "",
+      "githubNativeAutoMerge": "",
+      "githubNativeAutoMergeHelp": ""
     },
     "conflictModalTitle": "Resolver conflitos de configurações",
     "closeModal": "Fechar modal de conflito",
@@ -5947,7 +5952,6 @@
       "updating": "Atualizando…",
       "upperBoundOnMessagesFetchedFromTheRoom": "Limite superior de mensagens buscadas do armazenamento da sala para consideração de compactação. Padrão: 200.",
       "upToDate": "Você está atualizado ✓",
-      "useEphemeralTaskWorkerAgents": " Usar agentes efêmeros para execução de tarefas ",
       "warnOnTheBoardWhenTodoWorkExceeds": "Avisar no quadro quando o trabalho a fazer exceder o limite e não houver agentes ociosos disponíveis. Padrão: desativado.",
       "whenEnabledDefaultFusionSpawnsShortLived": " Quando ativado (padrão), o Fusion cria agentes efêmeros de curta duração ",
       "whenEnabledFusionChecksOpenAndClosedIssues": " Quando ativado, o Fusion verifica issues abertas e fechadas no repositório de destino em busca de possíveis duplicatas (usando caminhos do File Scope e sintomas-chave) antes de criar uma nova issue de rastreamento. Desmarque para sempre criar uma nova issue. Padrão: ativado. ",
@@ -6005,7 +6009,9 @@
       "reportDiscussionCategorySelect": "Selecione uma categoria de discussão",
       "reportDiscussionCategoryUnavailable": "As categorias de discussão não estão disponíveis para o repositório configurado.",
       "reportDiscussionCategoryEmpty": "Nenhuma categoria de discussão está disponível para o repositório configurado.",
-      "reportTargetByActionHelp": "Substituição opcional por ação do destino padrão do relatório para bug, feedback, ideia ou ajuda. Sem padrão — ações não definidas herdam reportTarget / os padrões da ação."
+      "reportTargetByActionHelp": "Substituição opcional por ação do destino padrão do relatório para bug, feedback, ideia ou ajuda. Sem padrão — ações não definidas herdam reportTarget / os padrões da ação.",
+      "maxRecommendationsPerTask": "",
+      "maxRecommendationsPerTaskHelp": ""
     },
     "mobileNav": {
       "label": "Seção de configurações"
@@ -8085,7 +8091,8 @@
       "terminal": "Sessão",
       "worktreeTerminal": "Terminal",
       "workflow": "Fluxo de trabalho",
-      "cost": "Custo"
+      "cost": "Custo",
+      "recommendations": ""
     },
     "terminal": {
       "loading": "Carregando terminal…"
@@ -8132,6 +8139,15 @@
       "totalCostLabel": "Total",
       "totalTokens": "Total de tokens",
       "unknownModel": "(desconhecido)"
+    },
+    "recommendations": {
+      "title": "",
+      "empty": "",
+      "created": "",
+      "creating": "",
+      "retry": "",
+      "create": "",
+      "error": ""
     }
   },
   "taskDocuments": {

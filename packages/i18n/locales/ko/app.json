@@ -6351,7 +6351,11 @@
       "gitRemoteThatMergedResultsArePushedTo": "",
       "pushTargetBranch": "",
       "sameAsIntegrationBranchDefault": "",
-      "pushTargetBranchHelp": ""
+      "pushTargetBranchHelp": "",
+      "requiredChecks": "",
+      "requiredChecksHelp": "",
+      "githubNativeAutoMerge": "",
+      "githubNativeAutoMergeHelp": ""
     },
     "mergeManually": "수동으로 병합",
     "mobileNav": {

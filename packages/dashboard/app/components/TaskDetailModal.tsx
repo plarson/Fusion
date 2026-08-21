@@ -25,6 +25,7 @@ import {
 } from "@fusion/core";
 import { resolveEffectivePlannerOversightLevel } from "../../../core/src/workflows/workflow-settings-resolver";
 import { resolveTaskSessionAdvisorEnabled } from "../../../core/src/agents/session-advisor";
+import { classifyDependencyStatuses, formatDependencyStatusLabel } from "@fusion/core/dependency-status";
 import { isNearDuplicateCanonicalInactive } from "../../../core/src/duplicates/near-duplicate-canonical";
 import { getRevertOfId, findOpenUndoTaskForSource, isTaskReverted } from "../utils/taskRevert";
 import {
@@ -4081,6 +4082,10 @@ export function TaskDetailContent({
     }
   }, [exitSpecEditMode, handleSaveSpecFromEdit]);
 
+  const dependencyStatuses = useMemo(() => (
+    classifyDependencyStatuses(dependencies, tasks).statuses
+  ), [dependencies, tasks]);
+
   const availableTasks = tasks
     .filter((t) => t.id !== task.id && !dependencies.includes(t.id))
     .sort((a, b) => {
@@ -6935,10 +6940,12 @@ export function TaskDetailContent({
             <h4>{t("taskDetail.deps.heading", "Dependencies")}</h4>
             {dependencies.length > 0 ? (
               <ul className="detail-dep-list">
-                {dependencies.map((dep) => {
+                {dependencyStatuses.map((depStatus) => {
                   // Look up dependency metadata from tasks prop
+                  const dep = depStatus.id;
                   const depTask = tasks.find((t) => t.id === dep);
                   const depLabel = depTask?.title || depTask?.description || dep;
+                  const depStatusLabel = formatDependencyStatusLabel(depStatus);
 
                   return (
                     <li key={dep} className="detail-dep-item">
@@ -6957,6 +6964,9 @@ export function TaskDetailContent({
                       >
                         <span className="detail-dep-id">{dep}</span>
                         <span className="detail-dep-label">{truncate(depLabel, 40)}</span>
+                        {depStatus.kind !== "active" && (
+                          <span className="detail-dep-status">{depStatusLabel.replace(dep, "").trim()}</span>
+                        )}
                       </span>
                       <button
                         className="dep-remove-btn"

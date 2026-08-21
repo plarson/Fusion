@@ -80,6 +80,38 @@ describe("executor dependency dispatch gate", () => {
       undefined,
     );
   });
+
+  it("blocks executor dispatch only on live unmet dependencies for mixed archived history", async () => {
+    const dependent = task({
+      id: "FN-823",
+      column: "in-progress",
+      dependencies: ["FN-801", "FN-803", "FN-819", "FN-807", "FN-807"],
+    });
+    const { store } = createStore([
+      dependent,
+      task({ id: "FN-801", column: "done" }),
+      task({ id: "FN-803", column: "todo" }),
+      task({ id: "FN-819", column: "archived" }),
+      task({ id: "FN-807", column: "in-progress" }),
+    ]);
+    const workflowAuthoritativeDispatch = vi.fn().mockResolvedValue(true);
+    const executor = new TaskExecutor(store, "/tmp/test-project", { workflowAuthoritativeDispatch });
+    const graphDispatch = vi.spyOn(executor as any, "executeWorkflowGraph").mockResolvedValue(undefined);
+
+    await executor.execute(dependent);
+
+    expect(graphDispatch).not.toHaveBeenCalled();
+    expect(workflowAuthoritativeDispatch).not.toHaveBeenCalled();
+    expect(store.updateTask).toHaveBeenCalledWith("FN-823", { status: "queued", blockedBy: "FN-803" }, undefined);
+    expect(store.logEntry).toHaveBeenCalledWith(
+      "FN-823",
+      "queued — unmet dependencies: FN-803, FN-807",
+      expect.stringContaining("blocked workflow/authoritative execution"),
+      undefined,
+    );
+    expect(store.updateTask).not.toHaveBeenCalledWith("FN-823", expect.objectContaining({ blockedBy: "FN-801" }), expect.anything());
+    expect(store.updateTask).not.toHaveBeenCalledWith("FN-823", expect.objectContaining({ blockedBy: "FN-819" }), expect.anything());
+  });
 });
 
 describe("in-review unmet dependency reconciliation", () => {
@@ -119,6 +151,28 @@ describe("in-review unmet dependency reconciliation", () => {
 
     await expect(manager.reconcileInReviewUnmetDependencies()).resolves.toBe(1);
     expect(tasks.get("FN-R")).toMatchObject({ status: "queued", blockedBy: "FN-D" });
+    manager.stop();
+  });
+
+  it("rebounds in-review tasks only on live unmet dependencies for mixed archived history", async () => {
+    const { store, tasks } = createStore([
+      task({ id: "FN-823", column: "in-review", dependencies: ["FN-801", "FN-803", "FN-819", "FN-807", "FN-807"] }),
+      task({ id: "FN-801", column: "done" }),
+      task({ id: "FN-803", column: "todo" }),
+      task({ id: "FN-819", column: "archived" }),
+      task({ id: "FN-807", column: "in-progress" }),
+    ]);
+    const manager = new SelfHealingManager(store, { rootDir: "/tmp/test-project" });
+
+    await expect(manager.reconcileInReviewUnmetDependencies()).resolves.toBe(1);
+
+    expect(tasks.get("FN-823")).toMatchObject({ column: "todo", status: "queued", blockedBy: "FN-803" });
+    expect(store.recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: "task:reconcile-in-review-unmet-dependencies",
+      target: "FN-823",
+      metadata: expect.objectContaining({ unmetDeps: ["FN-803", "FN-807"] }),
+    }));
+    expect(store.logEntry).toHaveBeenCalledWith("FN-823", "Auto-rebounded (FN-6793): in-review task had unmet dependencies: FN-803, FN-807");
     manager.stop();
   });
 

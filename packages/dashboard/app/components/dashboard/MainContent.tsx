@@ -455,6 +455,7 @@ export function MainContent({
                     return isNearDuplicateCanonicalInactive(canonical, canonical ? columnFlagsByTaskId?.get(canonical.id) : undefined);
                   })()
                   : undefined}
+                dependencyTasks={pluginContextTasks}
               />
             ),
             addToast,

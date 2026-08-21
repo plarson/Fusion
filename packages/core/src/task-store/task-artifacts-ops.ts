@@ -698,12 +698,12 @@ export async function updateTaskCommentImpl(store: TaskStore, id: string, commen
       const layer = store.asyncLayer!;
       const state = await getLiveTaskColumn(layer.db, id, layer.projectId, await resolveArchivedLanes(store));
       /*
-      FNXC:LifecycleColumnCensus 2026-07-30-21:10 DELIBERATE-LITERAL: a SENTINEL, not a board lane.
-      
+      FNXC:LifecycleColumnCensus 2026-07-30-03:10 DELIBERATE-LITERAL: a SENTINEL, not a board lane.
+
       This compares `getLiveTaskColumn`'s RETURN VALUE. That helper normalizes: it manufactures the string
       "archived" for an archived row AND for a soft-deleted one, and returns null for a missing task —
       which is why the neighbouring line tests null separately. It is a protocol value, not a column id.
-      
+
       STILL TRUE NOW THAT THE HELPER RESOLVES LANES. `getLiveTaskColumn` now takes the board's archived
       lanes, which was the one genuinely-owed conversion this family pointed at (#2820). That changes which
       rows it CLASSIFIES as archived; it does not change the SENTINEL it returns, which still collapses
@@ -745,12 +745,12 @@ export async function deleteTaskCommentImpl(store: TaskStore, id: string, commen
       const layer = store.asyncLayer!;
       const state = await getLiveTaskColumn(layer.db, id, layer.projectId, await resolveArchivedLanes(store));
       /*
-      FNXC:LifecycleColumnCensus 2026-07-30-21:10 DELIBERATE-LITERAL: a SENTINEL, not a board lane.
-      
+      FNXC:LifecycleColumnCensus 2026-07-30-03:10 DELIBERATE-LITERAL: a SENTINEL, not a board lane.
+
       This compares `getLiveTaskColumn`'s RETURN VALUE. That helper normalizes: it manufactures the string
       "archived" for an archived row AND for a soft-deleted one, and returns null for a missing task —
       which is why the neighbouring line tests null separately. It is a protocol value, not a column id.
-      
+
       STILL TRUE NOW THAT THE HELPER RESOLVES LANES. `getLiveTaskColumn` now takes the board's archived
       lanes, which was the one genuinely-owed conversion this family pointed at (#2820). That changes which
       rows it CLASSIFIES as archived; it does not change the SENTINEL it returns, which still collapses

@@ -12,6 +12,7 @@ const fusionAliases = {
   browser-safe delete-attribution leaf.
   */
   "@fusion/core/column-roles": resolve(__dirname, "../core/src/column-roles.ts"),
+  "@fusion/core/dependency-status": resolve(__dirname, "../core/src/dependency-status.ts"),
   "@fusion/core/task-delete-attribution": resolve(__dirname, "../core/src/task-delete-attribution.ts"),
   /*
   FNXC:VitestAliases 2026-08-15-15:08:

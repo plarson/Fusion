@@ -29,6 +29,11 @@
       "source": "./src/task-delete-attribution.ts",
       "import": "./dist/task-delete-attribution.js"
     },
+    "./dependency-status": {
+      "types": "./src/dependency-status.ts",
+      "source": "./src/dependency-status.ts",
+      "import": "./dist/dependency-status.js"
+    },
     "./column-roles": {
       "types": "./src/column-roles.ts",
       "source": "./src/column-roles.ts",

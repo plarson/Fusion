@@ -1,7 +1,12 @@
 import * as fusionCore from "@fusion/core";
-import { MAX_TASK_LIST_TEXT_CHARS, type TaskStore } from "@fusion/core";
+import {
+  MAX_TASK_LIST_TEXT_CHARS,
+  classifyDependencyStatuses,
+  formatDependencySummary,
+  type TaskStore,
+  type WorkflowIr,
+} from "@fusion/core";
 import { completeColumnsForTask } from "./task-lifecycle-lanes.js";
-import type { WorkflowIr } from "@fusion/core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 type TaskListClamp = (lines: string[], opts?: { maxChars?: number }) => string;
@@ -34,6 +39,22 @@ export function resolveTaskListFormatter(core: { formatTaskListText?: unknown })
   return typeof core.formatTaskListText === "function"
     ? (core.formatTaskListText as TaskListFormatter)
     : inlineTaskListFallback;
+}
+
+
+async function resolveDependencySummary(store: TaskStore, dependencyIds: readonly string[]): Promise<string> {
+  if (dependencyIds.length === 0) return "";
+  const dependencyTasks = await Promise.all(dependencyIds.map(async (id) => {
+    try {
+      return await store.getTask(id);
+    } catch {
+      return undefined;
+    }
+  }));
+  return formatDependencySummary(classifyDependencyStatuses(
+    dependencyIds,
+    dependencyTasks.flatMap((task) => task ? [{ id: task.id, column: task.column }] : []),
+  ));
 }
 
 export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
@@ -76,11 +97,12 @@ export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
           details: {},
         };
       }
-      const lines = active.map((t) => {
+      const lines = await Promise.all(active.map(async (t) => {
         const desc = t.title || t.description.slice(0, 80);
-        const deps = t.dependencies.length ? ` [deps: ${t.dependencies.join(", ")}]` : "";
+        const dependencySummary = await resolveDependencySummary(store, t.dependencies);
+        const deps = dependencySummary ? ` [${dependencySummary}]` : "";
         return `${t.id} (${t.column}): ${desc}${deps}`;
-      });
+      }));
       /*
       FNXC:TaskListOutput 2026-06-16-17:47:
       FN-6492 keeps dashboard planning-board duplicate checks within the shared plain-text budget so large boards stay readable to non-vision agents.
@@ -117,7 +139,7 @@ export function createPlanningBoardTools(store: TaskStore): ToolDefinition[] {
           `ID: ${task.id}`,
           `Column: ${task.column}`,
           `Description: ${task.description}`,
-          task.dependencies.length ? `Dependencies: ${task.dependencies.join(", ")}` : null,
+          task.dependencies.length ? `Dependencies: ${await resolveDependencySummary(store, task.dependencies)}` : null,
           "",
           "PROMPT.md:",
           task.prompt || "(not yet specified)",

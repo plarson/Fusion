@@ -1,6 +1,7 @@
 import {
   getCurrentRepo,
   computeBlockerFanoutMap,
+  isDependencySchedulingSatisfied,
   compareTasksByPriorityThenAgeAndId,
   HIGH_FANOUT_BLOCKER_TODO_THRESHOLD,
   nonExecutableDuplicateRedirectReason,
@@ -249,8 +250,8 @@ archived" for `update-task-deps.ts`, which matches the MARKER rule, so the live 
 the broader of the two. Narrowing it silently would strand every dependent of an in-review card.
 
 `columns` is resolved per dependency and passed in by the caller. Omitted (or absent for a given
-dependency) → the legacy literals, i.e. exactly today's behaviour, so no unconverted call site
-changes meaning and an unresolvable workflow fails soft rather than reading as unsatisfied forever.
+dependency) → the aggregate's legacy dependency-status classifier, so unconverted callers retain
+its reviewed compatibility semantics while workflow-aware callers use per-task role authority.
 */
 export interface DependencySatisfactionColumns {
   /** COMPLETE ∪ ARCHIVED for the dependency's own workflow. */
@@ -271,12 +272,15 @@ function isTerminalDependencyColumn(dep: Task, columns: DependencySatisfactionCo
   return dep.column === "done" || dep.column === "archived";
 }
 
-/* DELIBERATE-LITERAL — same no-metadata fallback as above, reviewed 2026-07-30-20:40. */
+/*
+The aggregate's dependency-status helper is the legacy fallback for callers without per-task workflow metadata.
+Workflow-aware callers take the branches above, so their own terminal/review roles remain authoritative.
+*/
 function isLegacyDependencySatisfied(dep: Task | undefined, columns?: DependencySatisfactionColumns): boolean {
   if (!dep) return false;
   if (isTerminalDependencyColumn(dep, columns)) return true;
   if (columns) return columns.review.has(dep.column);
-  return dep.column === "in-review";
+  return isDependencySchedulingSatisfied(dep);
 }
 
 function isMarkerDependencySatisfied(
@@ -359,9 +363,14 @@ export function getUnmetSchedulingDependencies(
     satisfactionColumnsByTaskId?: Map<string, DependencySatisfactionColumns>;
   },
 ): string[] {
-  return task.dependencies.filter((depId) => {
+  const unmet: string[] = [];
+  const seen = new Set<string>();
+  for (const rawDepId of task.dependencies) {
+    const depId = rawDepId.trim();
+    if (!depId || seen.has(depId)) continue;
+    seen.add(depId);
     const dep = tasks.find((candidate) => candidate.id === depId);
-    if (!dep) return false;
+    if (!dep) continue;
     const satisfactionColumns = options?.satisfactionColumnsByTaskId?.get(depId);
     const legacySatisfied = isLegacyDependencySatisfied(dep, satisfactionColumns);
     const markerSatisfied = isMarkerDependencySatisfied(
@@ -377,8 +386,9 @@ export function getUnmetSchedulingDependencies(
         markerSatisfied,
       });
     }
-    return !legacySatisfied;
-  });
+    if (!legacySatisfied) unmet.push(depId);
+  }
+  return unmet;
 }
 
 

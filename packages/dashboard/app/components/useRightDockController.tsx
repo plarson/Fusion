@@ -196,6 +196,7 @@ export function useRightDockController(input: RightDockControllerInput): RightDo
           return isNearDuplicateCanonicalInactive(canonical, canonical ? input.columnFlagsByTaskId?.get(canonical.id) : undefined);
         })()
         : undefined}
+      dependencyTasks={input.tasks}
     />
   ), [input]);
 

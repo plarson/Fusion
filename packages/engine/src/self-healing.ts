@@ -5428,12 +5428,13 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
           the literal fallback below then answers, so a dependency whose workflow cannot be read does not
           silently read as never-satisfied and block its dependent forever.
           */
-          const depRows = dependent.dependencies
+          const dependencyIds = [...new Set(dependent.dependencies)];
+          const depRows = dependencyIds
             .map((depId) => taskById.get(depId))
             .filter((dep): dep is Task => Boolean(dep));
           const depSatisfaction = await resolveDependencySatisfactionColumns(this.store, depRows, depSatisfactionIrCache);
           const unresolvedDeps: string[] = [];
-          for (const depId of dependent.dependencies) {
+          for (const depId of dependencyIds) {
             const dep = taskById.get(depId);
             if (!dep) continue;
             const columns = depSatisfaction.get(depId);
@@ -6526,7 +6527,7 @@ export class SelfHealingManager extends SelfHealingGitEvidence {
       for (const task of candidates.values()) {
         const blockerId = task.blockedBy;
 
-        const unresolvedDeps = task.dependencies.filter((depId) => {
+        const unresolvedDeps = [...new Set(task.dependencies)].filter((depId) => {
           const dep = taskById.get(depId);
           // listTasks excludes soft-deleted rows, so missing dependency IDs are
           // treated as resolved here by design.

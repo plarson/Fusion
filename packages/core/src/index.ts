@@ -179,6 +179,7 @@ export type {
 } from "./agents/assigned-task-ranking.js";
 export { MOCK_PROVIDER_ID } from "./ai/mock-provider-constants.js";
 export type { MockProviderId, MockSessionPurpose } from "./ai/mock-provider-constants.js";
+export * from "./dependency-status.js";
 export {
   ZAI_PROVIDER_ID,
   ZAI_PROVIDER_REGISTRATION,

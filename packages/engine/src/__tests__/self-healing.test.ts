@@ -3781,7 +3781,6 @@ describe("SelfHealingManager", () => {
         error: null,
         worktreeSessionRetryCount: 1,
         worktree: liveWorktree,
-        branch: "fusion/fn-3900",
         sessionFile: null,
       });
       /*
@@ -3900,7 +3899,9 @@ describe("SelfHealingManager", () => {
           error: null,
           worktreeSessionRetryCount: 1,
           worktree: null,
-          branch: expectedBranch,
+          ...(expectedBranch === branch
+            ? {}
+            : { branch: expectedBranch, branchWriteOrigin: "engine" }),
           sessionFile: null,
         });
         managerWithRecovery.stop();
@@ -4021,6 +4022,7 @@ describe("SelfHealingManager", () => {
         worktreeSessionRetryCount: 1,
         worktree: null,
         branch: null,
+        branchWriteOrigin: "engine",
         sessionFile: null,
       });
       expect(store.logEntry).toHaveBeenCalledWith(
@@ -4229,9 +4231,11 @@ describe("SelfHealingManager", () => {
       expect(result).toBe(1);
       expect(store.updateTask).toHaveBeenCalledWith("FN-7802-WORKSPACE", expect.objectContaining({
         worktree: null,
-        branch: null,
         sessionFile: null,
       }));
+      const workspacePatch = (store.updateTask as ReturnType<typeof vi.fn>).mock.calls
+        .find(([taskId]) => taskId === "FN-7802-WORKSPACE")?.[1];
+      expect(workspacePatch).not.toHaveProperty("branch");
       expect(store.moveTask).toHaveBeenCalledWith("FN-7802-WORKSPACE", "todo", { preserveProgress: true, moveSource: "engine", recoveryRehome: true });
       expect(store.recordRunAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
         mutationType: "task:reconcile-missing-worktree-merge-active",

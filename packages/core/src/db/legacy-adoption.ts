@@ -214,6 +214,14 @@ export interface LegacyAdoptionCandidate {
   legacyAdoptedAt?: string | null;
 }
 
+/*
+FNXC:LegacyAdoption 2026-08-22-18:51:
+DELIBERATE-LITERAL — legacy adoption is a pure, storage-agnostic planner for
+pre-cutover rows and cannot resolve a task's workflow IR. These are the physical
+legacy default-lane ids whose rows may already have crossed the pre-merge gate;
+using workflow-derived lanes here would require changing the adoption contract
+and both of its startup consumers.
+*/
 function isAtOrPastReviewLane(column: string | null | undefined): boolean {
   return column === "in-review" || column === "done" || column === "archived";
 }

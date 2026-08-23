@@ -66,7 +66,18 @@ capacity-model table drop that landed while this PR was open.
 /* FNXC:TaskRecommendations 2026-08-13-22:23: upgrades must install the source-agent index before duplicate intake queries it. */
 /* FNXC:WorkspaceLease 2026-08-15-12:00: the baseline ceiling must include durable coordination tables so an upgraded database is never rejected by the current binary. */
 /* FNXC:ActivityLogTaskSearch 2026-08-20-04:17: advance the schema ceiling so durable central task-ID lookups receive their indexed upgrade. */
-export const SCHEMA_BASELINE_VERSION = "0064";
+/*
+FNXC:ReviewConvergence 2026-08-22-18:58:
+Advance the ceiling to 0065 for FN-149's review-convergence columns. FN-149 registered
+REVIEW_CONVERGENCE_STAGE_VERSION and wired the migration but left this marker at 0064, which is a
+SELF-REJECTION rather than a compatibility guard: the first open applies 0065 and records it in
+fusion_schema_migrations, then the NEXT open (the project store, in the same boot) hits
+assertBinaryNotOlderThanDatabase, sees 0065 > 0064, and throws StaleBinarySchemaError. Every
+startup died with "this binary only knows up to 0064" on fresh and upgraded databases alike. This
+marker is ONLY the binary's "highest migration I know" claim — bumping it applies no SQL and
+touches no data; it must advance in the same change that ships a new migration file.
+*/
+export const SCHEMA_BASELINE_VERSION = "0065";
 /** FNXC:SymbolLock 2026-07-20-10:00: upgrades need durable task declarations before admission resolves symbols. */
 export const TASK_DECLARED_SYMBOLS_VERSION = "0028";
 const INITIAL_SCHEMA_VERSION = "0000";
@@ -233,6 +244,8 @@ export const REMOVE_TASK_SUBTASK_SPLITTING_VERSION = "0062";
 export const AI_MERGE_REVIEW_RECONCILIATION_VERSION = "0063";
 /** FNXC:RepositoryScope 2026-08-20-23:07: upgraded projects need explicit task repository intent before workspace lifecycle readers use it. */
 export const TASK_REPOSITORY_SCOPE_VERSION = "0064";
+/** FNXC:ReviewConvergence 2026-08-22-05:42: explicit migration registration preserves bounded review recovery state on upgraded projects. */
+export const REVIEW_CONVERGENCE_STAGE_VERSION = "0065";
 
 /** SECURITY DEFINER helper that only inserts LEGACY_ADOPTION_DRAINED_MARKER. */
 export const LEGACY_ADOPTION_DRAINED_MARKER_FUNCTION = "fusion_mark_legacy_adoption_drained";
@@ -471,6 +484,7 @@ const ACTIVITY_LOG_TASK_ID_INDEX_MIGRATION_PATH = join(MIGRATIONS_DIR, "0061_fn_
 const REMOVE_TASK_SUBTASK_SPLITTING_MIGRATION_PATH = join(MIGRATIONS_DIR, "0062_remove_task_subtask_splitting.sql");
 const AI_MERGE_REVIEW_RECONCILIATION_MIGRATION_PATH = join(MIGRATIONS_DIR, "0063_fn_090_ai_merge_review_reconciliation.sql");
 const TASK_REPOSITORY_SCOPE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0064_fn_094_task_repository_scope.sql");
+const REVIEW_CONVERGENCE_STAGE_MIGRATION_PATH = join(MIGRATIONS_DIR, "0065_fn_149_review_convergence_stage.sql");
 
 /**
  * Ensure the migration bookkeeping table exists. Lives in the public schema so
@@ -605,6 +619,7 @@ export async function applySchemaBaseline(
     const removeTaskSubtaskSplittingAlreadyApplied = applied.includes(REMOVE_TASK_SUBTASK_SPLITTING_VERSION);
     const aiMergeReviewReconciliationAlreadyApplied = applied.includes(AI_MERGE_REVIEW_RECONCILIATION_VERSION);
     const taskRepositoryScopeAlreadyApplied = applied.includes(TASK_REPOSITORY_SCOPE_VERSION);
+    const reviewConvergenceStageAlreadyApplied = applied.includes(REVIEW_CONVERGENCE_STAGE_VERSION);
     assertBinaryNotOlderThanDatabase(applied);
     let schemaChanged = false;
 
@@ -1348,6 +1363,12 @@ export async function applySchemaBaseline(
       const migrationSql = await readFile(TASK_REPOSITORY_SCOPE_MIGRATION_PATH, "utf8");
       await tx.execute(sql.raw(migrationSql));
       await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${TASK_REPOSITORY_SCOPE_VERSION}) ON CONFLICT (version) DO NOTHING`);
+      schemaChanged = true;
+    }
+    if (!reviewConvergenceStageAlreadyApplied) {
+      const migrationSql = await readFile(REVIEW_CONVERGENCE_STAGE_MIGRATION_PATH, "utf8");
+      await tx.execute(sql.raw(migrationSql));
+      await tx.execute(sql`INSERT INTO public.${sql.identifier(MIGRATION_BOOKKEEPING_TABLE)} (version) VALUES (${REVIEW_CONVERGENCE_STAGE_VERSION}) ON CONFLICT (version) DO NOTHING`);
       schemaChanged = true;
     }
     return { applied: schemaChanged, pluginHooksRun: pluginHooks.length };

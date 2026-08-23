@@ -295,7 +295,7 @@ export function buildRunImplementationDeps(
       "emitWorktreeReanchoredAudit", "buildInjectedRuntimeEnv", "reconcileStepsFromGitHistory",
       "setActiveStepExecutor", "captureWorkspaceModifiedFiles", "runExecutorDeterministicVerification",
       "attemptExecutorVerificationFix", "deleteActiveStepExecutor", "createTaskUpdateTool",
-      "createTaskAddDepTool", "createTaskDoneTool", "createSpawnAgentTool",
+      "createTaskAddDepTool", "createTaskDoneTool", "createReviewDisputeTool", "createSpawnAgentTool",
       "resolveInstructionsForRole", "finalizeAlreadyReviewedTask",
       "handleBranchConflict", "handleNonContinuableSessionRetry", "resumeApprovalAfterUnwindIfNeeded",
     ]),
@@ -1155,7 +1155,10 @@ export function buildEnsureTaskWorktreeForPlanningDeps(host: any): any {
 
 export function buildPrepareGraphNodeExecutionDeps(host: any): any {
   return {
-    ...facadeFields(host, ["store"]),
+    ...facadeFields(host, ["rootDir", "store"]),
+    workspaceConfigOwner: host,
+    getWorkspaceConfig: () => host.workspaceConfig,
+    setWorkspaceConfig: (cfg: unknown) => { host.workspaceConfig = cfg; },
     ...facadeMethods(host, ["getRunContextFor", "ensureGraphCustomNodeWorktree"]),
   };
 }

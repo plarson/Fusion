@@ -295,6 +295,7 @@ export {
   isWorkflowOptionalGroupEnabled,
 } from "./workflows/workflow-optional-steps.js";
 export type { ResolvedWorkflowOptionalStep } from "./workflows/workflow-optional-steps.js";
+export { resolveRequiredPreMergeStepIds } from "./merge/required-pre-merge-steps.js";
 export {
   applyPromptOverridesToIr,
   enumeratePromptBearingWorkflowNodes,
@@ -643,7 +644,9 @@ export {
   disposeTaskBeforeMove,
   disposeTaskBeforeReset,
   getTaskMoveDisposer,
+  getTaskResetDisposer,
   registerTaskMoveDisposer,
+  registerTaskResetDisposer,
   type TaskMoveDisposer,
   type TaskResetDisposer,
   type TaskMoveDisposalInput,
@@ -1150,6 +1153,8 @@ export {
   resolveConsecutiveToolFailureRetryBackoffMs,
   resolveConsecutiveToolFailureThreshold,
   resolveExecutorEscalationTarget,
+  resolveReviewConvergenceEscalationTarget,
+  resolveReviewArbitrationTarget,
 } from "./tasks/in-review-stall.js";
 export type { ExecutorEscalationTarget, InReviewStallSignal, InReviewStallCode, ProviderErrorClassification } from "./tasks/in-review-stall.js";
 export {
@@ -2365,6 +2370,9 @@ export {
   workspaceWorktreeGroupSegment,
   workspaceRepoSegment,
   resolveWorktreesDirLayout,
+  resolveWorkspaceTaskWorktreeDir,
+  resolveWorkspaceRepoWorktreePath,
+  isLegacyWorkspaceWorktreeLayout,
 } from "./tasks/worktree-layout.js";
 export type { WorkspaceWorktreeContext } from "./tasks/worktree-layout.js";
 /*
@@ -2379,6 +2387,12 @@ export {
   isOpenWorkflowReviewFinding,
   normalizeSupersededFindingIds,
   applySupersededFindingIds,
+  applySupersededPriorAttemptFindingIds,
+  archiveTerminalWorkflowStepFailures,
+  archiveArbitratedWorkflowStepFailure,
+  isArchivedRemediationCarrier,
+  collectDisputedFindings,
+  closeUnrebuttedDisputedFindings,
   MAX_WORKFLOW_REVIEW_FINDINGS,
   WORKFLOW_REVIEW_FINDING_SEVERITIES,
   WORKFLOW_REVIEW_FINDING_RESOLUTIONS,
@@ -2388,6 +2402,7 @@ export {
   makeReviewLeaseRecord,
   isTerminalStepResult,
   type ReviewLeaseDisposition,
+  type ArbitrationFailureFence,
 } from "./workflows/workflow-step-results.js";
 export { PLAN_REVIEW_COMPLETENESS_POLICY } from "./agents/planning-review-policy.js";
 /*

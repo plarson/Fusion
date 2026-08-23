@@ -118,7 +118,7 @@ In an active visible Chat list, <kbd>Ctrl+F</kbd> or <kbd>Cmd+F</kbd> focuses th
 
 ### Direct conversation switcher
 
-When a Direct conversation is open, click its thread title or activate it with the keyboard to open the conversation switcher. Pick a listed conversation to switch in place, or choose **All conversations** to return to the full list. The menu shows pinned conversations first and then recent conversations, with up to 12 entries; the current conversation is marked. Room titles remain plain text and do not open this switcher.
+When a Direct conversation is open, click its thread title or activate it with the keyboard to open the conversation switcher. The menu opens below the thread header in full, mobile, floating, and compact docked Chat surfaces. Pick a listed conversation to switch in place, or choose **All conversations** to return to the full list. The menu shows pinned conversations first and then recent conversations, with up to 12 entries; the current conversation is marked. Room titles remain plain text and do not open this switcher.
 
 <!-- FNXC:ModalGeometryPersistenceDocs 2026-07-16-00:40: Full-screen mobile FloatingWindow sheets must preserve, rather than overwrite, the movable desktop geometry record so a later desktop reopen restores the user's chosen location and size. -->
 <!-- FNXC:GitHubImport 2026-08-02-02:51: FN-8722 confirms that standalone GitHub Import also uses the canonical width-or-height sheet contract, so the operator guide must not describe short-sheet preservation as Artifact Gallery-only. -->
@@ -754,7 +754,7 @@ The full **New Task** dialog includes a compact **GitHub issue or PR** picker ne
 
 ## Chat View
 
-Chat view provides project-scoped conversations with agents. Every host—embedded Chat, Quick Chat, and the dock—starts at the conversation list. Select a conversation to open its thread.
+Chat view provides project-scoped conversations with agents. Every host—embedded Chat, Quick Chat, and the dock—starts at the conversation list. Select a conversation to open its thread. When the software keyboard is open, the composer remains visible on phones in portrait and landscape, tablets/iPad, compact right-dock Chat, and narrow floating Quick Chat; desktop Chat is unaffected.
 
 ### Docked conversation sidebar
 

@@ -28,6 +28,7 @@ Tier multi-repo real-git landWorkspaceTask suite into engine-slow (FN-5048). ~12
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Task, TaskStore } from "@fusion/core";
@@ -104,45 +105,41 @@ function createStore(task: Task, settings: Record<string, unknown> = {}): TaskSt
 }
 
 /** Add a real `fusion/<id>` branch to a sub-repo with one own non-conflicting commit. */
-function addRepoBranchWithEdit(fx: WorkspaceFixture, repoRel: string, content: string): void {
-  const repoDir = fx.repoPath(repoRel);
-  const worktreePath = path.join(repoDir, ".wt-branch");
-  fx.git(repoRel, `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
-  configureIdentity(worktreePath);
-  writeFileSync(path.join(worktreePath, "feature.txt"), content, "utf-8");
-  execSync("git add feature.txt", { cwd: worktreePath, stdio: "pipe" });
-  execSync(`git commit -m "feat(${TASK_ID}): add feature in ${repoRel}"`, { cwd: worktreePath, stdio: "pipe" });
-  fx.git(repoRel, `git worktree remove --force ${worktreePath}`);
+function addRepoBranchWithEdit(fx: WorkspaceFixture, repoRel: string, content: string) {
+  const linked = fx.createLinkedTaskWorktree(repoRel, BRANCH);
+  configureIdentity(linked.worktreePath);
+  writeFileSync(path.join(linked.worktreePath, "feature.txt"), content, "utf-8");
+  execSync("git add feature.txt", { cwd: linked.worktreePath, stdio: "pipe" });
+  execSync(`git commit -m "feat(${TASK_ID}): add feature in ${repoRel}"`, { cwd: linked.worktreePath, stdio: "pipe" });
+  return { ...linked, branch: BRANCH };
 }
 
 /** Make a sub-repo's integration tip + task branch BOTH edit README → squash conflicts. */
-function makeConflictingRepo(fx: WorkspaceFixture, repoRel: string): void {
+function makeConflictingRepo(fx: WorkspaceFixture, repoRel: string) {
   const repoDir = fx.repoPath(repoRel);
-  const worktreePath = path.join(repoDir, ".wt-conflict");
-  fx.git(repoRel, `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
-  configureIdentity(worktreePath);
-  writeFileSync(path.join(worktreePath, "README.md"), "# branch-side change\n", "utf-8");
-  execSync("git add README.md", { cwd: worktreePath, stdio: "pipe" });
-  execSync(`git commit -m "feat(${TASK_ID}): branch README"`, { cwd: worktreePath, stdio: "pipe" });
-  fx.git(repoRel, `git worktree remove --force ${worktreePath}`);
+  const linked = fx.createLinkedTaskWorktree(repoRel, BRANCH);
+  configureIdentity(linked.worktreePath);
+  writeFileSync(path.join(linked.worktreePath, "README.md"), "# branch-side change\n", "utf-8");
+  execSync("git add README.md", { cwd: linked.worktreePath, stdio: "pipe" });
+  execSync(`git commit -m "feat(${TASK_ID}): branch README"`, { cwd: linked.worktreePath, stdio: "pipe" });
   writeFileSync(path.join(repoDir, "README.md"), "# main-side change\n", "utf-8");
   fx.git(repoRel, "git add README.md");
   fx.git(repoRel, 'git commit -m "main diverge README"');
+  return { ...linked, branch: BRANCH };
 }
 
 /** Resolve repo-b's conflict by replacing the conflicting README content (no markers). */
-function resolveConflictInRepo(fx: WorkspaceFixture, repoRel: string): void {
-  // Re-point the task branch so the squash no longer conflicts: drop the branch's
-  // README edit and add a clean feature file instead.
-  const repoDir = fx.repoPath(repoRel);
-  fx.git(repoRel, `git branch -D ${BRANCH}`);
-  const worktreePath = path.join(repoDir, ".wt-resolved");
-  fx.git(repoRel, `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
+function resolveConflictInRepo(fx: WorkspaceFixture, task: Task, repoRel: string): void {
+  // Re-point the live task worktree to current main so the replacement branch has a fresh acquisition baseline.
+  const entry = task.workspaceWorktrees![repoRel];
+  const worktreePath = entry.worktreePath;
+  const baseCommitSha = fx.git(repoRel, "git rev-parse main");
+  execSync(`git reset --hard ${baseCommitSha}`, { cwd: worktreePath, stdio: "pipe" });
   configureIdentity(worktreePath);
   writeFileSync(path.join(worktreePath, "feature.txt"), "resolved feature\n", "utf-8");
   execSync("git add feature.txt", { cwd: worktreePath, stdio: "pipe" });
   execSync(`git commit -m "feat(${TASK_ID}): resolved"`, { cwd: worktreePath, stdio: "pipe" });
-  fx.git(repoRel, `git worktree remove --force ${worktreePath}`);
+  entry.baseCommitSha = baseCommitSha;
 }
 
 /** A merge agent that performs the real squash in the clean room (no AI). */
@@ -166,8 +163,24 @@ function squashMergeAgent(branch: string) {
 
 const approveReviewAgent = async (): Promise<string> => "REVIEW_VERDICT: approve";
 
-function makeTask(workspaceWorktrees: Task["workspaceWorktrees"]): Task {
-  return {
+function refreshReviewMetadata(task: Task): void {
+  const reviewedRepositories = task.repositoryScope?.repositories ?? Object.keys(task.workspaceWorktrees ?? {});
+  const modifiedFiles: string[] = [];
+  const reviewEvidence = Object.fromEntries(Object.entries(task.workspaceWorktrees ?? {})
+    .filter(([repo]) => reviewedRepositories.includes(repo))
+    .map(([repo, entry]) => {
+      const baseCommitSha = entry.baseCommitSha ?? execSync(`git merge-base HEAD ${entry.branch}`, { cwd: entry.worktreePath, encoding: "utf8" }).trim();
+      const names = execSync(`git diff --name-only ${baseCommitSha}..HEAD`, { cwd: entry.worktreePath, encoding: "utf8" }).trim();
+      for (const file of names.split("\n").filter(Boolean)) modifiedFiles.push(`${repo}/${file}`);
+      const diff = execSync(`git diff --binary ${baseCommitSha}..HEAD`, { cwd: entry.worktreePath, encoding: "utf8" });
+      return [repo, { fingerprint: createHash("sha256").update(diff).digest("hex"), approvedAt: new Date().toISOString() }];
+    }));
+  task.repositoryScope = { ...task.repositoryScope!, repositories: reviewedRepositories, state: "confirmed", revision: task.repositoryScope?.revision ?? 1, reviewEvidence };
+  task.modifiedFiles = [...new Set(modifiedFiles)].sort();
+}
+
+function makeTask(workspaceWorktrees: Task["workspaceWorktrees"], reviewed = true): Task {
+  const task = {
     /* FNXC:RequiredPreMergeSteps 2026-08-24-00:20: merge-mechanics fixture, not a review-gating one.
        The door refuses a card whose enabled optional pre-merge groups produced no result, and the
        built-in workflow enables Plan and Code Review by default, so an unspecified list failed the
@@ -185,11 +198,13 @@ function makeTask(workspaceWorktrees: Task["workspaceWorktrees"]): Task {
     workspaceWorktrees,
     repositoryScope: {
       state: "confirmed",
-      repositories: Object.keys(workspaceWorktrees).sort(),
+      repositories: Object.keys(workspaceWorktrees ?? {}).sort(),
     },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   } as Task;
+  if (reviewed) refreshReviewMetadata(task);
+  return task;
 }
 
 describeIfGit("landWorkspaceTask — landed predicate + finalize-once + idempotent retry (Phase C U2)", () => {
@@ -198,12 +213,12 @@ describeIfGit("landWorkspaceTask — landed predicate + finalize-once + idempote
 
   it("idempotency: re-run after A landed + B failed skips A (ref unchanged) and retries B", async () => {
     fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
-    addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
-    makeConflictingRepo(fx, "repo-b");
+    const repoAEntry = addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
+    const repoBEntry = makeConflictingRepo(fx, "repo-b");
 
     const task = makeTask({
-      "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH },
-      "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH },
+      "repo-a": repoAEntry,
+      "repo-b": repoBEntry,
     });
     const store = createStore(task);
 
@@ -221,7 +236,9 @@ describeIfGit("landWorkspaceTask — landed predicate + finalize-once + idempote
     expect(store.moveTaskCalls).toHaveLength(0);
 
     // Operator resolves repo B's conflict, then the merge is re-run (auto-retry).
-    resolveConflictInRepo(fx, "repo-b");
+    resolveConflictInRepo(fx, store.task, "repo-b");
+    // Conflict resolution is a new generation; model the intervening production Code Review.
+    refreshReviewMetadata(store.task);
 
     const second = await landWorkspaceTask(store, store.task, fx.rootDir, {}, {
       mergeAgent: squashMergeAgent(BRANCH),
@@ -245,8 +262,8 @@ describeIfGit("landWorkspaceTask — landed predicate + finalize-once + idempote
 
   it("predicate: landedSha that is an ancestor of the integration tip reads as landed; a non-ancestor does not", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
-    addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
-    const task = makeTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } });
+    const repoA = addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
+    const task = makeTask({ "repo-a": repoA });
     const store = createStore(task);
 
     // Land repo-a once.
@@ -290,11 +307,11 @@ describeIfGit("landWorkspaceTask — landed predicate + finalize-once + idempote
 
   it("no premature done: a partial run (one repo failed) does NOT move the task done", async () => {
     fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
-    addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
-    makeConflictingRepo(fx, "repo-b");
+    const repoA = addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
+    const repoB = makeConflictingRepo(fx, "repo-b");
     const task = makeTask({
-      "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH },
-      "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH },
+      "repo-a": repoA,
+      "repo-b": repoB,
     });
     const store = createStore(task);
 
@@ -312,11 +329,11 @@ describeIfGit("landWorkspaceTask — landed predicate + finalize-once + idempote
 
   it("completion: all repos landed → task moves done ONCE with aggregate mergeDetails", async () => {
     fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
-    addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
-    addRepoBranchWithEdit(fx, "repo-b", "b feature\n");
+    const repoA = addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
+    const repoB = addRepoBranchWithEdit(fx, "repo-b", "b feature\n");
     const task = makeTask({
-      "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH },
-      "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH },
+      "repo-a": repoA,
+      "repo-b": repoB,
     });
     const store = createStore(task);
 
@@ -356,8 +373,8 @@ describeIfGit("landWorkspaceTask — DB-failure resilience (Phase C review A1/A4
 
   it("A1/A4: a persist-failure AFTER the ref advanced escalates to WorkspacePartialLandError (no silent continue); a retry skips the actually-landed repo (no double squash)", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
-    addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
-    const task = makeTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } });
+    const repoA = addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
+    const task = makeTask({ "repo-a": repoA });
 
     // A store that FAILS the landedSha persist (the workspaceWorktrees write) exactly once,
     // then persists normally — simulating a transient DB hiccup in the A1 window.
@@ -433,11 +450,11 @@ describeIfGit("landWorkspaceTask — DB-failure resilience (Phase C review A1/A4
       cwd: fx.repoPath("repo-a"), stdio: "pipe",
       env: { ...process.env, GIT_AUTHOR_DATE: "2024-01-01T00:00:00Z", GIT_COMMITTER_DATE: "2024-01-01T00:00:00Z" },
     });
-    const task = makeTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } });
+    const task = makeTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } }, false);
     const store = createStore(task);
     await expect(landWorkspaceTask(store, store.task, fx.rootDir, {}, {
       mergeAgent: squashMergeAgent(BRANCH), reviewAgent: approveReviewAgent,
-    })).rejects.toThrow(/Cannot capture fresh merge evidence/);
+    })).rejects.toThrow(/no evidenced landing obligations/);
   });
 
   it("A4: WorkspacePartialLandError is a real class (instanceof + retryable + payload)", () => {
@@ -452,8 +469,8 @@ describeIfGit("landWorkspaceTask — DB-failure resilience (Phase C review A1/A4
 
   it("A5: a rejecting mergeDetails persist aborts finalization (does NOT silently finalize on a stale row)", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
-    addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
-    const task = makeTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } });
+    const repoA = addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
+    const task = makeTask({ "repo-a": repoA });
 
     // Fail the mergeDetails write (the finalize TOCTOU window) — the landedSha write succeeds.
     const store = createStore(task);

@@ -13,6 +13,7 @@ to throw — so no real/slow/networked npm runs (FN-5048).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Task, TaskStore } from "@fusion/core";
@@ -40,10 +41,16 @@ function configureIdentity(dir: string): void {
 function createStore(): TaskStore & { logs: string[] } {
   const emitter = new EventEmitter();
   const logs: string[] = [];
-  return Object.assign(emitter, {
+  const store = Object.assign(emitter, {
     logs,
     getSettings: vi.fn().mockResolvedValue({ autoMerge: false }),
     updateTask: vi.fn().mockResolvedValue(undefined),
+    updateTaskAtomic: vi.fn(async (_id: string, mutate: (task: Task) => Partial<Task> | undefined) => {
+      const current = await store.getTask(TASK_ID) as Task;
+      const patch = mutate(current);
+      if (patch) Object.assign(current, patch);
+      return current;
+    }),
     logEntry: vi.fn((_id: string, message: string) => { logs.push(message); return Promise.resolve(undefined); }),
     appendAgentLog: vi.fn().mockResolvedValue(undefined),
     // mergeAndReview reads store.getTask().comments for prompt context — return a real task shape.
@@ -52,17 +59,16 @@ function createStore(): TaskStore & { logs: string[] } {
     upsertTaskCommitAssociation: vi.fn().mockResolvedValue(undefined),
     accumulateTokenUsage: vi.fn().mockResolvedValue(undefined),
   }) as unknown as TaskStore & { logs: string[] };
+  return store;
 }
 
-function addRepoBranchWithEdit(fx: WorkspaceFixture, repoRel: string, content: string): void {
-  const repoDir = fx.repoPath(repoRel);
-  const wt = path.join(repoDir, ".wt-branch");
-  fx.git(repoRel, `git worktree add -b ${BRANCH} ${wt} HEAD`);
-  configureIdentity(wt);
-  writeFileSync(path.join(wt, "feature.txt"), content, "utf-8");
-  execSync("git add feature.txt", { cwd: wt, stdio: "pipe" });
-  execSync(`git commit -m "feat(${TASK_ID}): add feature in ${repoRel}"`, { cwd: wt, stdio: "pipe" });
-  fx.git(repoRel, `git worktree remove --force ${wt}`);
+function addRepoBranchWithEdit(fx: WorkspaceFixture, repoRel: string, content: string) {
+  const linked = fx.createLinkedTaskWorktree(repoRel, BRANCH);
+  configureIdentity(linked.worktreePath);
+  writeFileSync(path.join(linked.worktreePath, "feature.txt"), content, "utf-8");
+  execSync("git add feature.txt", { cwd: linked.worktreePath, stdio: "pipe" });
+  execSync(`git commit -m "feat(${TASK_ID}): add feature in ${repoRel}"`, { cwd: linked.worktreePath, stdio: "pipe" });
+  return { ...linked, branch: BRANCH };
 }
 
 const squashMergeAgent = async (cwd: string): Promise<void> => {
@@ -77,6 +83,10 @@ const squashMergeAgent = async (cwd: string): Promise<void> => {
 const approveReviewAgent = async (): Promise<string> => "REVIEW_VERDICT: approve";
 
 function makeTask(workspaceWorktrees: Task["workspaceWorktrees"]): Task {
+  const reviewEvidence = Object.fromEntries(Object.entries(workspaceWorktrees ?? {}).map(([repo, entry]) => {
+    const diff = execSync(`git diff --binary ${entry.baseCommitSha}..HEAD`, { cwd: entry.worktreePath, encoding: "utf8" });
+    return [repo, { fingerprint: createHash("sha256").update(diff).digest("hex"), approvedAt: new Date().toISOString() }];
+  }));
   return {
     /* FNXC:RequiredPreMergeSteps 2026-08-24-00:20: merge-mechanics fixture, not a review-gating one.
        The door refuses a card whose enabled optional pre-merge groups produced no result, and the
@@ -85,6 +95,8 @@ function makeTask(workspaceWorktrees: Task["workspaceWorktrees"]): Task {
     enabledWorkflowSteps: [],
     id: TASK_ID, title: "Workspace merge task", description: "", column: "in-review",
     branch: BRANCH, dependencies: [], steps: [], currentStep: 0, log: [], workspaceWorktrees,
+    repositoryScope: { repositories: Object.keys(workspaceWorktrees ?? {}).sort(), state: "confirmed", revision: 1, reviewEvidence },
+    modifiedFiles: Object.keys(workspaceWorktrees ?? {}).sort().map((repo) => `${repo}/feature.txt`),
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   } as Task;
 }
@@ -96,15 +108,16 @@ describeIfGit("workspace land — dependency-sync failure resilience", () => {
   it("lands ALL sub-repos even when clean-room dependency sync fails (non-fatal)", async () => {
     vi.mocked(installWorktreeDependencies).mockRejectedValue(NPM_FAILURE);
     fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
-    addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
-    addRepoBranchWithEdit(fx, "repo-b", "b feature\n");
+    const repoA = addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
+    const repoB = addRepoBranchWithEdit(fx, "repo-b", "b feature\n");
 
     const tipABefore = fx.git("repo-a", "git rev-parse refs/heads/main");
     const store = createStore();
     const task = makeTask({
-      "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH },
-      "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH },
+      "repo-a": repoA,
+      "repo-b": repoB,
     });
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(task);
 
     const result = await landWorkspaceTask(store, task, fx.rootDir, {}, {
       mergeAgent: squashMergeAgent,

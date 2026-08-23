@@ -142,7 +142,18 @@ describe("runAiMerge approved-squash gates", () => {
     git(cleanRoom, "merge --squash fusion/fn-9050");
     git(cleanRoom, "add -A && git commit -q -m squash -m 'Fusion-Task-Id: FN-9050'");
     const squashSha = git(cleanRoom, "rev-parse HEAD");
-    const { store, task } = makeStore(["allowed/**"]);
+    const { store, task } = makeStore(["allowed/**"], {
+      // Recovery authority is the durable reconciliation generation, not historical log prose.
+      aiMergeReviewReconciliation: {
+        sourceSha: git(dir, "rev-parse fusion/fn-9050"),
+        integrationTipSha: before,
+        candidateSha: squashSha,
+        candidateTreeSha: git(cleanRoom, "rev-parse HEAD^{tree}"),
+        findings: [],
+        consecutiveCleanApprovals: 2,
+        correctivePasses: 0,
+      },
+    });
     task.log = [{ action: `AI merge review (pass 1): approved squash ${squashSha}`, timestamp: new Date().toISOString() }];
 
     await expect(runAiMerge(store, dir, "FN-9050", { manual: true }, {
@@ -151,6 +162,7 @@ describe("runAiMerge approved-squash gates", () => {
 
     expect(git(cleanRoom, "rev-parse HEAD")).toBe(before);
     task.status = null;
+    task.aiMergeReviewReconciliation = undefined;
     const normalMerge = vi.fn(async () => { throw new Error("normal merge invoked"); });
     await expect(runAiMerge(store, dir, "FN-9050", { manual: true }, {
       mergeAgent: normalMerge, reviewAgent: approve,

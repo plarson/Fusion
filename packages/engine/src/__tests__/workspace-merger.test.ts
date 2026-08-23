@@ -140,22 +140,24 @@ function addRepoRevertedBranch(fx: WorkspaceFixture, repoRel: string): void {
   fx.git(repoRel, `git worktree remove --force ${worktreePath}`);
 }
 
-/** Make a sub-repo's integration tip and the task branch BOTH edit README so the
- *  squash conflicts. */
-function makeConflictingRepo(fx: WorkspaceFixture, repoRel: string): void {
+/** Create a production-shaped live task worktree whose reviewed README edit conflicts with main. */
+function makeRegisteredConflictingRepo(
+  fx: WorkspaceFixture,
+  repoRel: string,
+): { worktreePath: string; baseCommitSha: string } {
   const repoDir = fx.repoPath(repoRel);
-  // Task branch edits README on a new commit.
-  const worktreePath = path.join(repoDir, ".wt-conflict");
+  const worktreePath = path.join(fx.rootDir, `.task-worktree-conflict-${repoRel}`);
+  const baseCommitSha = fx.git(repoRel, "git rev-parse HEAD");
   fx.git(repoRel, `git worktree add -b ${BRANCH} ${worktreePath} HEAD`);
   configureIdentity(worktreePath);
   writeFileSync(path.join(worktreePath, "README.md"), "# branch-side change\n", "utf-8");
   execSync("git add README.md", { cwd: worktreePath, stdio: "pipe" });
   execSync(`git commit -m "feat(${TASK_ID}): branch README"`, { cwd: worktreePath, stdio: "pipe" });
-  fx.git(repoRel, `git worktree remove --force ${worktreePath}`);
-  // Integration tip (main) diverges with a conflicting README edit.
+
   writeFileSync(path.join(repoDir, "README.md"), "# main-side change\n", "utf-8");
   fx.git(repoRel, "git add README.md");
   fx.git(repoRel, 'git commit -m "main diverge README"');
+  return { worktreePath, baseCommitSha };
 }
 
 /** A merge agent that performs the real squash in the clean room (no AI). */
@@ -363,10 +365,13 @@ describeIfGit("landWorkspaceTask — per-repo merge loop (Phase C U1)", () => {
 
   it("rejects a modified repository with no approving review fingerprint", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
-    addRepoBranchWithEdit(fx, "repo-a", "review evidence is mandatory\n");
+    const linked = addRegisteredTaskWorktreeWithEdit(fx, "repo-a", "review evidence is mandatory\n");
     const store = createStore();
-    const task = makeTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } });
+    const task = makeTask({
+      "repo-a": { worktreePath: linked.worktreePath, branch: BRANCH, baseCommitSha: linked.baseCommitSha },
+    });
     task.repositoryScope!.reviewEvidence = {};
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(task);
 
     await expect(landWorkspaceTask(store, task, fx.rootDir, {}, {
       mergeAgent: squashMergeAgent(BRANCH),
@@ -377,10 +382,13 @@ describeIfGit("landWorkspaceTask — per-repo merge loop (Phase C U1)", () => {
 
   it("returns a fresh repository file to Code Review instead of landing it without review evidence", async () => {
     fx = await createWorkspaceFixture(["repo-a"]);
-    addRepoBranchWithEdit(fx, "repo-a", "review this newly discovered file\n");
+    const linked = addRegisteredTaskWorktreeWithEdit(fx, "repo-a", "review this newly discovered file\n");
     const store = createStore();
-    const task = makeTask({ "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH } });
+    const task = makeTask({
+      "repo-a": { worktreePath: linked.worktreePath, branch: BRANCH, baseCommitSha: linked.baseCommitSha },
+    });
     task.modifiedFiles = [];
+    (store.getTask as ReturnType<typeof vi.fn>).mockResolvedValue(task);
 
     await expect(landWorkspaceTask(store, task, fx.rootDir, {}, {
       mergeAgent: squashMergeAgent(BRANCH),
@@ -391,15 +399,15 @@ describeIfGit("landWorkspaceTask — per-repo merge loop (Phase C U1)", () => {
 
   it("partial: repo B conflict → repo A lands, B reports failure, task NOT moved done", async () => {
     fx = await createWorkspaceFixture(["repo-a", "repo-b"]);
-    addRepoBranchWithEdit(fx, "repo-a", "a feature\n");
-    makeConflictingRepo(fx, "repo-b");
+    const repoA = addRegisteredTaskWorktreeWithEdit(fx, "repo-a", "a feature\n");
+    const repoB = makeRegisteredConflictingRepo(fx, "repo-b");
 
     const tipABefore = fx.git("repo-a", "git rev-parse refs/heads/main");
 
     const store = createStore();
     const task = makeTask({
-      "repo-a": { worktreePath: fx.repoPath("repo-a"), branch: BRANCH },
-      "repo-b": { worktreePath: fx.repoPath("repo-b"), branch: BRANCH },
+      "repo-a": { worktreePath: repoA.worktreePath, branch: BRANCH, baseCommitSha: repoA.baseCommitSha },
+      "repo-b": { worktreePath: repoB.worktreePath, branch: BRANCH, baseCommitSha: repoB.baseCommitSha },
     });
     // FNXC:RepositoryScope 2026-08-21-00:58: the merge boundary only admits fresh
     // changes that were present in the persisted Code Review evidence.

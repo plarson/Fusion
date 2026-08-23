@@ -241,24 +241,24 @@ The conversation UI now opens list-first. Composer and thread assertions must en
 */
 async function renderRoomDetailWithAct(ui: React.ReactElement) {
   const result = await renderWithAct(ui);
-  if (!screen.queryByTestId("chat-back-btn")) {
+  if (!screen.queryByTestId("chat-input")) {
     const item = document.querySelector<HTMLElement>('[data-testid^="chat-room-item-"]');
     if (item) {
       await userEvent.click(item);
-      await waitFor(() => expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByTestId("chat-input")).toBeInTheDocument());
     }
   }
   return result;
 }
 
 async function getChatInput() {
-  if (!screen.queryByTestId("chat-back-btn")) {
+  if (!screen.queryByTestId("chat-input")) {
     const item = document.querySelector<HTMLElement>(
       '[data-testid^="chat-room-item-"], [data-testid^="chat-session-session-"]',
     );
     if (!item) throw new Error("Expected a conversation list item before entering detail");
     await userEvent.click(item);
-    await waitFor(() => expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("chat-input")).toBeInTheDocument());
   }
   return screen.getByTestId("chat-input");
 }
@@ -342,14 +342,14 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
     });
   });
 
-  it("shows Create room in mobile footer for Rooms scope and hides New Chat + rooms header", async () => {
+  it("shows Create room in the mobile footer and keeps New Chat in the active header", async () => {
     const viewportSpy = mockMobileViewport();
 
     const { container } = await renderRoomDetailWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
 
     const createRoomButton = screen.getByTestId("chat-create-room-btn");
     expect(createRoomButton.closest(".chat-sidebar-footer")).toBeInTheDocument();
-    expect(screen.queryByTestId("chat-new-btn")).not.toBeInTheDocument();
+    expect(screen.getByTestId("chat-new-btn")).toBeInTheDocument();
     expect(container.querySelector(".chat-sidebar-rooms-header")).not.toBeInTheDocument();
 
     viewportSpy.mockRestore();
@@ -1080,17 +1080,22 @@ describe("ChatView — rooms (FN-3805..FN-3811 contract)", () => {
       setup({}, { activeRoom: roomA, rooms: [roomA] });
       await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
       await userEvent.click(screen.getByTestId("chat-room-item-room-a"));
-      expect(screen.getByTestId("chat-back-btn")).toBeInTheDocument();
+      expect(screen.queryByTestId("chat-back-btn")).not.toBeInTheDocument();
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
 
     it("returns from room detail to the conversation list", async () => {
-      setup({}, { activeRoom: roomA, rooms: [roomA] });
-      await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
-      await userEvent.click(screen.getByTestId("chat-room-item-room-a"));
-      await userEvent.click(screen.getByTestId("chat-back-btn"));
-      expect(screen.getByTestId("chat-room-item-room-a")).toBeInTheDocument();
-      expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+      const viewportSpy = mockMobileViewport();
+      try {
+        setup({}, { activeRoom: roomA, rooms: [roomA] });
+        await renderWithAct(<ChatView projectId="proj-123" addToast={vi.fn()} experimentalFeatures={{ chatRooms: true }} />);
+        await userEvent.click(screen.getByTestId("chat-room-item-room-a"));
+        await userEvent.click(screen.getByTestId("chat-back-btn"));
+        expect(screen.getByTestId("chat-room-item-room-a")).toBeInTheDocument();
+        expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+      } finally {
+        viewportSpy.mockRestore();
+      }
     });
   });
 
